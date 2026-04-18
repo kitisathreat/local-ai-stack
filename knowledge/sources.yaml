@@ -192,10 +192,8 @@ knowledge_bases:
     sources:
       - type: zenodo
         notes: "CERN Zenodo — use zenodo tool for search"
-      - type: web
-        url: https://data.gov
-        refresh: monthly
-        notes: "US Government open data"
+      - type: data_gov
+        notes: "US Government open data (300k+ datasets) — use data_gov tool"
       - type: web
         url: https://datasetsearch.research.google.com
         refresh: real_time
@@ -204,6 +202,112 @@ knowledge_bases:
         url: https://www.kaggle.com/datasets
         refresh: weekly
         notes: "Kaggle community datasets"
+      - type: wikidata
+        notes: "Wikidata structured knowledge graph — use wikidata tool (SPARQL)"
+
+  # Geography & Current Events
+  geography_events:
+    description: "Geocoding, country data, and global event streams"
+    sources:
+      - type: openstreetmap
+        notes: "Geocoding + POIs via Nominatim/Overpass — openstreetmap tool"
+      - type: rest_countries
+        notes: "Country profiles (REST Countries) — rest_countries tool"
+      - type: gdelt
+        refresh: real_time
+        notes: "GDELT global news & tone (billions of articles)"
+      - type: nasa_eonet
+        refresh: real_time
+        notes: "NASA EONET natural event tracker (wildfires, storms, volcanoes)"
+      - type: openaq
+        refresh: hourly
+        notes: "OpenAQ global air quality (17k+ stations)"
+
+  # Culture & Humanities
+  culture:
+    description: "Museums, libraries, historical collections, and music"
+    sources:
+      - type: met_museum
+        notes: "The MET Open Access — 470k+ CC0 art objects"
+      - type: musicbrainz
+        notes: "MusicBrainz open music encyclopedia"
+      - type: library_of_congress
+        notes: "LoC + Chronicling America historic newspapers"
+      - type: smithsonian
+        notes: "Smithsonian OA — 4.5M+ items (key required)"
+      - type: rijksmuseum
+        notes: "Rijksmuseum Dutch Golden Age collection (key required)"
+      - type: europeana
+        notes: "Europeana cultural heritage (existing tool)"
+
+  # Security & Vulnerability Intel (Defensive)
+  security:
+    description: "Defensive security: CVEs, OSS vuln databases, USPTO patents"
+    sources:
+      - type: nvd
+        refresh: daily
+        notes: "NIST National Vulnerability Database"
+      - type: osv
+        refresh: daily
+        notes: "OSV.dev open source vulnerabilities"
+      - type: uspto
+        refresh: weekly
+        notes: "USPTO PatentsView — prior art, patents"
+
+  # Legal
+  legal:
+    description: "US court opinions, compliance, sanctions"
+    sources:
+      - type: courtlistener
+        notes: "9M+ US court opinions + dockets"
+      - type: open_sanctions
+        refresh: daily
+        notes: "Consolidated global sanctions + PEPs"
+
+  # Extended Economics
+  economics_extended:
+    description: "Global statistics agencies"
+    sources:
+      - type: imf
+        refresh: monthly
+        notes: "IMF WEO/IFS via DataMapper"
+      - type: oecd
+        refresh: monthly
+        notes: "OECD SDMX-JSON"
+      - type: eurostat
+        refresh: monthly
+        notes: "Eurostat"
+      - type: census_bureau
+        refresh: yearly
+        notes: "US Census ACS/Decennial"
+      - type: bls
+        refresh: monthly
+        notes: "BLS unemployment, CPI, wages"
+      - type: bea
+        refresh: quarterly
+        notes: "BEA GDP + regional"
+      - type: un_comtrade
+        refresh: yearly
+        notes: "UN Comtrade bilateral trade"
+
+  # Bio & Chemical Sciences (extended)
+  biosciences_extended:
+    description: "Biodiversity, structures, OA biomedical literature"
+    sources:
+      - type: gbif
+        notes: "Global Biodiversity Information Facility"
+      - type: inaturalist
+        notes: "iNaturalist citizen observations"
+      - type: rcsb_pdb
+        notes: "Protein Data Bank 3D structures"
+      - type: chembl
+        notes: "EMBL-EBI bioactive molecules & targets"
+      - type: europepmc
+        refresh: weekly
+        notes: "Europe PMC life sciences literature"
+      - type: doaj
+        refresh: weekly
+        notes: "DOAJ open-access journals & articles"
 
   # PC Hardware & Gaming (Kit's specialty)
   hardware:
