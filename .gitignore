@@ -1,2 +1,8 @@
 .env.local
 openapi.json
+
+# Docker override files
+docker-compose.override.yml
+
+# Local config overrides
+config/local.yaml

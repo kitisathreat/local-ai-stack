@@ -1,0 +1,41 @@
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui:/app/backend/data
+    environment:
+      - WEBUI_AUTH=False
+      - RAG_EMBEDDING_ENGINE=openai
+      - OPENAI_API_KEY=lmstudio
+      - OPENAI_API_BASE_URL=http://host.docker.internal:1234/v1
+      # Code interpreter: connect to local Jupyter container
+      - CODE_EXECUTION_ENGINE=jupyter
+      - CODE_EXECUTION_JUPYTER_URL=http://jupyter:8888
+      - CODE_EXECUTION_JUPYTER_AUTH=token
+      - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=local-ai-stack-token
+    restart: always
+    depends_on:
+      - jupyter
+
+  jupyter:
+    image: quay.io/jupyter/scipy-notebook:latest
+    container_name: jupyter
+    environment:
+      - JUPYTER_TOKEN=local-ai-stack-token
+      # Disable browser launch (headless)
+      - JUPYTER_ENABLE_LAB=yes
+    volumes:
+      - jupyter-data:/home/jovyan/work
+    # Only expose internally — not needed outside the stack
+    expose:
+      - "8888"
+    restart: always
+
+volumes:
+  open-webui:
+  jupyter-data:
