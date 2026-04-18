@@ -477,6 +477,24 @@ additional_tools:
     description: "Open music encyclopedia: artists, releases, recordings, labels, works with MBIDs and relationships."
     api_key_required: false
 
+  qobuz_dl:
+    file: tools/qobuz_dl.py
+    title: "Qobuz-DL — Hi-Res Music Search & Download"
+    description: "Search Qobuz for tracks/albums/artists and download lossless or hi-res audio via the qobuz-dl CLI. Requires a Qobuz subscription plus `pip install qobuz-dl` (run `qobuz-dl -r` once to configure)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://github.com/vitiko98/qobuz-dl"
+
+  soulseek:
+    file: tools/soulseek.py
+    title: "Soulseek — P2P Music Search & Download (slskd)"
+    description: "Search the Soulseek network and queue downloads through a slskd daemon (run separately: https://github.com/slskd/slskd). Point SLSKD_URL + SLSKD_API_KEY at your instance."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://github.com/slskd/slskd"
+
   library_of_congress:
     file: tools/loc.py
     title: "Library of Congress — Historical Collections"
