@@ -153,6 +153,40 @@ This stores key facts about you and your preferences, injected into future conve
 
 ---
 
+## Phase 7: Store API Keys as Environment Variables
+
+Tool files under `tools/` (Alpha Vantage, FRED, NYT, GitHub, etc.) read their
+API keys from OS environment variables at startup, so you don't have to paste
+keys into Open WebUI's Tools panel every time a tool is reinstalled.
+
+1. Copy `.env.example` to `.env.local` at the repo root and fill in the keys
+   you actually have. Leave the rest blank — blank keys are ignored.
+
+   ```powershell
+   Copy-Item .env.example .env.local
+   notepad .env.local
+   ```
+
+2. Persist them as Windows User environment variables:
+
+   ```powershell
+   .\scripts\set-env-vars.ps1
+   ```
+
+   The script prints the names it set (never the values). Restart Docker
+   Desktop so the `pipelines` and `open-webui` containers pick up the new
+   values, or run `docker compose --env-file .env.local up -d` to inject them
+   for a single session.
+
+3. The same keys are used by `docker-compose.yml` via `${VAR:-default}`
+   substitution — `PIPELINES_API_KEY`, `JUPYTER_TOKEN`, and `OPENAI_API_KEYS`
+   all fall back to the stack's built-in defaults when unset, so existing
+   setups keep working.
+
+`.env.local` is in `.gitignore`; never commit it.
+
+---
+
 ## Quick Reference
 
 | What you want | Where to go |

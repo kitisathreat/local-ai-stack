@@ -117,7 +117,11 @@ lms load $model['id'] --gpu $model['gpu'] --context-length $model['context'] --p
 if ($LASTEXITCODE -ne 0) { Write-Fail "Failed to load model"; exit 1 }
 Write-OK "Model loaded: $($model['id'])"
 
-# ── 5. Tailscale Serve (HTTPS for Squarespace embed) ─────────────────────────
+# ── 5. Register model presets in Open WebUI and LM Studio ────────────────────
+Write-Step "Syncing model presets..."
+& "$PSScriptRoot\setup-webui-models.ps1"
+
+# ── 6. Tailscale Serve (HTTPS for Squarespace embed) ─────────────────────────
 Write-Step "Ensuring Tailscale Serve is active..."
 $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 $serveStatus = & $tailscale serve status 2>&1
@@ -132,7 +136,7 @@ if ($serveStatus -like "*localhost:3000*") {
     Write-Host "   Note: Tailscale Serve not configured (run once as admin to enable)" -ForegroundColor Yellow
 }
 
-# ── 6. Done ──────────────────────────────────────────────────────────────────
+# ── 7. Done ──────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "=========================================" -ForegroundColor Green
 Write-Host "  Stack is ready!" -ForegroundColor Green

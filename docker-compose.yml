@@ -10,32 +10,136 @@ services:
       - open-webui:/app/backend/data
     environment:
       - WEBUI_AUTH=False
+
+      # ── LM Studio + Pipelines as OpenAI-compatible backends ──────────────────
+      - OPENAI_API_BASE_URLS=http://host.docker.internal:1234/v1;http://pipelines:9099
+      - OPENAI_API_KEYS=${OPENAI_API_KEYS:-lmstudio;0p3n-w3bu!}
+
+      # ── Ollama integration (local model hub) ──────────────────────────────────
+      - OLLAMA_BASE_URL=http://ollama:11434
+
+      # ── Vector database: Qdrant for semantic RAG ──────────────────────────────
+      - VECTOR_DB=qdrant
+      - QDRANT_URL=http://qdrant:6333
+
+      # ── Embeddings (via LM Studio OpenAI-compatible endpoint) ─────────────────
       - RAG_EMBEDDING_ENGINE=openai
-      - OPENAI_API_KEY=lmstudio
-      - OPENAI_API_BASE_URL=http://host.docker.internal:1234/v1
-      # Code interpreter: connect to local Jupyter container
+      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5-GGUF
+
+      # ── Web search via SearXNG ────────────────────────────────────────────────
+      - ENABLE_RAG_WEB_SEARCH=True
+      - RAG_WEB_SEARCH_ENGINE=searxng
+      - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>&format=json
+      - RAG_WEB_SEARCH_RESULT_COUNT=5
+      - RAG_WEB_SEARCH_CONCURRENT_REQUESTS=10
+
+      # ── Code interpreter: Jupyter ─────────────────────────────────────────────
       - CODE_EXECUTION_ENGINE=jupyter
       - CODE_EXECUTION_JUPYTER_URL=http://jupyter:8888
       - CODE_EXECUTION_JUPYTER_AUTH=token
-      - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=local-ai-stack-token
+      - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=${JUPYTER_TOKEN:-local-ai-stack-token}
+
+      # ── Image generation (point to Automatic1111 / ComfyUI if running) ────────
+      - ENABLE_IMAGE_GENERATION=False
+      - IMAGE_GENERATION_ENGINE=openai
+
+      # ── Miscellaneous features ────────────────────────────────────────────────
+      - ENABLE_COMMUNITY_SHARING=False
+      - ENABLE_MESSAGE_RATING=True
+      - DEFAULT_MODELS=quality
     restart: always
     depends_on:
       - jupyter
+      - pipelines
+      - qdrant
+      - searxng
+      # ollama is optional — remove from depends_on to allow starting without it
 
   jupyter:
     image: quay.io/jupyter/scipy-notebook:latest
     container_name: jupyter
     environment:
-      - JUPYTER_TOKEN=local-ai-stack-token
-      # Disable browser launch (headless)
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-local-ai-stack-token}
       - JUPYTER_ENABLE_LAB=yes
     volumes:
       - jupyter-data:/home/jovyan/work
-    # Only expose internally — not needed outside the stack
     expose:
       - "8888"
+    restart: always
+
+  # ── Open WebUI Pipelines: function-calling, filters, RAG pipelines ────────────
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    container_name: pipelines
+    ports:
+      - "9099:9099"
+    volumes:
+      - pipelines-data:/app/pipelines
+      - ./pipelines:/app/pipelines/custom:ro
+    environment:
+      - PIPELINES_API_KEY=${PIPELINES_API_KEY:-0p3n-w3bu!}
+    restart: always
+
+  # ── Qdrant: high-performance vector database for RAG ─────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: always
+
+  # ── SearXNG: self-hosted meta-search engine (web search for models) ───────────
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "4000:8080"
+    volumes:
+      - ./config/searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:4000
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    restart: always
+
+  # ── Ollama: local model hub (llama3, phi4, mistral, llava, etc.) ──────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: always
+
+  # ── n8n: low-code workflow automation connected to AI ─────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - WEBHOOK_URL=http://localhost:5678
+      - N8N_RUNNERS_ENABLED=true
     restart: always
 
 volumes:
   open-webui:
   jupyter-data:
+  pipelines-data:
+  qdrant-data:
+  ollama-data:
+  n8n-data:
