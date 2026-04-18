@@ -1,6 +1,9 @@
 # Model profiles for LM Studio
 # Run: .\scripts\switch-model.ps1 -Profile <name>
 # Default is loaded on startup via start.ps1
+#
+# Load params (lms load):  gpu, context, parallel
+# Inference params (preset): temperature, top_p, top_k, repeat_penalty, max_tokens
 
 default: quality
 
@@ -12,22 +15,37 @@ models:
     context: 4096
     parallel: 4
     description: "Quick responses, lower GPU load. Good for simple Q&A."
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 40
+    repeat_penalty: 1.1
+    max_tokens: 2048
 
   quality:
     name: "Quality (DeepSeek R1 8B)"
     id: "deepseek/deepseek-r1-0528-qwen3-8b"
     gpu: max
-    context: 8192
-    parallel: 4
+    context: 16384
+    parallel: 2
     description: "Best reasoning quality. Kit's Assistant default."
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 40
+    repeat_penalty: 1.05
+    max_tokens: 8192
 
   coding:
     name: "Coding (Qwen Coder)"
     id: "qwen/qwen3-coder-next"
     gpu: max
-    context: 8192
+    context: 32768
     parallel: 2
     description: "Optimized for code generation and review."
+    temperature: 0.1
+    top_p: 0.95
+    top_k: 20
+    repeat_penalty: 1.05
+    max_tokens: 8192
 
   large:
     name: "Large (Qwen 3.5 35B MoE)"
@@ -36,3 +54,8 @@ models:
     context: 8192
     parallel: 1
     description: "Highest capability. Slow — use for complex tasks."
+    temperature: 0.7
+    top_p: 0.95
+    top_k: 40
+    repeat_penalty: 1.05
+    max_tokens: 8192

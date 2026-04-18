@@ -54,3 +54,6 @@ if ($LASTEXITCODE -ne 0) { Write-Fail "Failed to load model" }
 
 Write-OK "Now running: $($model['name'])"
 Write-Host "   ($($model['description']))" -ForegroundColor DarkGray
+
+Write-Step "Syncing presets..."
+& "$PSScriptRoot\setup-webui-models.ps1" -SkipLmStudio
