@@ -6,3 +6,9 @@ docker-compose.override.yml
 
 # Local config overrides
 config/local.yaml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
