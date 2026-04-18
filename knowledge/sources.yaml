@@ -223,6 +223,17 @@ knowledge_bases:
         refresh: hourly
         notes: "OpenAQ global air quality (17k+ stations)"
 
+  # Shadow Libraries (use responsibly; respect local copyright law)
+  shadow_libraries:
+    description: "Anna's Archive + LibGen + Sci-Hub mirrors for books, papers, comics, magazines"
+    sources:
+      - type: annas_archive
+        notes: "Anna's Archive — search/lookup/mirror enumeration via the annas_archive tool"
+      - type: web
+        url: https://annas-archive.li/faq
+        refresh: yearly
+        notes: "Anna's Archive FAQ + mirror status"
+
   # Culture & Humanities
   culture:
     description: "Museums, libraries, historical collections, and music"

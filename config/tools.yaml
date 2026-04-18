@@ -209,6 +209,15 @@ additional_tools:
     description: "Search 20M+ books, get author bios, covers, and links to free full-text via Internet Archive."
     api_key_required: false
 
+  annas_archive:
+    file: tools/annas_archive.py
+    title: "Anna's Archive — Shadow Library Search & Download"
+    description: "Search Anna's Archive (and mirrors annas-archive.li/.se/.gd/.gl/.vg/.pm) for books, papers, comics, magazines, and standards. Look up records by MD5, enumerate free mirrors (LibGen, Sci-Hub, IPFS, partner servers), pull a member fast-download URL, and stream the file to disk. No key needed for search/lookup; AA_MEMBER_KEY (donor key) needed for fast downloads."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+    api_key_url: "https://annas-archive.li/donate"
+
   rss_reader:
     file: tools/rss_reader.py
     title: "RSS / Atom Feed Reader"
