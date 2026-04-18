@@ -55,7 +55,7 @@ for ($i = 0; $i -lt 12; $i++) {
     $out = docker ps 2>&1
     if ($LASTEXITCODE -eq 0) { $dockerReady = $true; break }
     if ($i -eq 0) {
-        Write-Host "   Docker not running — starting Docker Desktop..."
+        Write-Host "   Docker not running - starting Docker Desktop..."
         Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
     }
     Write-Host "   [$($i*5)s] Waiting for Docker..." -ForegroundColor DarkGray
@@ -99,7 +99,7 @@ Write-Host "   Context : $($model['context'])"
 # Check LM Studio server is running
 $serverUp = lms server status 2>&1
 if ($serverUp -notlike "*running*") {
-    Write-Host "   LM Studio server not running — starting..."
+    Write-Host "   LM Studio server not running - starting..."
     lms server start --port 1234 --cors 2>&1 | Out-Null
     Start-Sleep 3
 }
