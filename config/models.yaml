@@ -1,0 +1,38 @@
+# Model profiles for LM Studio
+# Run: .\scripts\switch-model.ps1 -Profile <name>
+# Default is loaded on startup via start.ps1
+
+default: quality
+
+models:
+  fast:
+    name: "Fast (Qwen 3.5 9B)"
+    id: "qwen/qwen3.5-9b"
+    gpu: max
+    context: 4096
+    parallel: 4
+    description: "Quick responses, lower GPU load. Good for simple Q&A."
+
+  quality:
+    name: "Quality (DeepSeek R1 8B)"
+    id: "deepseek/deepseek-r1-0528-qwen3-8b"
+    gpu: max
+    context: 8192
+    parallel: 4
+    description: "Best reasoning quality. Kit's Assistant default."
+
+  coding:
+    name: "Coding (Qwen Coder)"
+    id: "qwen/qwen3-coder-next"
+    gpu: max
+    context: 8192
+    parallel: 2
+    description: "Optimized for code generation and review."
+
+  large:
+    name: "Large (Qwen 3.5 35B MoE)"
+    id: "qwen/qwen3.5-35b-a3b"
+    gpu: max
+    context: 8192
+    parallel: 1
+    description: "Highest capability. Slow — use for complex tasks."
