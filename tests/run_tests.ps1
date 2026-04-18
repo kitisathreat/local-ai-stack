@@ -140,6 +140,18 @@ Test-Case "academic tool files exist (pubmed, semantic_scholar, crossref, openal
     }
 }
 
+Test-Case "extended tool files exist (finance, clinicaltrials, openfda, pubchem, open_library, rss_reader, hackernews, dictionary, dev_utils, package_search, network_tools, n8n_trigger)" {
+    $required = @("finance","clinicaltrials","openfda","pubchem","open_library","rss_reader","hackernews","dictionary","dev_utils","package_search","network_tools","n8n_trigger")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing tool: $t.py" }
+    }
+}
+
+Test-Case "tools directory has at least 25 tool files" {
+    $files = Get-ChildItem "$root\tools\*.py"
+    if ($files.Count -lt 25) { throw "Only $($files.Count) tool files found, expected 25+" }
+}
+
 Test-Case "knowledge/sources.yaml covers 8+ knowledge domains" {
     $yaml = Get-Content "$root\knowledge\sources.yaml" -Raw
     $domains = @("biomedical","physics","chemistry","mathematics","computer_science","social_sciences","open_data")

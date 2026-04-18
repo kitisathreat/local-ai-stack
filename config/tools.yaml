@@ -169,3 +169,79 @@ pipelines:
     title: "Web Search RAG"
     description: "Automatically search the web and inject results when the model lacks knowledge."
     type: pipe
+
+# ── Additional Tools Added ────────────────────────────────────────────────────
+# Finance & Markets
+additional_tools:
+  finance:
+    file: tools/finance.py
+    title: "Finance — Stocks & Crypto"
+    description: "Real-time stock quotes (Yahoo Finance) + crypto prices (CoinGecko). No API key required."
+    api_key_required: false
+
+  clinicaltrials:
+    file: tools/clinicaltrials.py
+    title: "ClinicalTrials.gov"
+    description: "Search 480,000+ clinical trials worldwide. Find active studies, eligibility, and sponsors."
+    api_key_required: false
+
+  openfda:
+    file: tools/openfda.py
+    title: "OpenFDA — Drug, Food & Device"
+    description: "FDA drug labels, adverse event reports (FAERS), and product recalls. Free API."
+    api_key_required: false
+
+  pubchem:
+    file: tools/pubchem.py
+    title: "PubChem — Chemical Compounds"
+    description: "Look up 115M+ chemicals by name, formula, or CAS. Get properties, SMILES, safety data."
+    api_key_required: false
+
+  open_library:
+    file: tools/open_library.py
+    title: "Open Library — Books"
+    description: "Search 20M+ books, get author bios, covers, and links to free full-text via Internet Archive."
+    api_key_required: false
+
+  rss_reader:
+    file: tools/rss_reader.py
+    title: "RSS / Atom Feed Reader"
+    description: "Read any RSS or Atom feed. 25+ presets: HN, ArXiv, BBC, TechCrunch, Nature, NASA, Reddit, OpenAI Blog..."
+    api_key_required: false
+
+  hackernews:
+    file: tools/hackernews.py
+    title: "Hacker News"
+    description: "Browse HN top/new/best/ask/show stories and search all past discussions via Algolia."
+    api_key_required: false
+
+  dictionary:
+    file: tools/dictionary.py
+    title: "Dictionary & Thesaurus"
+    description: "Definitions, pronunciation, etymology, synonyms, antonyms, rhymes, and word associations."
+    api_key_required: false
+
+  dev_utils:
+    file: tools/dev_utils.py
+    title: "Developer Utilities"
+    description: "Hash (MD5/SHA256/SHA512), UUID gen, Base64 encode/decode, JSON format, regex test, URL encode, color convert."
+    api_key_required: false
+
+  package_search:
+    file: tools/package_search.py
+    title: "Package Search — PyPI / npm / DockerHub"
+    description: "Search Python packages on PyPI, JS packages on npm, and container images on Docker Hub."
+    api_key_required: false
+
+  network_tools:
+    file: tools/network_tools.py
+    title: "Network Tools — IP / DNS / WHOIS"
+    description: "IP geolocation, ASN lookup, DNS resolution, and domain WHOIS/RDAP data."
+    api_key_required: false
+
+  n8n_trigger:
+    file: tools/n8n_trigger.py
+    title: "n8n Workflow Trigger"
+    description: "Trigger any n8n automation workflow from chat. List workflows, call webhooks, get results."
+    requires_service: n8n
+    api_key_required: false
