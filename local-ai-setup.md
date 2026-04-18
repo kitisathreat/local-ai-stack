@@ -183,3 +183,173 @@ This stores key facts about you and your preferences, injected into future conve
 - Open Docker Desktop and check the Containers tab for error logs
 - Make sure port 3000 isn't already in use by something else
 - Try restarting Docker Desktop and re-running the command
+
+---
+
+## Phase 7: Code Assist Script (Claude Code Integration)
+
+This phase adds `scripts/code_assist.py` — a terminal-based AI coding assistant that connects to your already-running LM Studio and gives you five structured "code message series" modes, parallel multi-agent tasks, automatic model routing, and the ability to run code in Jupyter.
+
+Think of it like having Claude Code's agent loop, but powered by your local models.
+
+### One-time setup
+
+Open a terminal (PowerShell or Command Prompt) and run:
+
+```
+pip install openai websocket-client
+```
+
+That's the only setup needed. The script reads your `config/models.yaml` automatically.
+
+Also restart your stack once to pick up the Jupyter port change:
+
+```powershell
+.\scripts\stop.ps1
+.\scripts\start.ps1
+```
+
+---
+
+### How to start it
+
+From the project root folder:
+
+```powershell
+python scripts/code_assist.py --mode explain
+python scripts/code_assist.py --mode review
+python scripts/code_assist.py --mode fix
+python scripts/code_assist.py --mode test
+python scripts/code_assist.py --mode plan
+```
+
+You can also pin a specific model profile:
+
+```powershell
+python scripts/code_assist.py --mode fix --profile coding
+```
+
+Or turn off automatic model routing and always use one model:
+
+```powershell
+python scripts/code_assist.py --mode review --profile fixed
+```
+
+---
+
+### The 5 modes
+
+Each mode changes how the AI approaches your request. Think of them as different "hats" the assistant puts on.
+
+| Mode | What it does |
+|---|---|
+| `explain` | Walks through code or concepts in plain English, step by step |
+| `review` | Reviews your code for bugs, edge cases, and improvements |
+| `fix` | Finds the root cause of a bug and gives you a working fix |
+| `test` | Writes Python tests for your code (happy path, edge cases, errors) |
+| `plan` | Breaks a task into numbered steps without writing any code |
+
+---
+
+### Built-in commands (type these at the `You>` prompt)
+
+| Command | What it does |
+|---|---|
+| `/clear` | Wipes the conversation history and starts fresh |
+| `/compact` | Summarizes the whole conversation into one short message (saves context window space — use this when the conversation gets long) |
+| `/mode review` | Switches to a different mode mid-conversation |
+| `/file config/models.yaml` | Loads a file and injects its contents into the conversation so you can ask about it |
+| `/multi Write tests and review my parser` | Breaks the task into subtasks and runs them all in parallel, then combines the results |
+| `/history` | Shows how many turns are in the current conversation |
+| `/exit` | Quits the script |
+
+---
+
+### How automatic model routing works
+
+By default, before answering you, the script asks the fast Qwen 9B model: "How hard is this task?" The answer determines which model handles the real response:
+
+| Difficulty | Model used |
+|---|---|
+| Easy (simple question) | Qwen 3.5 9B — fast, low GPU load |
+| Medium (reasoning needed) | DeepSeek R1 8B — your default quality model |
+| Hard (complex code) | Qwen Coder — code-optimized |
+| Expert (architecture/research) | Qwen 3.5 35B — most capable, slowest |
+
+The terminal shows you which model was chosen, like:
+```
+[Task: HARD → using coding model]
+```
+
+Use `--profile fixed` to turn this off and always use the same model.
+
+---
+
+### Running code in Jupyter
+
+When the AI writes a code block in its response, you'll see:
+
+```
+Run code block in Jupyter? [y/N]:
+```
+
+Type `y` and the code runs inside your Jupyter Docker container. The output prints in the terminal, and the AI can see it too — so you can ask follow-up questions like "why did it print that?" or "fix the error above."
+
+---
+
+### Parallel multi-agent tasks
+
+The `/multi` command lets you hand the AI a complex task and have it work on multiple parts at the same time:
+
+```
+/multi Write a function to parse models.yaml, write tests for it, and review the code
+```
+
+What happens:
+1. The AI breaks this into 2-4 subtasks
+2. Shows you the list and asks to confirm
+3. Runs all subtasks simultaneously (your models are already configured for up to 4 parallel requests)
+4. Synthesizes all results into one combined response
+
+---
+
+### Example session
+
+```
+python scripts/code_assist.py --mode explain
+
+You> What does a dictionary do in Python?
+Assistant: A dictionary is like a real-world lookup table...
+
+You> /mode fix
+[Switched to fix mode. History cleared.]
+
+You> /file scripts/start.ps1
+[File loaded: scripts/start.ps1 (5842 chars)]
+
+You> The script fails at the Docker check step. Here's the error: ...
+Assistant: The root cause is... [provides fix]
+
+Run code block in Jupyter? [y/N]: n
+
+You> /compact
+[Compacted: 8 turns → 1 summary]
+
+You> /exit
+```
+
+---
+
+### Troubleshooting
+
+**"Missing dependency: run pip install openai"**  
+Run `pip install openai websocket-client` in your terminal.
+
+**"Profile 'X' not found in config/models.yaml"**  
+Valid profiles are: `fast`, `quality`, `coding`, `large`. Check your spelling.
+
+**Jupyter output says "Could not connect to Jupyter"**  
+Make sure you restarted the stack after the `docker-compose.yml` change. Run `.\scripts\start.ps1`.
+
+**Model gives very short or nonsensical answers**  
+The context window may be full. Type `/compact` to summarize the conversation and free up space.

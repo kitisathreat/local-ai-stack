@@ -352,6 +352,38 @@ Test-Optional "Qdrant"     "http://localhost:6333/health"
 Test-Optional "Ollama"     "http://localhost:11434"
 Test-Optional "n8n"        "http://localhost:5678"
 
+# -- CODE ASSIST SCRIPT --
+"`n[ Code Assist Script ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
+
+Test-Case "Python syntax: code_assist.py" {
+    $out = python -m py_compile "$root\scripts\code_assist.py" 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Syntax error: $out" }
+}
+
+Test-Case "All 5 prompt files exist" {
+    foreach ($mode in @("explain","review","fix","test","plan")) {
+        $p = "$root\scripts\prompts\$mode.txt"
+        if (-not (Test-Path $p)) { throw "Missing prompt file: $p" }
+    }
+}
+
+Test-Case "LM Studio API endpoint reachable (code_assist target)" {
+    $r = Invoke-RestMethod http://localhost:1234/v1/models -TimeoutSec 5
+    if ($r.data.Count -eq 0) { throw "No models at LM Studio API endpoint" }
+}
+
+Test-Case "code_assist.py --help exits cleanly" {
+    $out = python "$root\scripts\code_assist.py" --help 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Script exited with error on --help: $out" }
+    if ($out -notmatch "mode") { throw "--help output missing expected 'mode' flag description" }
+}
+
+Test-Case "code_assist.py accepts --profile and --mode flags" {
+    # Pipe empty input to trigger clean startup then EOF exit
+    $out = "" | python "$root\scripts\code_assist.py" --profile coding --mode review 2>&1
+    if ($LASTEXITCODE -gt 1) { throw "Script crashed on startup (exit $LASTEXITCODE): $out" }
+}
+
 # -- SUMMARY --
 "`n=====================================" | Tee-Object -FilePath $log -Append | Write-Host
 "  PASSED: $pass" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Green
