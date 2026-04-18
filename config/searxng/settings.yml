@@ -1,0 +1,195 @@
+use_default_settings: true
+
+server:
+  secret_key: "local-ai-stack-searxng-secret-change-in-production"
+  limiter: false
+  image_proxy: true
+  method: "GET"
+
+ui:
+  static_use_hash: true
+  default_locale: en
+  query_in_title: true
+  infinite_scroll: true
+  default_theme: simple
+
+search:
+  safe_search: 0
+  autocomplete: "duckduckgo"
+  default_lang: "en"
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+  formats:
+    - html
+    - json
+
+# Engines enabled for broad knowledge coverage
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: false
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    language: en
+    disabled: false
+
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    disabled: false
+
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+    disabled: false
+
+  - name: arxiv
+    engine: arxiv
+    shortcut: arx
+    disabled: false
+
+  - name: wolframalpha
+    engine: wolframalpha_noapi
+    shortcut: wa
+    disabled: false
+
+  - name: openstreetmap
+    engine: openstreetmap
+    shortcut: osm
+    disabled: false
+
+  - name: currency_convert
+    engine: currency_convert
+    shortcut: cc
+    disabled: false
+
+  - name: pypi
+    engine: pypi
+    shortcut: pypi
+    disabled: false
+
+  - name: npm
+    engine: npm
+    shortcut: npm
+    disabled: false
+
+  - name: dockerhub
+    engine: docker_hub
+    shortcut: dh
+    disabled: false
+
+  - name: reddit
+    engine: reddit
+    shortcut: re
+    disabled: false
+
+  - name: genius
+    engine: genius
+    shortcut: gen
+    disabled: false
+
+  # ── Academic & Scientific ────────────────────────────────────────────────────
+  - name: pubmed
+    engine: pubmed
+    shortcut: pm
+    disabled: false
+
+  - name: semantic scholar
+    engine: semantic_scholar
+    shortcut: ss
+    disabled: false
+
+  - name: base
+    engine: base
+    shortcut: base
+    disabled: false
+
+  - name: crossref
+    engine: crossref
+    shortcut: cr
+    disabled: false
+
+  - name: openalex
+    engine: openalex
+    shortcut: oa
+    disabled: false
+
+  - name: paperswithcode
+    engine: paper_with_code
+    shortcut: pwc
+    disabled: false
+
+  - name: openaire
+    engine: openaire
+    shortcut: oai
+    disabled: false
+
+  - name: core
+    engine: core
+    shortcut: core
+    disabled: false
+
+  - name: zbmath
+    engine: zbmath
+    shortcut: zb
+    disabled: false
+
+  - name: unpaywall
+    engine: unpaywall
+    shortcut: up
+    disabled: false
+
+  - name: biorxiv
+    engine: biorxiv
+    shortcut: brx
+    disabled: false
+
+  - name: internet archive
+    engine: internet_archive
+    shortcut: ia
+    disabled: false
+
+  - name: gutenberg
+    engine: gutenberg
+    shortcut: gut
+    disabled: false
+
+  # ── News & Current Events ────────────────────────────────────────────────────
+  - name: google news
+    engine: google_news
+    shortcut: gn
+    disabled: false
+
+  - name: bing news
+    engine: bing_news
+    shortcut: bn
+    disabled: false
+
+  - name: hackernews
+    engine: hackernews
+    shortcut: hn
+    disabled: false
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 30.0
+  pool_connections: 100
+  pool_maxsize: 20

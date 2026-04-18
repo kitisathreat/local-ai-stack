@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+jobs:
+  # ── Python static analysis: syntax, metadata, config consistency ─────────────
+  python-tests:
+    name: Python — Tools, Pipelines & Config
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pytest pyyaml
+
+      - name: Run tool & pipeline tests
+        run: python3 -m pytest tests/test_tools.py -v --tb=short
+
+      - name: Run config & compose tests
+        run: python3 -m pytest tests/test_config.py -v --tb=short
+
+  # ── PowerShell script syntax ──────────────────────────────────────────────────
+  powershell-syntax:
+    name: PowerShell — Script Syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check PS1 script syntax
+        shell: pwsh
+        run: |
+          $failed = 0
+          foreach ($f in Get-ChildItem "scripts/*.ps1") {
+            $errs = $null
+            [System.Management.Automation.PSParser]::Tokenize(
+              (Get-Content $f.FullName -Raw), [ref]$errs
+            ) | Out-Null
+            if ($errs.Count -gt 0) {
+              Write-Host "FAIL: $($f.Name) — $($errs.Count) error(s)" -ForegroundColor Red
+              $errs | ForEach-Object { Write-Host "  Line $($_.Token.StartLine): $_" }
+              $failed++
+            } else {
+              Write-Host "PASS: $($f.Name)" -ForegroundColor Green
+            }
+          }
+          if ($failed -gt 0) { exit 1 }
+
+  # ── YAML lint: all config files parse cleanly ─────────────────────────────────
+  yaml-lint:
+    name: YAML — Config File Validity
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: Validate all YAML files
+        run: |
+          python - <<'EOF'
+          import yaml, sys, pathlib
+
+          files = [
+            "config/models.yaml",
+            "config/tools.yaml",
+            "config/ollama-models.yaml",
+            "config/searxng/settings.yml",
+            "knowledge/sources.yaml",
+            "docker-compose.yml",
+          ]
+
+          failed = []
+          for path in files:
+            p = pathlib.Path(path)
+            if not p.exists():
+              print(f"MISSING: {path}")
+              failed.append(path)
+              continue
+            try:
+              yaml.safe_load(p.read_text(encoding="utf-8"))
+              print(f"OK:      {path}")
+            except yaml.YAMLError as e:
+              print(f"FAIL:    {path} — {e}")
+              failed.append(path)
+
+          if failed:
+            sys.exit(1)
+          EOF

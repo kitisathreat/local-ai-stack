@@ -21,7 +21,7 @@ $root = "C:\Users\Kit\Documents\claude code"
 # -- SYNTAX CHECKS --
 "`n[ Syntax Checks ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
 
-foreach ($script in @("start.ps1","stop.ps1","switch-model.ps1")) {
+foreach ($script in @("start.ps1","stop.ps1","switch-model.ps1","setup-connectors.ps1","setup-tools.ps1","setup-ollama-models.ps1")) {
     Test-Case "PS syntax: $script" {
         $errors = $null
         $src = Get-Content "$root\scripts\$script" -Raw
@@ -43,10 +43,17 @@ Test-Case "models.yaml has 'default' key" {
     if (-not $hit) { throw "default key not found" }
 }
 
-Test-Case "models.yaml has all 4 profiles" {
+Test-Case "models.yaml has all original 4 profiles" {
     $yaml = Get-Content "$root\config\models.yaml" -Raw
     foreach ($p in @("fast","quality","coding","large")) {
         if ($yaml -notmatch "  ${p}:") { throw "Missing profile: $p" }
+    }
+}
+
+Test-Case "models.yaml has new connector profiles" {
+    $yaml = Get-Content "$root\config\models.yaml" -Raw
+    foreach ($p in @("creative","analyst","balanced","roleplay","summarizer")) {
+        if ($yaml -notmatch "  ${p}:") { throw "Missing new profile: $p" }
     }
 }
 
@@ -68,6 +75,151 @@ Test-Case "docker-compose has jupyter service" {
 Test-Case "docker-compose WEBUI_AUTH=False set" {
     $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
     if ($out -notmatch "WEBUI_AUTH.*False") { throw "WEBUI_AUTH not set to False" }
+}
+
+Test-Case "docker-compose has searxng service" {
+    $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
+    if ($out -notmatch "searxng") { throw "searxng service missing" }
+}
+
+Test-Case "docker-compose has pipelines service" {
+    $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
+    if ($out -notmatch "pipelines") { throw "pipelines service missing" }
+}
+
+Test-Case "docker-compose has qdrant service" {
+    $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
+    if ($out -notmatch "qdrant") { throw "qdrant service missing" }
+}
+
+Test-Case "docker-compose has ollama service" {
+    $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
+    if ($out -notmatch "ollama") { throw "ollama service missing" }
+}
+
+Test-Case "docker-compose has n8n service" {
+    $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
+    if ($out -notmatch "n8n") { throw "n8n service missing" }
+}
+
+Test-Case "searxng settings.yml exists" {
+    Test-Path "$root\config\searxng\settings.yml"
+}
+
+Test-Case "searxng settings.yml has JSON format enabled" {
+    $yaml = Get-Content "$root\config\searxng\settings.yml" -Raw
+    if ($yaml -notmatch "json") { throw "json format not in searxng config" }
+}
+
+Test-Case "ollama-models.yaml exists" {
+    Test-Path "$root\config\ollama-models.yaml"
+}
+
+Test-Case "ollama-models.yaml has auto_pull section" {
+    $yaml = Get-Content "$root\config\ollama-models.yaml" -Raw
+    if ($yaml -notmatch "auto_pull") { throw "auto_pull section missing" }
+}
+
+Test-Case "tools directory exists with Python tool files" {
+    $files = Get-ChildItem "$root\tools\*.py" -ErrorAction SilentlyContinue
+    if ($files.Count -eq 0) { throw "No .py tool files in tools/" }
+}
+
+Test-Case "all tool files have required title metadata" {
+    $files = Get-ChildItem "$root\tools\*.py"
+    foreach ($f in $files) {
+        $content = Get-Content $f.FullName -Raw
+        if ($content -notmatch "title:") { throw "$($f.Name) missing 'title:' metadata" }
+    }
+}
+
+Test-Case "academic tool files exist (pubmed, semantic_scholar, crossref, openalex, zenodo, dblp, unpaywall, nasa_ads)" {
+    $required = @("pubmed","semantic_scholar","crossref","openalex","zenodo","dblp","unpaywall","nasa_ads")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing academic tool: $t.py" }
+    }
+}
+
+Test-Case "extended tool files exist (finance, clinicaltrials, openfda, pubchem, open_library, rss_reader, hackernews, dictionary, dev_utils, package_search, network_tools, n8n_trigger)" {
+    $required = @("finance","clinicaltrials","openfda","pubchem","open_library","rss_reader","hackernews","dictionary","dev_utils","package_search","network_tools","n8n_trigger")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing tool: $t.py" }
+    }
+}
+
+Test-Case "Phase 4 tool files exist (excel_tool, fred, yahoo_finance_extended, sec_edgar, forex, financial_calculator, world_bank, technical_analysis)" {
+    $required = @("excel_tool","fred","yahoo_finance_extended","sec_edgar","forex","financial_calculator","world_bank","technical_analysis")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing Phase 4 tool: $t.py" }
+    }
+}
+
+Test-Case "Phase 5 tool files exist (nasa_apis, alpha_vantage, finnhub, acled, europeana, noaa_climate, materials_project, simbad, uniprot, usgs, ensembl)" {
+    $required = @("nasa_apis","alpha_vantage","finnhub","acled","europeana","noaa_climate","materials_project","simbad","uniprot","usgs","ensembl")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing Phase 5 tool: $t.py" }
+    }
+}
+
+Test-Case "Phase 6 tool files exist (chart_generator, financial_model, jupyter_tool, ask_clarification)" {
+    $required = @("chart_generator","financial_model","jupyter_tool","ask_clarification")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing Phase 6 tool: $t.py" }
+    }
+}
+
+Test-Case "clarification_filter pipeline exists" {
+    Test-Path "$root\pipelines\clarification_filter.py"
+}
+
+Test-Case "tools directory has at least 52 tool files" {
+    $files = Get-ChildItem "$root\tools\*.py"
+    if ($files.Count -lt 52) { throw "Only $($files.Count) tool files found, expected 52+" }
+}
+
+Test-Case "knowledge/sources.yaml covers 8+ knowledge domains" {
+    $yaml = Get-Content "$root\knowledge\sources.yaml" -Raw
+    $domains = @("biomedical","physics","chemistry","mathematics","computer_science","social_sciences","open_data")
+    foreach ($d in $domains) {
+        if ($yaml -notmatch $d) { throw "Missing knowledge domain: $d" }
+    }
+}
+
+Test-Case "searxng settings.yml has academic engines" {
+    $yaml = Get-Content "$root\config\searxng\settings.yml" -Raw
+    foreach ($engine in @("pubmed","semantic scholar","paperswithcode","openaire","biorxiv")) {
+        if ($yaml -notmatch $engine) { throw "Missing SearXNG engine: $engine" }
+    }
+}
+
+Test-Case "pipelines directory exists with pipeline files" {
+    $files = Get-ChildItem "$root\pipelines\*.py" -ErrorAction SilentlyContinue
+    if ($files.Count -eq 0) { throw "No .py pipeline files in pipelines/" }
+}
+
+Test-Case "knowledge/sources.yaml exists" {
+    Test-Path "$root\knowledge\sources.yaml"
+}
+
+Test-Case "setup-connectors.ps1 exists and has valid syntax" {
+    $errors = $null
+    $src = Get-Content "$root\scripts\setup-connectors.ps1" -Raw
+    [System.Management.Automation.PSParser]::Tokenize($src, [ref]$errors) | Out-Null
+    if ($errors.Count -gt 0) { throw "$($errors.Count) syntax error(s)" }
+}
+
+Test-Case "setup-tools.ps1 exists and has valid syntax" {
+    $errors = $null
+    $src = Get-Content "$root\scripts\setup-tools.ps1" -Raw
+    [System.Management.Automation.PSParser]::Tokenize($src, [ref]$errors) | Out-Null
+    if ($errors.Count -gt 0) { throw "$($errors.Count) syntax error(s)" }
+}
+
+Test-Case "setup-ollama-models.ps1 exists and has valid syntax" {
+    $errors = $null
+    $src = Get-Content "$root\scripts\setup-ollama-models.ps1" -Raw
+    [System.Management.Automation.PSParser]::Tokenize($src, [ref]$errors) | Out-Null
+    if ($errors.Count -gt 0) { throw "$($errors.Count) syntax error(s)" }
 }
 
 Test-Case "squarespace-embed.html exists" {
@@ -109,7 +261,7 @@ function Get-ModelConfig($profileName, $configPath) {
     return $config
 }
 
-foreach ($profile in @("fast","quality","coding","large")) {
+foreach ($profile in @("fast","quality","coding","large","creative","analyst","balanced","roleplay","summarizer")) {
     Test-Case "Parser: '$profile' has required keys" {
         $m = Get-ModelConfig $profile "$root\config\models.yaml"
         foreach ($key in @("id","gpu","context","parallel","description")) {
@@ -181,6 +333,24 @@ Test-Case "Docker container healthy" {
     $status = docker inspect open-webui --format "{{.State.Health.Status}}" 2>&1
     if ($status -ne "healthy") { throw "Container status: $status" }
 }
+
+# -- CONNECTOR SERVICE CHECKS (soft — warn on failure, don't count toward pass/fail) --
+"`n[ Connector Service Checks (informational) ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
+
+function Test-Optional($name, $url) {
+    try {
+        $r = Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        "  [UP]   $name at $url" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Green
+    } catch {
+        "  [DOWN] $name — start with: docker compose up -d" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
+    }
+}
+
+Test-Optional "SearXNG"    "http://localhost:4000"
+Test-Optional "Pipelines"  "http://localhost:9099"
+Test-Optional "Qdrant"     "http://localhost:6333/health"
+Test-Optional "Ollama"     "http://localhost:11434"
+Test-Optional "n8n"        "http://localhost:5678"
 
 # -- SUMMARY --
 "`n=====================================" | Tee-Object -FilePath $log -Append | Write-Host

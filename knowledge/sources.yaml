@@ -1,0 +1,293 @@
+# Knowledge Base Sources
+# Documents and data sources to ingest into Open WebUI's RAG system.
+# Upload files via Open WebUI Admin > Documents, or use the RAG API.
+#
+# Qdrant (vector DB) stores embeddings at: http://localhost:6333
+# Open WebUI RAG docs: https://docs.openwebui.com/features/rag/
+
+# ── Knowledge Domains ─────────────────────────────────────────────────────────
+knowledge_bases:
+  # General reference
+  general:
+    description: "Broad factual knowledge for general Q&A"
+    sources:
+      - type: web
+        url: https://en.wikipedia.org/wiki/Main_Page
+        refresh: weekly
+        notes: "Wikipedia main page — use URL reader tool for specific articles"
+
+  # AI & Machine Learning
+  ai_ml:
+    description: "AI/ML concepts, models, and research"
+    sources:
+      - type: web
+        url: https://huggingface.co/docs
+        refresh: monthly
+        notes: "HuggingFace documentation"
+      - type: web
+        url: https://docs.openwebui.com
+        refresh: monthly
+        notes: "Open WebUI documentation"
+      - type: web
+        url: https://lmstudio.ai/docs
+        refresh: monthly
+        notes: "LM Studio documentation"
+      - type: arxiv
+        category: cs.AI
+        max_papers: 50
+        refresh: weekly
+        notes: "Latest AI research papers"
+      - type: arxiv
+        category: cs.LG
+        max_papers: 50
+        refresh: weekly
+        notes: "Latest ML research papers"
+      - type: semantic_scholar
+        query: "large language models"
+        max_papers: 30
+        refresh: weekly
+        notes: "Top LLM papers by citation count"
+      - type: dblp
+        venue: "NeurIPS"
+        refresh: yearly
+        notes: "NeurIPS proceedings"
+
+  # Biomedical & Life Sciences
+  biomedical:
+    description: "Medicine, biology, pharmacology, genetics, neuroscience"
+    sources:
+      - type: pubmed
+        query: "clinical trial meta-analysis"
+        max_articles: 50
+        refresh: weekly
+        notes: "High-impact clinical research"
+      - type: pubmed
+        database: pmc
+        notes: "PubMed Central open-access full texts"
+      - type: web
+        url: https://www.ncbi.nlm.nih.gov/books/NBK430685/
+        refresh: monthly
+        notes: "NCBI Bookshelf — free medical textbooks"
+      - type: web
+        url: https://medlineplus.gov
+        refresh: monthly
+        notes: "NIH MedlinePlus consumer health info"
+      - type: openalex
+        concept: "medicine"
+        refresh: monthly
+        notes: "OpenAlex medical works overview"
+
+  # Physics & Astronomy
+  physics:
+    description: "Physics, astrophysics, cosmology, quantum mechanics"
+    sources:
+      - type: arxiv
+        category: astro-ph
+        max_papers: 30
+        refresh: weekly
+        notes: "Astrophysics preprints"
+      - type: arxiv
+        category: quant-ph
+        max_papers: 20
+        refresh: weekly
+        notes: "Quantum physics preprints"
+      - type: arxiv
+        category: hep-th
+        max_papers: 20
+        refresh: weekly
+        notes: "High energy physics theory"
+      - type: nasa_ads
+        query: "galaxy formation simulation"
+        max_papers: 20
+        refresh: monthly
+        notes: "NASA ADS top astrophysics papers"
+      - type: web
+        url: https://physics.nist.gov/cuu/Constants/
+        refresh: yearly
+        notes: "NIST physical constants reference"
+
+  # Chemistry & Materials
+  chemistry:
+    description: "Chemistry, materials science, chemical engineering"
+    sources:
+      - type: arxiv
+        category: cond-mat
+        max_papers: 20
+        refresh: weekly
+        notes: "Condensed matter physics / materials"
+      - type: zenodo
+        query: "chemistry dataset"
+        record_type: dataset
+        refresh: monthly
+        notes: "Open chemistry datasets on Zenodo"
+      - type: web
+        url: https://pubchem.ncbi.nlm.nih.gov
+        refresh: real_time
+        notes: "PubChem — use web search or URL reader for compound lookups"
+
+  # Mathematics
+  mathematics:
+    description: "Pure and applied mathematics"
+    sources:
+      - type: arxiv
+        category: math
+        max_papers: 20
+        refresh: weekly
+        notes: "Mathematics preprints (all subcategories)"
+      - type: web
+        url: https://mathworld.wolfram.com
+        refresh: monthly
+        notes: "Wolfram MathWorld encyclopedia"
+      - type: web
+        url: https://encyclopediaofmath.org
+        refresh: yearly
+        notes: "Encyclopedia of Mathematics"
+
+  # Computer Science
+  computer_science:
+    description: "Computer science, software engineering, systems"
+    sources:
+      - type: dblp
+        notes: "DBLP CS bibliography — use dblp tool for search"
+      - type: arxiv
+        category: cs.PL
+        max_papers: 15
+        refresh: weekly
+        notes: "Programming languages research"
+      - type: arxiv
+        category: cs.SE
+        max_papers: 15
+        refresh: weekly
+        notes: "Software engineering research"
+      - type: arxiv
+        category: cs.CR
+        max_papers: 15
+        refresh: weekly
+        notes: "Cryptography and security"
+      - type: web
+        url: https://paperswithcode.com
+        refresh: weekly
+        notes: "ML papers with code implementations"
+
+  # Economics & Social Sciences
+  social_sciences:
+    description: "Economics, psychology, sociology, political science"
+    sources:
+      - type: web
+        url: https://www.nber.org/papers
+        refresh: weekly
+        notes: "NBER working papers in economics"
+      - type: openalex
+        concept: "economics"
+        refresh: monthly
+        notes: "OpenAlex economics works"
+      - type: web
+        url: https://osf.io/preprints/
+        refresh: weekly
+        notes: "Open Science Framework preprints (psychology, social science)"
+
+  # Open Data & Datasets
+  open_data:
+    description: "Scientific datasets, research data repositories"
+    sources:
+      - type: zenodo
+        notes: "CERN Zenodo — use zenodo tool for search"
+      - type: web
+        url: https://data.gov
+        refresh: monthly
+        notes: "US Government open data"
+      - type: web
+        url: https://datasetsearch.research.google.com
+        refresh: real_time
+        notes: "Google Dataset Search — use web search tool"
+      - type: web
+        url: https://www.kaggle.com/datasets
+        refresh: weekly
+        notes: "Kaggle community datasets"
+
+  # PC Hardware & Gaming (Kit's specialty)
+  hardware:
+    description: "PC hardware, GPU, gaming, and tech specs"
+    sources:
+      - type: web
+        url: https://www.techpowerup.com/gpu-specs/
+        refresh: monthly
+        notes: "GPU specifications database"
+      - type: web
+        url: https://www.tomshardware.com
+        refresh: weekly
+        notes: "Hardware reviews and news"
+      - type: web
+        url: https://www.reddit.com/r/hardware.json
+        refresh: daily
+        notes: "r/hardware community discussions"
+
+  # Local AI & Self-Hosting
+  local_ai:
+    description: "Local AI tools, self-hosting, and open source models"
+    sources:
+      - type: web
+        url: https://ollama.com/library
+        refresh: weekly
+        notes: "Ollama model library"
+      - type: web
+        url: https://huggingface.co/models
+        refresh: weekly
+        notes: "HuggingFace model hub"
+      - type: web
+        url: https://github.com/open-webui/open-webui
+        refresh: monthly
+        notes: "Open WebUI GitHub repository"
+
+  # Development & Coding
+  development:
+    description: "Programming, software development, DevOps"
+    sources:
+      - type: web
+        url: https://docs.docker.com
+        refresh: monthly
+        notes: "Docker documentation"
+      - type: web
+        url: https://docs.python.org/3/
+        refresh: monthly
+        notes: "Python 3 documentation"
+      - type: web
+        url: https://stackoverflow.com
+        refresh: real_time
+        notes: "Use web search or GitHub search tool for live queries"
+
+# ── RAG Configuration ─────────────────────────────────────────────────────────
+rag_settings:
+  chunk_size: 1500          # Characters per chunk
+  chunk_overlap: 200        # Overlap between chunks
+  top_k: 5                  # Documents retrieved per query
+  similarity_threshold: 0.3 # Minimum similarity score (0-1)
+  embedding_model: "nomic-ai/nomic-embed-text-v1.5-GGUF"
+
+# ── Document Types Supported ──────────────────────────────────────────────────
+supported_formats:
+  - PDF
+  - DOCX
+  - TXT
+  - MD (Markdown)
+  - HTML
+  - CSV
+  - XLSX
+  - PPTX
+  - YouTube transcripts (via URL)
+  - Web pages (via URL)
+
+# ── Ingestion Instructions ────────────────────────────────────────────────────
+# 1. Via Open WebUI UI:
+#    - Go to http://localhost:3000
+#    - Workspace > Knowledge > Create Knowledge Base
+#    - Upload files or paste URLs
+#    - Toggle RAG in any chat to query the knowledge base
+#
+# 2. Via API (curl example):
+#    curl -X POST http://localhost:3000/api/v1/knowledge/create \
+#      -H "Content-Type: application/json" \
+#      -d '{"name": "My KB", "description": "Description"}'
+#
+# 3. Via setup script:
+#    .\scripts\setup-connectors.ps1 -SetupKnowledge
