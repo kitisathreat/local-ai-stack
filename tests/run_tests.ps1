@@ -161,9 +161,16 @@ Test-Case "Phase 5 tool files exist (nasa_apis, alpha_vantage, finnhub, acled, e
     }
 }
 
-Test-Case "tools directory has at least 48 tool files" {
+Test-Case "Phase 6 tool files exist (chart_generator, financial_model, jupyter_tool)" {
+    $required = @("chart_generator","financial_model","jupyter_tool")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing Phase 6 tool: $t.py" }
+    }
+}
+
+Test-Case "tools directory has at least 51 tool files" {
     $files = Get-ChildItem "$root\tools\*.py"
-    if ($files.Count -lt 48) { throw "Only $($files.Count) tool files found, expected 48+" }
+    if ($files.Count -lt 51) { throw "Only $($files.Count) tool files found, expected 51+" }
 }
 
 Test-Case "knowledge/sources.yaml covers 8+ knowledge domains" {

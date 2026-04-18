@@ -375,3 +375,26 @@ additional_tools:
     title: "Ensembl — Genomics, Gene Sequences & Variants"
     description: "Query Ensembl for 250+ species. Gene coordinates, DNA/protein sequences, SNP/variant data, ortholog mapping across species, and gene expression. Essential for bioinformatics. No API key required."
     api_key_required: false
+
+# ── Phase 6: Financial Modelling & Charting ───────────────────────────────────
+  chart_generator:
+    file: tools/chart_generator.py
+    title: "Financial Chart Generator — Candlesticks, Comparison & Technical Charts"
+    description: "Generate inline financial charts: candlestick price history with volume, multi-asset normalized comparison, full technical analysis panel (RSI/MACD/Bollinger), and return correlation heatmap. Works for stocks, ETFs, crypto, forex. No API key required."
+    api_key_required: false
+    requirements: "httpx matplotlib mplfinance pandas numpy"
+
+  financial_model:
+    file: tools/financial_model.py
+    title: "Financial Modelling — DCF, Monte Carlo, Efficient Frontier & Scenarios"
+    description: "Professional financial models with embedded charts: DCF valuation with WACC/terminal-growth sensitivity heatmap, Monte Carlo stock price simulation (GBM fan chart), Markowitz Efficient Frontier for portfolio optimization, and bear/base/bull scenario P&L analysis."
+    api_key_required: false
+    requirements: "httpx matplotlib pandas numpy scipy"
+
+  jupyter_tool:
+    file: tools/jupyter_tool.py
+    title: "Jupyter Code Executor — Run Custom Python"
+    description: "Execute arbitrary Python in the local Jupyter kernel (scipy-notebook with pandas, numpy, scipy, matplotlib, scikit-learn, statsmodels). Returns stdout and matplotlib figures as inline images. Ideal for custom models, data analysis, and ML experiments."
+    requires_service: jupyter
+    api_key_required: false
+    requirements: "httpx websockets"
