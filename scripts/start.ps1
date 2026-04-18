@@ -117,11 +117,27 @@ lms load $model['id'] --gpu $model['gpu'] --context-length $model['context'] --p
 if ($LASTEXITCODE -ne 0) { Write-Fail "Failed to load model"; exit 1 }
 Write-OK "Model loaded: $($model['id'])"
 
-# ── 5. Done ──────────────────────────────────────────────────────────────────
+# ── 5. Tailscale Serve (HTTPS for Squarespace embed) ─────────────────────────
+Write-Step "Ensuring Tailscale Serve is active..."
+$tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+$serveStatus = & $tailscale serve status 2>&1
+if ($serveStatus -notlike "*localhost:3000*") {
+    & $tailscale serve --bg http://localhost:3000 2>&1 | Out-Null
+    Start-Sleep 2
+    $serveStatus = & $tailscale serve status 2>&1
+}
+if ($serveStatus -like "*localhost:3000*") {
+    Write-OK "Tailscale Serve active → https://desktop-j4g42gi.taila2838f.ts.net"
+} else {
+    Write-Host "   Note: Tailscale Serve not configured (run once as admin to enable)" -ForegroundColor Yellow
+}
+
+# ── 6. Done ──────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "=========================================" -ForegroundColor Green
 Write-Host "  Stack is ready!" -ForegroundColor Green
-Write-Host "  Local:   http://localhost:3000" -ForegroundColor Green
-Write-Host "  Remote:  http://100.65.252.37:3000" -ForegroundColor Green
-Write-Host "  Model:   $($model['name'])" -ForegroundColor Green
+Write-Host "  Local:    http://localhost:3000" -ForegroundColor Green
+Write-Host "  Tailscale: https://desktop-j4g42gi.taila2838f.ts.net" -ForegroundColor Green
+Write-Host "  Web:      https://www.mylensandi.com/ai" -ForegroundColor Green
+Write-Host "  Model:    $($model['name'])" -ForegroundColor Green
 Write-Host "=========================================" -ForegroundColor Green
