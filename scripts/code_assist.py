@@ -23,6 +23,19 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+# Parse args early so --help always works even without dependencies installed
+_parser = argparse.ArgumentParser(
+    description="Kit's local AI coding assistant — connects to LM Studio",
+    add_help=True
+)
+_parser.add_argument("--mode", choices=["explain","review","fix","test","plan"], default="explain",
+    help="Conversation mode: explain, review, fix, test, plan (default: explain)")
+_parser.add_argument("--profile", choices=["fast","quality","coding","large","fixed"], default="",
+    help="Model profile from models.yaml. Use 'fixed' to disable auto-routing.")
+if "--help" in sys.argv or "-h" in sys.argv:
+    _parser.print_help()
+    sys.exit(0)
+
 try:
     from openai import OpenAI
 except ImportError:
@@ -479,18 +492,7 @@ def print_banner(mode: str, profile: str, model_id: str, auto_route: bool):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Kit's local AI coding assistant — connects to LM Studio"
-    )
-    parser.add_argument(
-        "--mode", choices=VALID_MODES, default="explain",
-        help="Conversation mode: explain, review, fix, test, plan (default: explain)"
-    )
-    parser.add_argument(
-        "--profile", choices=VALID_PROFILES + ["fixed"], default="",
-        help="Model profile from models.yaml. Use 'fixed' to disable auto-routing."
-    )
-    args = parser.parse_args()
+    args = _parser.parse_args()
 
     # Resolve starting profile
     if not args.profile or args.profile == "fixed":
