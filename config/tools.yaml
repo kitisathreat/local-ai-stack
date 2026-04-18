@@ -489,8 +489,8 @@ additional_tools:
   soulseek:
     file: tools/soulseek.py
     title: "Soulseek — P2P Music Search & Download (slskd)"
-    description: "Search the Soulseek network and queue downloads through a local slskd daemon. Requires slskd running with API key access (https://github.com/slskd/slskd)."
-    requires_service: slskd
+    description: "Search the Soulseek network and queue downloads through a slskd daemon (run separately: https://github.com/slskd/slskd). Point SLSKD_URL + SLSKD_API_KEY at your instance."
+    requires_service: null
     default_enabled: false
     api_key_required: true
     api_key_url: "https://github.com/slskd/slskd"
