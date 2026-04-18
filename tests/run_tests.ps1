@@ -1,4 +1,9 @@
-$log = "C:\Users\Kit\Documents\test_results.txt"
+param(
+    # Run in CI mode: skips live-service checks that require Docker/LM Studio/Open WebUI
+    [switch]$CI
+)
+
+$log = if ($CI) { "$PSScriptRoot\ci_results.txt" } else { "C:\Users\Kit\Documents\test_results.txt" }
 $pass = 0; $fail = 0
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -283,55 +288,61 @@ Test-Case "Parser: unknown profile returns empty" {
 }
 
 # -- LIVE SERVICE CHECKS --
-"`n[ Live Service Checks ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
+if (-not $CI) {
+    "`n[ Live Service Checks ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
 
-Test-Case "Open WebUI responds HTTP 200" {
-    $r = Invoke-WebRequest http://localhost:3000 -UseBasicParsing -TimeoutSec 5
-    if ($r.StatusCode -ne 200) { throw "Got $($r.StatusCode)" }
-}
-
-Test-Case "Open WebUI auth is disabled" {
-    $cfg = Invoke-RestMethod http://localhost:3000/api/config -TimeoutSec 5
-    if ($cfg.features.auth -ne $false) { throw "Auth is not disabled" }
-}
-
-Test-Case "LM Studio server responding" {
-    $r = Invoke-RestMethod http://localhost:1234/v1/models -TimeoutSec 5
-    if ($r.data.Count -eq 0) { throw "No models returned" }
-}
-
-# Get auth token (WEBUI_AUTH=False allows empty-credential signin)
-$script:token = $null
-try {
-    $authResp = Invoke-RestMethod http://localhost:3000/api/v1/auths/signin `
-        -Method Post `
-        -Body '{"email":"","password":""}' `
-        -ContentType "application/json" `
-        -TimeoutSec 5
-    $script:token = $authResp.token
-} catch {}
-
-Test-Case "Open WebUI sees LM Studio models" {
-    if (-not $script:token) { throw "Could not obtain auth token" }
-    $headers = @{Authorization = "Bearer $script:token"}
-    $r = Invoke-RestMethod http://localhost:3000/api/models -Headers $headers -TimeoutSec 5
-    if ($r.data.Count -eq 0) { throw "No models visible in Open WebUI" }
-}
-
-Test-Case "Kit's Assistant model exists" {
-    if (-not $script:token) { throw "Could not obtain auth token" }
-    $headers = @{Authorization = "Bearer $script:token"}
-    $r = Invoke-RestMethod http://localhost:3000/api/models -Headers $headers -TimeoutSec 5
-    $kit = $r.data | Where-Object { $_.id -like "*kits-assistant*" -or $_.name -like "*Kit*" }
-    if (-not $kit) {
-        $names = ($r.data | ForEach-Object { $_.id }) -join ", "
-        throw "Kit's Assistant not found. Models: $names"
+    Test-Case "Open WebUI responds HTTP 200" {
+        $r = Invoke-WebRequest http://localhost:3000 -UseBasicParsing -TimeoutSec 5
+        if ($r.StatusCode -ne 200) { throw "Got $($r.StatusCode)" }
     }
-}
 
-Test-Case "Docker container healthy" {
-    $status = docker inspect open-webui --format "{{.State.Health.Status}}" 2>&1
-    if ($status -ne "healthy") { throw "Container status: $status" }
+    Test-Case "Open WebUI auth is disabled" {
+        $cfg = Invoke-RestMethod http://localhost:3000/api/config -TimeoutSec 5
+        if ($cfg.features.auth -ne $false) { throw "Auth is not disabled" }
+    }
+
+    Test-Case "LM Studio server responding" {
+        $r = Invoke-RestMethod http://localhost:1234/v1/models -TimeoutSec 5
+        if ($r.data.Count -eq 0) { throw "No models returned" }
+    }
+
+    # Get auth token (WEBUI_AUTH=False allows empty-credential signin)
+    $script:token = $null
+    try {
+        $authResp = Invoke-RestMethod http://localhost:3000/api/v1/auths/signin `
+            -Method Post `
+            -Body '{"email":"","password":""}' `
+            -ContentType "application/json" `
+            -TimeoutSec 5
+        $script:token = $authResp.token
+    } catch {}
+
+    Test-Case "Open WebUI sees LM Studio models" {
+        if (-not $script:token) { throw "Could not obtain auth token" }
+        $headers = @{Authorization = "Bearer $script:token"}
+        $r = Invoke-RestMethod http://localhost:3000/api/models -Headers $headers -TimeoutSec 5
+        if ($r.data.Count -eq 0) { throw "No models visible in Open WebUI" }
+    }
+
+    Test-Case "Kit's Assistant model exists" {
+        if (-not $script:token) { throw "Could not obtain auth token" }
+        $headers = @{Authorization = "Bearer $script:token"}
+        $r = Invoke-RestMethod http://localhost:3000/api/models -Headers $headers -TimeoutSec 5
+        $kit = $r.data | Where-Object { $_.id -like "*kits-assistant*" -or $_.name -like "*Kit*" }
+        if (-not $kit) {
+            $names = ($r.data | ForEach-Object { $_.id }) -join ", "
+            throw "Kit's Assistant not found. Models: $names"
+        }
+    }
+
+    Test-Case "Docker container healthy" {
+        $status = docker inspect open-webui --format "{{.State.Health.Status}}" 2>&1
+        if ($status -ne "healthy") { throw "Container status: $status" }
+    }
+} else {
+    "`n[ Live Service Checks ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
+    "  [SKIP] All live service checks (CI mode - Docker/LM Studio not available)" |
+        Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor DarkGray
 }
 
 # -- CONNECTOR SERVICE CHECKS (soft — warn on failure, don't count toward pass/fail) --
@@ -374,9 +385,14 @@ Test-Case "All 5 prompt files exist" {
     }
 }
 
-Test-Case "LM Studio API endpoint reachable (code_assist target)" {
-    $r = Invoke-RestMethod http://localhost:1234/v1/models -TimeoutSec 5
-    if ($r.data.Count -eq 0) { throw "No models at LM Studio API endpoint" }
+if (-not $CI) {
+    Test-Case "LM Studio API endpoint reachable (code_assist target)" {
+        $r = Invoke-RestMethod http://localhost:1234/v1/models -TimeoutSec 5
+        if ($r.data.Count -eq 0) { throw "No models at LM Studio API endpoint" }
+    }
+} else {
+    "  [SKIP] LM Studio API endpoint reachable (CI mode)" |
+        Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor DarkGray
 }
 
 Test-Case "code_assist.py --help exits cleanly" {
@@ -397,3 +413,4 @@ Test-Case "code_assist.py accepts --profile and --mode flags" {
 "  FAILED: $fail" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor $(if ($fail -gt 0) { "Red" } else { "Green" })
 "  TOTAL:  $($pass + $fail)" | Tee-Object -FilePath $log -Append | Write-Host
 "=====================================" | Tee-Object -FilePath $log -Append | Write-Host
+if ($fail -gt 0) { exit 1 }

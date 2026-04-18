@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, master]
   push:
-    branches: [main, master]
+    branches: [main, master, claude-code-integration]
 
 jobs:
   # ── Python static analysis: syntax, metadata, config consistency ─────────────
@@ -101,3 +101,24 @@ jobs:
           if failed:
             sys.exit(1)
           EOF
+
+  # ── PowerShell integration tests (Windows runner) ────────────────────────────
+  test:
+    name: Run test suite (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install openai
+
+      - name: Run tests (CI mode)
+        shell: pwsh
+        run: .\tests\run_tests.ps1 -CI
