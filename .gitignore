@@ -1,4 +1,7 @@
 .env.local
+__pycache__/
+*.pyc
+tests/ci_results.txt
 openapi.json
 
 # Docker override files
