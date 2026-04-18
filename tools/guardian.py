@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://content.guardianapis.com"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="Guardian Open Platform key (free at https://open-platform.theguardian.com/access/)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("GUARDIAN_API_KEY", ""), description="Guardian Open Platform key (free at https://open-platform.theguardian.com/access/)")
         PAGE_SIZE: int = Field(default=10, description="Results per query")
 
     def __init__(self):

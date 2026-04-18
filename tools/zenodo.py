@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Callable, Any, Optional
@@ -19,7 +20,7 @@ ZENODO_API = "https://zenodo.org/api"
 class Tools:
     class Valves(BaseModel):
         ZENODO_TOKEN: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("ZENODO_TOKEN", ""),
             description="Optional Zenodo personal access token (free at https://zenodo.org/account/settings/applications/tokens/new/)",
         )
         MAX_RESULTS: int = Field(default=5, description="Maximum results to return")

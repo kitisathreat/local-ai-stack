@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -19,7 +20,7 @@ BASE = "https://api.openaq.org/v2"
 class Tools:
     class Valves(BaseModel):
         LIMIT: int = Field(default=20, description="Max rows per query")
-        API_KEY: str = Field(default="", description="Optional OpenAQ API key for higher limits")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("OPENAQ_API_KEY", ""), description="Optional OpenAQ API key for higher limits")
 
     def __init__(self):
         self.valves = self.Valves()

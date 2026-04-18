@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from datetime import datetime, timedelta
 from typing import Callable, Any, Optional

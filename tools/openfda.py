@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Callable, Any, Optional
@@ -19,7 +20,7 @@ FDA_API = "https://api.fda.gov"
 class Tools:
     class Valves(BaseModel):
         FDA_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("FDA_API_KEY", ""),
             description="Optional FDA API key for 240 req/min instead of 40 req/min (free at https://open.fda.gov/apis/authentication/)",
         )
         MAX_RESULTS: int = Field(default=5, description="Maximum results to return")

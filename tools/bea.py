@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://apps.bea.gov/api/data"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="BEA API key (free at https://apps.bea.gov/api/signup/)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("BEA_API_KEY", ""), description="BEA API key (free at https://apps.bea.gov/api/signup/)")
 
     def __init__(self):
         self.valves = self.Valves()

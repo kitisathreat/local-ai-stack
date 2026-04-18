@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://api.nytimes.com/svc"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="NYT API key (free at https://developer.nytimes.com)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("NYTIMES_API_KEY", ""), description="NYT API key (free at https://developer.nytimes.com)")
 
     def __init__(self):
         self.valves = self.Valves()

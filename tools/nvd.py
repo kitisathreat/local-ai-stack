@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="NVD API key (free; raises limit from 5→50 req/30s) at https://nvd.nist.gov/developers/request-an-api-key")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("NVD_API_KEY", ""), description="NVD API key (free; raises limit from 5→50 req/30s) at https://nvd.nist.gov/developers/request-an-api-key")
         RESULTS_PER_PAGE: int = Field(default=10, description="Max CVEs per request")
 
     def __init__(self):

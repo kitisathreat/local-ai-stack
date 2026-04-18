@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from typing import Callable, Any, Optional
 from pydantic import BaseModel, Field
@@ -18,7 +19,7 @@ BASE = "https://www.alphavantage.co/query"
 class Tools:
     class Valves(BaseModel):
         ALPHA_VANTAGE_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("ALPHA_VANTAGE_API_KEY", ""),
             description="Alpha Vantage API key — free at https://www.alphavantage.co/support/#api-key",
         )
 

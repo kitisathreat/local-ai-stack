@@ -55,15 +55,15 @@ class Tools:
             description="Base URL of your slskd instance (Soulseek daemon).",
         )
         SLSKD_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("SLSKD_API_KEY", ""),
             description="slskd API key (Settings > Options > Security > API keys).",
         )
         SLSKD_USERNAME: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("SLSKD_USERNAME", ""),
             description="Optional username for slskd basic auth (if API key not set).",
         )
         SLSKD_PASSWORD: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("SLSKD_PASSWORD", ""),
             description="Optional password for slskd basic auth (if API key not set).",
         )
         SEARCH_WAIT_SECONDS: int = Field(

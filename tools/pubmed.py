@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 import xml.etree.ElementTree as ET
 from pydantic import BaseModel, Field
@@ -20,7 +21,7 @@ EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 class Tools:
     class Valves(BaseModel):
         NCBI_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("NCBI_API_KEY", ""),
             description="Optional NCBI API key for 10 req/s instead of 3 req/s (free at https://www.ncbi.nlm.nih.gov/account/)",
         )
         MAX_RESULTS: int = Field(default=5, description="Maximum articles to return")

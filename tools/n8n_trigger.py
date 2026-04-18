@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 import json
 from pydantic import BaseModel, Field
@@ -21,7 +22,7 @@ class Tools:
             description="Base URL of your n8n instance",
         )
         N8N_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("N8N_API_KEY", ""),
             description="Optional n8n API key (create at n8n > Settings > API)",
         )
         TIMEOUT: int = Field(default=30, description="Webhook response timeout in seconds")

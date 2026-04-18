@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 import json
 from datetime import datetime, timedelta
@@ -67,7 +68,7 @@ COMMON_SERIES = {
 class Tools:
     class Valves(BaseModel):
         FRED_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("FRED_API_KEY", ""),
             description="FRED API key — free at https://fred.stlouisfed.org/docs/api/api_key.html",
         )
 

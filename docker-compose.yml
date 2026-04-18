@@ -13,7 +13,7 @@ services:
 
       # ── LM Studio + Pipelines as OpenAI-compatible backends ──────────────────
       - OPENAI_API_BASE_URLS=http://host.docker.internal:1234/v1;http://pipelines:9099
-      - OPENAI_API_KEYS=lmstudio;0p3n-w3bu!
+      - OPENAI_API_KEYS=${OPENAI_API_KEYS:-lmstudio;0p3n-w3bu!}
 
       # ── Ollama integration (local model hub) ──────────────────────────────────
       - OLLAMA_BASE_URL=http://ollama:11434
@@ -37,7 +37,7 @@ services:
       - CODE_EXECUTION_ENGINE=jupyter
       - CODE_EXECUTION_JUPYTER_URL=http://jupyter:8888
       - CODE_EXECUTION_JUPYTER_AUTH=token
-      - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=local-ai-stack-token
+      - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=${JUPYTER_TOKEN:-local-ai-stack-token}
 
       # ── Image generation (point to Automatic1111 / ComfyUI if running) ────────
       - ENABLE_IMAGE_GENERATION=False
@@ -59,7 +59,7 @@ services:
     image: quay.io/jupyter/scipy-notebook:latest
     container_name: jupyter
     environment:
-      - JUPYTER_TOKEN=local-ai-stack-token
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-local-ai-stack-token}
       - JUPYTER_ENABLE_LAB=yes
     volumes:
       - jupyter-data:/home/jovyan/work
@@ -77,7 +77,7 @@ services:
       - pipelines-data:/app/pipelines
       - ./pipelines:/app/pipelines/custom:ro
     environment:
-      - PIPELINES_API_KEY=0p3n-w3bu!
+      - PIPELINES_API_KEY=${PIPELINES_API_KEY:-0p3n-w3bu!}
     restart: always
 
   # ── Qdrant: high-performance vector database for RAG ─────────────────────────

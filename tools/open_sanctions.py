@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://api.opensanctions.org"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="Optional OpenSanctions API key (https://www.opensanctions.org/api/)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("OPENSANCTIONS_API_KEY", ""), description="Optional OpenSanctions API key (https://www.opensanctions.org/api/)")
         LIMIT: int = Field(default=8, description="Max results")
 
     def __init__(self):

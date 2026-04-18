@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from typing import Callable, Any, Optional
 from pydantic import BaseModel, Field
@@ -18,7 +19,7 @@ BASE = "https://api.materialsproject.org"
 class Tools:
     class Valves(BaseModel):
         MP_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("MP_API_KEY", ""),
             description="Materials Project API key — free at https://materialsproject.org (register → API key in dashboard)",
         )
 

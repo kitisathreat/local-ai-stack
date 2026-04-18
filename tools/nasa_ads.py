@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Callable, Any, Optional
@@ -19,7 +20,7 @@ ADS_API = "https://api.adsabs.harvard.edu/v1"
 class Tools:
     class Valves(BaseModel):
         ADS_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("ADS_API_KEY", ""),
             description="NASA ADS API token — free at https://ui.adsabs.harvard.edu/user/settings/token (account required)",
         )
         MAX_RESULTS: int = Field(default=5, description="Maximum papers to return")

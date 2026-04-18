@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from datetime import datetime, timedelta
 from typing import Callable, Any, Optional
@@ -19,7 +20,7 @@ BASE = "https://finnhub.io/api/v1"
 class Tools:
     class Valves(BaseModel):
         FINNHUB_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("FINNHUB_API_KEY", ""),
             description="Finnhub API key — free at https://finnhub.io (60 calls/minute free)",
         )
 

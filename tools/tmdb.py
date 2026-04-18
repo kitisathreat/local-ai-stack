@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -19,7 +20,7 @@ IMG = "https://image.tmdb.org/t/p/w500"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="TMDB API key v3 (free at https://www.themoviedb.org/settings/api)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("TMDB_API_KEY", ""), description="TMDB API key v3 (free at https://www.themoviedb.org/settings/api)")
 
     def __init__(self):
         self.valves = self.Valves()

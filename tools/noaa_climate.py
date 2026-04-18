@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from datetime import datetime, timedelta
 from typing import Callable, Any, Optional
@@ -57,7 +58,7 @@ STATION_ALIASES = {
 class Tools:
     class Valves(BaseModel):
         NOAA_TOKEN: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("NOAA_TOKEN", ""),
             description="NOAA CDO API token — free at https://www.ncdc.noaa.gov/cdo-web/token",
         )
 

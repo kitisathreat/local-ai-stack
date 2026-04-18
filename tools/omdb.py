@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://www.omdbapi.com/"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="OMDb key (free at https://www.omdbapi.com/apikey.aspx)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("OMDB_API_KEY", ""), description="OMDb key (free at https://www.omdbapi.com/apikey.aspx)")
 
     def __init__(self):
         self.valves = self.Valves()

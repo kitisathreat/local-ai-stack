@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://www.rijksmuseum.nl/api/en/collection"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="Rijksmuseum API key (free at https://data.rijksmuseum.nl)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("RIJKSMUSEUM_API_KEY", ""), description="Rijksmuseum API key (free at https://data.rijksmuseum.nl)")
         MAX_RESULTS: int = Field(default=8, description="Max results")
 
     def __init__(self):

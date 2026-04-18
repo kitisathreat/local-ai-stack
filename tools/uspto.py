@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -19,7 +20,7 @@ BASE = "https://search.patentsview.org/api/v1/patent"
 class Tools:
     class Valves(BaseModel):
         LIMIT: int = Field(default=10, description="Max patents per query")
-        API_KEY: str = Field(default="", description="Optional PatentsView API key (recommended for higher limits — request free at patentsview.org)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("USPTO_API_KEY", ""), description="Optional PatentsView API key (recommended for higher limits — request free at patentsview.org)")
 
     def __init__(self):
         self.valves = self.Valves()

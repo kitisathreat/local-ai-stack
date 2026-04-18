@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from typing import Callable, Any, Optional
 from pydantic import BaseModel, Field
@@ -18,7 +19,7 @@ BASE = "https://api.europeana.eu/record/v2"
 class Tools:
     class Valves(BaseModel):
         EUROPEANA_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("EUROPEANA_API_KEY", ""),
             description="Europeana API key — free at https://pro.europeana.eu/page/apis",
         )
 

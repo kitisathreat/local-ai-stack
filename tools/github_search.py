@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Callable, Any, Optional
@@ -19,7 +20,7 @@ GITHUB_API = "https://api.github.com"
 class Tools:
     class Valves(BaseModel):
         GITHUB_TOKEN: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("GITHUB_TOKEN", ""),
             description="Optional GitHub Personal Access Token for higher rate limits (60/hr without, 5000/hr with)",
         )
         MAX_RESULTS: int = Field(default=5, description="Maximum results to return")

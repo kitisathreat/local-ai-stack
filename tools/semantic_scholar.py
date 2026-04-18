@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Callable, Any, Optional
@@ -20,7 +21,7 @@ PAPER_FIELDS = "title,authors,year,abstract,url,citationCount,openAccessPdf,venu
 class Tools:
     class Valves(BaseModel):
         S2_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("S2_API_KEY", ""),
             description="Optional Semantic Scholar API key for higher rate limits (free at https://www.semanticscholar.org/product/api)",
         )
         MAX_RESULTS: int = Field(default=5, description="Maximum papers to return")

@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://www.googleapis.com/books/v1"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="Optional Google Books API key (higher quota)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("GOOGLE_BOOKS_API_KEY", ""), description="Optional Google Books API key (higher quota)")
         MAX_RESULTS: int = Field(default=8, description="Max results")
 
     def __init__(self):

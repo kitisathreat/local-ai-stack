@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 import html as html_mod
 from pydantic import BaseModel, Field
@@ -24,7 +25,7 @@ class Tools:
             description="Default Stack Exchange site (stackoverflow, math, serverfault, superuser, askubuntu, stats, tex, unix, apple, gaming, cooking, ...)",
         )
         MAX_RESULTS: int = Field(default=5, description="Max results per query")
-        API_KEY: str = Field(default="", description="Optional app key for higher rate limits")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("STACKEXCHANGE_API_KEY", ""), description="Optional app key for higher rate limits")
 
     def __init__(self):
         self.valves = self.Valves()

@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://comtradeapi.un.org/public/v1/preview"
 
 class Tools:
     class Valves(BaseModel):
-        SUBKEY: str = Field(default="", description="Optional UN Comtrade subscription key (higher limits)")
+        SUBKEY: str = Field(default_factory=lambda: os.environ.get("UN_COMTRADE_SUBKEY", ""), description="Optional UN Comtrade subscription key (higher limits)")
         MAX_ROWS: int = Field(default=50, description="Max rows displayed")
 
     def __init__(self):

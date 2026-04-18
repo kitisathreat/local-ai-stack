@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://api.si.edu/openaccess/api/v1.0"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="Smithsonian OA API key (get at api.si.edu)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("SMITHSONIAN_API_KEY", ""), description="Smithsonian OA API key (get at api.si.edu)")
         MAX_RESULTS: int = Field(default=5, description="Max records returned")
 
     def __init__(self):

@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -18,7 +19,7 @@ BASE = "https://api.bls.gov/publicAPI/v2/timeseries/data"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="BLS registration key (free at https://data.bls.gov/registrationEngine/)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("BLS_API_KEY", ""), description="BLS registration key (free at https://data.bls.gov/registrationEngine/)")
 
     def __init__(self):
         self.valves = self.Valves()

@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from datetime import datetime, timedelta
 from typing import Callable, Any, Optional
@@ -32,7 +33,7 @@ REGIONS = {
 class Tools:
     class Valves(BaseModel):
         ACLED_API_KEY: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("ACLED_API_KEY", ""),
             description="ACLED API key — free at https://developer.acleddata.com",
         )
         ACLED_EMAIL: str = Field(

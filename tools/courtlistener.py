@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://www.courtlistener.com/api/rest/v4"
 
 class Tools:
     class Valves(BaseModel):
-        API_TOKEN: str = Field(default="", description="CourtListener API token (free at https://www.courtlistener.com/help/api/rest/#authentication)")
+        API_TOKEN: str = Field(default_factory=lambda: os.environ.get("COURTLISTENER_API_TOKEN", ""), description="CourtListener API token (free at https://www.courtlistener.com/help/api/rest/#authentication)")
         LIMIT: int = Field(default=8, description="Max results")
 
     def __init__(self):

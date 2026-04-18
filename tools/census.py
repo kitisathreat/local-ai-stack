@@ -8,6 +8,7 @@ version: 1.0.0
 licence: MIT
 """
 
+import os
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,7 +19,7 @@ BASE = "https://api.census.gov/data"
 
 class Tools:
     class Valves(BaseModel):
-        API_KEY: str = Field(default="", description="US Census API key (free at https://api.census.gov/data/key_signup.html)")
+        API_KEY: str = Field(default_factory=lambda: os.environ.get("CENSUS_API_KEY", ""), description="US Census API key (free at https://api.census.gov/data/key_signup.html)")
 
     def __init__(self):
         self.valves = self.Valves()

@@ -42,7 +42,7 @@ class Tools:
             description="Qobuz public API app_id. Override with your own if the default is rate-limited.",
         )
         QOBUZ_USER_AUTH_TOKEN: str = Field(
-            default="",
+            default_factory=lambda: os.environ.get("QOBUZ_USER_AUTH_TOKEN", ""),
             description="Optional Qobuz user_auth_token (for catalogue calls that need login).",
         )
         QOBUZ_DL_BIN: str = Field(
