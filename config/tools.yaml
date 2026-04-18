@@ -57,6 +57,80 @@ tools:
     requires_service: null
     default_enabled: true
 
+  # ── Academic & Scientific ─────────────────────────────────────────────────────
+  pubmed:
+    file: tools/pubmed.py
+    title: "PubMed / NCBI Biomedical Search"
+    description: "Search 35M+ biomedical articles. Covers medicine, biology, pharmacology, genetics, neuroscience."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  semantic_scholar:
+    file: tools/semantic_scholar.py
+    title: "Semantic Scholar"
+    description: "AI-powered search across 220M+ papers in all fields. Finds open-access PDFs, citation counts, and author profiles."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  crossref:
+    file: tools/crossref.py
+    title: "CrossRef — DOI & Citation Lookup"
+    description: "Resolve any DOI, search 150M+ scholarly works, get citation counts, and look up journal metadata."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  openalex:
+    file: tools/openalex.py
+    title: "OpenAlex — Open Scholarly Catalog"
+    description: "Search 250M+ scholarly works, explore scientific concepts, and look up institution research output."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  zenodo:
+    file: tools/zenodo.py
+    title: "Zenodo — CERN Open Repository"
+    description: "Search Zenodo for open research datasets, software, papers, and presentations with persistent DOIs."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  dblp:
+    file: tools/dblp.py
+    title: "DBLP — CS Bibliography"
+    description: "Search DBLP for computer science publications from all major venues (NeurIPS, ICML, CVPR, ACL, SOSP...)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  nasa_ads:
+    file: tools/nasa_ads.py
+    title: "NASA ADS — Astrophysics Data System"
+    description: "Search 15M+ astronomy and astrophysics papers. Free API token required (1-minute signup)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://ui.adsabs.harvard.edu/user/settings/token"
+
+  unpaywall:
+    file: tools/unpaywall.py
+    title: "Unpaywall — Free Paper Finder"
+    description: "Find free legal PDFs of paywalled papers by DOI. Sources from PubMed Central, ArXiv, institutional repos."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  arxiv_search:
+    file: tools/arxiv_search.py
+    title: "ArXiv Paper Search"
+    description: "Search ArXiv preprints in CS, physics, math, biology, economics. Filter by category."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
   # ── Code & Development ────────────────────────────────────────────────────────
   github_search:
     file: tools/github_search.py

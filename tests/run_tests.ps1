@@ -133,6 +133,28 @@ Test-Case "all tool files have required title metadata" {
     }
 }
 
+Test-Case "academic tool files exist (pubmed, semantic_scholar, crossref, openalex, zenodo, dblp, unpaywall, nasa_ads)" {
+    $required = @("pubmed","semantic_scholar","crossref","openalex","zenodo","dblp","unpaywall","nasa_ads")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing academic tool: $t.py" }
+    }
+}
+
+Test-Case "knowledge/sources.yaml covers 8+ knowledge domains" {
+    $yaml = Get-Content "$root\knowledge\sources.yaml" -Raw
+    $domains = @("biomedical","physics","chemistry","mathematics","computer_science","social_sciences","open_data")
+    foreach ($d in $domains) {
+        if ($yaml -notmatch $d) { throw "Missing knowledge domain: $d" }
+    }
+}
+
+Test-Case "searxng settings.yml has academic engines" {
+    $yaml = Get-Content "$root\config\searxng\settings.yml" -Raw
+    foreach ($engine in @("pubmed","semantic scholar","paperswithcode","openaire","biorxiv")) {
+        if ($yaml -notmatch $engine) { throw "Missing SearXNG engine: $engine" }
+    }
+}
+
 Test-Case "pipelines directory exists with pipeline files" {
     $files = Get-ChildItem "$root\pipelines\*.py" -ErrorAction SilentlyContinue
     if ($files.Count -eq 0) { throw "No .py pipeline files in pipelines/" }

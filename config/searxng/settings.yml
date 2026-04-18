@@ -106,6 +106,88 @@ engines:
     shortcut: gen
     disabled: false
 
+  # ── Academic & Scientific ────────────────────────────────────────────────────
+  - name: pubmed
+    engine: pubmed
+    shortcut: pm
+    disabled: false
+
+  - name: semantic scholar
+    engine: semantic_scholar
+    shortcut: ss
+    disabled: false
+
+  - name: base
+    engine: base
+    shortcut: base
+    disabled: false
+
+  - name: crossref
+    engine: crossref
+    shortcut: cr
+    disabled: false
+
+  - name: openalex
+    engine: openalex
+    shortcut: oa
+    disabled: false
+
+  - name: paperswithcode
+    engine: paper_with_code
+    shortcut: pwc
+    disabled: false
+
+  - name: openaire
+    engine: openaire
+    shortcut: oai
+    disabled: false
+
+  - name: core
+    engine: core
+    shortcut: core
+    disabled: false
+
+  - name: zbmath
+    engine: zbmath
+    shortcut: zb
+    disabled: false
+
+  - name: unpaywall
+    engine: unpaywall
+    shortcut: up
+    disabled: false
+
+  - name: biorxiv
+    engine: biorxiv
+    shortcut: brx
+    disabled: false
+
+  - name: internet archive
+    engine: internet_archive
+    shortcut: ia
+    disabled: false
+
+  - name: gutenberg
+    engine: gutenberg
+    shortcut: gut
+    disabled: false
+
+  # ── News & Current Events ────────────────────────────────────────────────────
+  - name: google news
+    engine: google_news
+    shortcut: gn
+    disabled: false
+
+  - name: bing news
+    engine: bing_news
+    shortcut: bn
+    disabled: false
+
+  - name: hackernews
+    engine: hackernews
+    shortcut: hn
+    disabled: false
+
 outgoing:
   request_timeout: 10.0
   max_request_timeout: 30.0
