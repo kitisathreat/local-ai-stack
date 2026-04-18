@@ -297,3 +297,81 @@ additional_tools:
     title: "Technical Analysis — RSI, MACD, Bollinger Bands & More"
     description: "Full technical analysis from live Yahoo Finance data. RSI (overbought/oversold), MACD crossovers, Bollinger Bands, SMA/EMA golden/death cross, and full technical reports with overall signals."
     api_key_required: false
+
+# ── Engineering & Physics ─────────────────────────────────────────────────────
+  nasa_apis:
+    file: tools/nasa_apis.py
+    title: "NASA Open APIs — APOD, NEO, Mars Rover & Exoplanets"
+    description: "Astronomy Picture of the Day, Near Earth Object (asteroid) tracking, Mars Rover photos (Curiosity/Perseverance), and NASA Exoplanet Archive queries. Free API key at api.nasa.gov."
+    api_key_required: true
+    api_key_url: "https://api.nasa.gov"
+
+  materials_project:
+    file: tools/materials_project.py
+    title: "Materials Project — Computational Materials Science"
+    description: "Search 150,000+ inorganic compounds for crystal structure, band gap, formation energy, stability, and magnetic properties. Computed via DFT. Free API key at materialsproject.org."
+    api_key_required: true
+    api_key_url: "https://materialsproject.org"
+
+  simbad:
+    file: tools/simbad.py
+    title: "SIMBAD — Astronomical Database (Stars, Galaxies, Nebulae)"
+    description: "Query 15+ million astronomical objects: stars, galaxies, pulsars, nebulae. Get coordinates, spectral type, parallax, proper motion, magnitude, and radial velocity from the CDS Strasbourg. No API key."
+    api_key_required: false
+
+  usgs:
+    file: tools/usgs.py
+    title: "USGS — Earthquakes, Geology & Water Resources"
+    description: "Real-time and historical earthquake data (worldwide M3+), USGS stream gauge water levels, and seismic hazard analysis for any region. No API key required."
+    api_key_required: false
+
+# ── Defense & Geopolitics ─────────────────────────────────────────────────────
+  acled:
+    file: tools/acled.py
+    title: "ACLED — Armed Conflict Location & Event Data"
+    description: "Real-time global conflict events: battles, explosions, protests, riots, and violence against civilians. 200+ countries since 1997. Fatalities, actors, and geographic detail. Free API key at acleddata.com."
+    api_key_required: true
+    api_key_url: "https://developer.acleddata.com"
+
+# ── Finance (Extended) ────────────────────────────────────────────────────────
+  alpha_vantage:
+    file: tools/alpha_vantage.py
+    title: "Alpha Vantage — Stocks, Forex, Crypto & Economic Data"
+    description: "Real-time and historical stock prices, 50+ technical indicators, forex rates, crypto OHLCV, and US macro data (GDP, CPI, inflation, treasury yields). Free API key at alphavantage.co."
+    api_key_required: true
+    api_key_url: "https://www.alphavantage.co/support/#api-key"
+
+  finnhub:
+    file: tools/finnhub.py
+    title: "Finnhub — Real-Time Stocks, Fundamentals & News"
+    description: "Real-time quotes, company profiles, earnings history, analyst recommendations, insider transactions, news sentiment, and IPO calendar. 60 requests/minute free. API key at finnhub.io."
+    api_key_required: true
+    api_key_url: "https://finnhub.io"
+
+# ── Humanities & Cultural Heritage ───────────────────────────────────────────
+  europeana:
+    file: tools/europeana.py
+    title: "Europeana — European Cultural Heritage"
+    description: "Search 50M+ cultural objects from 2,500 European museums, archives, and libraries. Paintings, manuscripts, maps, photographs, audio, and 3D objects. Filter by country, era, media type. Free API key."
+    api_key_required: true
+    api_key_url: "https://pro.europeana.eu/page/apis"
+
+# ── Natural Science ───────────────────────────────────────────────────────────
+  noaa_climate:
+    file: tools/noaa_climate.py
+    title: "NOAA Climate Data — Historical Weather & Climate Records"
+    description: "Historical temperature, precipitation, snowfall, and extreme weather from 100,000+ global stations dating to 1763. US climate normals (30-year averages). Free API token at ncei.noaa.gov."
+    api_key_required: true
+    api_key_url: "https://www.ncdc.noaa.gov/cdo-web/token"
+
+  uniprot:
+    file: tools/uniprot.py
+    title: "UniProt — Protein Sequences, Functions & Interactions"
+    description: "Search 250M+ protein sequences (Swiss-Prot + TrEMBL). Get amino acid sequences, domains, PTMs, disease associations, 3D structures (PDB links), Gene Ontology, and pathways. No API key required."
+    api_key_required: false
+
+  ensembl:
+    file: tools/ensembl.py
+    title: "Ensembl — Genomics, Gene Sequences & Variants"
+    description: "Query Ensembl for 250+ species. Gene coordinates, DNA/protein sequences, SNP/variant data, ortholog mapping across species, and gene expression. Essential for bioinformatics. No API key required."
+    api_key_required: false

@@ -154,9 +154,16 @@ Test-Case "Phase 4 tool files exist (excel_tool, fred, yahoo_finance_extended, s
     }
 }
 
-Test-Case "tools directory has at least 33 tool files" {
+Test-Case "Phase 5 tool files exist (nasa_apis, alpha_vantage, finnhub, acled, europeana, noaa_climate, materials_project, simbad, uniprot, usgs, ensembl)" {
+    $required = @("nasa_apis","alpha_vantage","finnhub","acled","europeana","noaa_climate","materials_project","simbad","uniprot","usgs","ensembl")
+    foreach ($t in $required) {
+        if (-not (Test-Path "$root\tools\$t.py")) { throw "Missing Phase 5 tool: $t.py" }
+    }
+}
+
+Test-Case "tools directory has at least 48 tool files" {
     $files = Get-ChildItem "$root\tools\*.py"
-    if ($files.Count -lt 33) { throw "Only $($files.Count) tool files found, expected 33+" }
+    if ($files.Count -lt 48) { throw "Only $($files.Count) tool files found, expected 48+" }
 }
 
 Test-Case "knowledge/sources.yaml covers 8+ knowledge domains" {
