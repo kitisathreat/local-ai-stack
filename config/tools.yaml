@@ -412,3 +412,252 @@ additional_tools:
     description: "Lets the model present structured clarifying questions before tackling ambiguous tasks. Renders numbered multiple-choice options with an optional free-text field. Model calls ask_user(), ask_yes_no(), or ask_scope() — user replies with a number or custom text."
     api_key_required: false
     default_enabled: true
+
+# ── Free Data Repositories (Phase 7 expansion) ────────────────────────────────
+# Knowledge & Reference
+  wikidata:
+    file: tools/wikidata.py
+    title: "Wikidata — Structured Knowledge Graph"
+    description: "Query Wikidata, the structured knowledge graph behind Wikipedia. Entity lookup by name, claims/statements, and SPARQL over 100M+ items."
+    api_key_required: false
+
+  rest_countries:
+    file: tools/rest_countries.py
+    title: "REST Countries — Country Profiles"
+    description: "Population, capital, currencies, languages, borders, timezones, and calling codes for 250+ countries. No key required."
+    api_key_required: false
+
+  wayback:
+    file: tools/wayback.py
+    title: "Wayback Machine — Internet Archive"
+    description: "Find historical snapshots of URLs, capture history timelines, and request fresh archives via the Internet Archive's Wayback Machine."
+    api_key_required: false
+
+  stackexchange:
+    file: tools/stackexchange.py
+    title: "Stack Exchange — SO, Math, SuperUser & 170+ sites"
+    description: "Search Q&A across Stack Overflow, Math, Server Fault, Super User, Ask Ubuntu, Cross Validated, TeX, Unix, and more."
+    api_key_required: false
+
+# Geo & Events
+  openstreetmap:
+    file: tools/openstreetmap.py
+    title: "OpenStreetMap — Geocoding & POIs"
+    description: "Free geocoding (Nominatim), reverse geocoding, and POI search (Overpass). Addresses, landmarks, amenities worldwide."
+    api_key_required: false
+
+  gdelt:
+    file: tools/gdelt.py
+    title: "GDELT — Global News & Events Database"
+    description: "Search billions of news articles worldwide in 65+ languages. Tone/sentiment analysis and topic timelines since 2015."
+    api_key_required: false
+
+  nasa_eonet:
+    file: tools/nasa_eonet.py
+    title: "NASA EONET — Natural Events Tracker"
+    description: "Live feed of wildfires, storms, volcanoes, floods, icebergs, sea/lake ice, dust/haze, earthquakes worldwide."
+    api_key_required: false
+
+  openaq:
+    file: tools/openaq.py
+    title: "OpenAQ — Global Air Quality"
+    description: "Real-time and historical PM2.5, PM10, NO2, O3, SO2, CO, BC from 17,000+ stations in 100+ countries."
+    api_key_required: false
+
+# Culture & Arts
+  met_museum:
+    file: tools/met_museum.py
+    title: "MET Museum — Open Access Art Collection"
+    description: "Search The Met's 470,000+ CC0 open-access art objects with high-resolution images."
+    api_key_required: false
+
+  musicbrainz:
+    file: tools/musicbrainz.py
+    title: "MusicBrainz — Open Music Metadata"
+    description: "Open music encyclopedia: artists, releases, recordings, labels, works with MBIDs and relationships."
+    api_key_required: false
+
+  library_of_congress:
+    file: tools/loc.py
+    title: "Library of Congress — Historical Collections"
+    description: "Search 20M+ items: photos, maps, manuscripts, audio, and Chronicling America (1777–1963 newspapers)."
+    api_key_required: false
+
+  smithsonian:
+    file: tools/smithsonian.py
+    title: "Smithsonian Open Access — 4.5M+ Objects"
+    description: "Art, natural history, aerospace, science, and history from the Smithsonian's 19 museums & archives. Free API key required."
+    api_key_required: true
+    api_key_url: "https://api.si.edu"
+
+  rijksmuseum:
+    file: tools/rijksmuseum.py
+    title: "Rijksmuseum — Dutch Masters & Beyond"
+    description: "700,000+ works including Rembrandt, Vermeer, Van Gogh. CC0 high-res images. Free API key required."
+    api_key_required: true
+    api_key_url: "https://data.rijksmuseum.nl"
+
+# Life & Chemical Sciences
+  gbif:
+    file: tools/gbif.py
+    title: "GBIF — Global Biodiversity"
+    description: "2.5B+ species occurrence records plus the GBIF taxonomic backbone."
+    api_key_required: false
+
+  inaturalist:
+    file: tools/inaturalist.py
+    title: "iNaturalist — Citizen-Science Observations"
+    description: "200M+ wildlife observations with photos, locations, and research-grade IDs."
+    api_key_required: false
+
+  rcsb_pdb:
+    file: tools/rcsb_pdb.py
+    title: "RCSB PDB — Protein Data Bank"
+    description: "200,000+ 3D macromolecular structures (X-ray, NMR, cryo-EM). Full-text search and entry lookup."
+    api_key_required: false
+
+  chembl:
+    file: tools/chembl.py
+    title: "ChEMBL — Bioactive Molecules & Targets"
+    description: "2.3M+ bioactive molecules, 15,000+ drug targets, and 20M+ bioactivity measurements from EMBL-EBI."
+    api_key_required: false
+
+  europepmc:
+    file: tools/europepmc.py
+    title: "Europe PMC — Life Sciences Literature"
+    description: "40M+ abstracts and 9M+ open-access full-text biomedical papers. Citation graph, OA PDF links."
+    api_key_required: false
+
+  doaj:
+    file: tools/doaj.py
+    title: "DOAJ — Directory of Open Access Journals"
+    description: "20,000+ peer-reviewed OA journals and 10M+ OA articles with full-text links."
+    api_key_required: false
+
+# Economics & Public Data
+  imf:
+    file: tools/imf.py
+    title: "IMF Data — Macro Statistics"
+    description: "GDP, inflation, unemployment, debt, current account via IMF DataMapper (WEO/IFS)."
+    api_key_required: false
+
+  eurostat:
+    file: tools/eurostat.py
+    title: "Eurostat — European Statistics"
+    description: "EU27 + EFTA + candidate country stats via JSON-stat: GDP, labor, trade, energy, demographics."
+    api_key_required: false
+
+  oecd:
+    file: tools/oecd.py
+    title: "OECD Data — Member Economies"
+    description: "SDMX-JSON access to OECD statistics: GDP, CPI, trade, labour, health, education, environment."
+    api_key_required: false
+
+  census_bureau:
+    file: tools/census.py
+    title: "US Census Bureau — Demographics & Economics"
+    description: "American Community Survey (ACS), Decennial Census, Population Estimates, Economic Indicators. Free API key."
+    api_key_required: true
+    api_key_url: "https://api.census.gov/data/key_signup.html"
+
+  bls:
+    file: tools/bls.py
+    title: "BLS — US Bureau of Labor Statistics"
+    description: "Unemployment, CPI, employment (CES), wages, productivity via BLS Public Data API. Free key for higher limits."
+    api_key_required: true
+    api_key_url: "https://data.bls.gov/registrationEngine/"
+
+  bea:
+    file: tools/bea.py
+    title: "BEA — US Bureau of Economic Analysis"
+    description: "US GDP, personal income, trade, regional & industry accounts. Free API key."
+    api_key_required: true
+    api_key_url: "https://apps.bea.gov/api/signup/"
+
+  un_comtrade:
+    file: tools/un_comtrade.py
+    title: "UN Comtrade — Global Trade Statistics"
+    description: "Bilateral trade flows by country/commodity/year using the free UN Comtrade public API."
+    api_key_required: false
+
+# News & Media
+  guardian:
+    file: tools/guardian.py
+    title: "The Guardian — News Archive Search"
+    description: "Search 2M+ Guardian articles (politics, world, business, culture, sport) back to 1999. Free API key."
+    api_key_required: true
+    api_key_url: "https://open-platform.theguardian.com/access/"
+
+  nytimes:
+    file: tools/nytimes.py
+    title: "The New York Times — Archive, Top Stories & Bestsellers"
+    description: "NYT Article Search (1851+), Top Stories by section, and NYT Bestseller lists. Free API key."
+    api_key_required: true
+    api_key_url: "https://developer.nytimes.com"
+
+  tmdb:
+    file: tools/tmdb.py
+    title: "TMDB — Movies & TV"
+    description: "800,000+ movies and 150,000+ TV shows. Cast, crew, ratings, overviews, posters, and trending. Free API key."
+    api_key_required: true
+    api_key_url: "https://www.themoviedb.org/settings/api"
+
+  omdb:
+    file: tools/omdb.py
+    title: "OMDb — Open Movie DB (IMDb data)"
+    description: "IMDb/Rotten Tomatoes/Metacritic ratings, cast, plot, box office. Free API key (1,000 req/day)."
+    api_key_required: true
+    api_key_url: "https://www.omdbapi.com/apikey.aspx"
+
+# Security, Legal & Compliance
+  nvd:
+    file: tools/nvd.py
+    title: "NVD — CVE Vulnerability Database (Defensive)"
+    description: "NIST National Vulnerability Database: CVE lookup, keyword search, CVSS scores. Key optional for higher limits."
+    api_key_required: false
+    api_key_url: "https://nvd.nist.gov/developers/request-an-api-key"
+
+  osv:
+    file: tools/osv.py
+    title: "OSV.dev — Open Source Vulnerabilities (Defensive)"
+    description: "Vulns for PyPI, npm, Go, Maven, crates.io, RubyGems, Packagist, NuGet, Hex, Pub, Android, Linux distros."
+    api_key_required: false
+
+  uspto:
+    file: tools/uspto.py
+    title: "USPTO PatentsView — US Patents"
+    description: "8M+ granted US patents with inventors, assignees, classifications, and citations. Key optional."
+    api_key_required: false
+
+  courtlistener:
+    file: tools/courtlistener.py
+    title: "CourtListener — US Court Opinions & Dockets"
+    description: "9M+ US court opinions (SCOTUS, all federal circuits, state supremes) and PACER dockets. Free token."
+    api_key_required: false
+    api_key_url: "https://www.courtlistener.com/help/api/rest/#authentication"
+
+  open_sanctions:
+    file: tools/open_sanctions.py
+    title: "OpenSanctions — Sanctions, PEPs & Watchlists (Compliance)"
+    description: "Consolidated OFAC/EU/UN/UK sanctions, politically-exposed persons, warrants, and criminal entities."
+    api_key_required: false
+    api_key_url: "https://www.opensanctions.org/api/"
+
+# Data Catalogs & Extras
+  data_gov:
+    file: tools/data_gov.py
+    title: "Data.gov — US Government Open Data Catalog"
+    description: "Search 300,000+ open datasets from US federal, state and local agencies via the Data.gov CKAN catalog."
+    api_key_required: false
+
+  google_books:
+    file: tools/google_books.py
+    title: "Google Books — Book Metadata & Previews"
+    description: "Search 40M+ titles with descriptions, ratings, ISBNs, and preview links. Works without a key."
+    api_key_required: false
+
+  coincap:
+    file: tools/coincap.py
+    title: "CoinCap — Free Crypto Prices & History"
+    description: "Key-free crypto asset prices, market caps, and historical candles. Broader altcoin coverage than the basic finance tool."
+    api_key_required: false
