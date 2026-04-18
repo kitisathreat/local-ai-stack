@@ -5,6 +5,9 @@ param(
 
 $log = if ($CI) { "$PSScriptRoot\ci_results.txt" } else { "C:\Users\Kit\Documents\test_results.txt" }
 $pass = 0; $fail = 0
+
+# Derive repo root from the script's own location so tests work in CI and locally
+$root = (Resolve-Path "$PSScriptRoot\..").Path
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 function Test-Case($name, $block) {
@@ -19,7 +22,6 @@ function Test-Case($name, $block) {
     }
 }
 
-$root = "C:\Users\Kit\Documents\claude code"
 "===== LOCAL AI STACK TEST SUITE =====" | Tee-Object -FilePath $log | Write-Host -ForegroundColor Cyan
 "$(Get-Date)" | Tee-Object -FilePath $log -Append | Write-Host
 
@@ -366,21 +368,14 @@ Test-Optional "n8n"        "http://localhost:5678"
 # -- CODE ASSIST SCRIPT --
 "`n[ Code Assist Script ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
 
-# Resolve root for code assist tests: works in both the worktree and the main repo after merge
-$caRoot = if (Test-Path "$PSScriptRoot\..\scripts\code_assist.py") {
-    (Resolve-Path "$PSScriptRoot\..").Path
-} else {
-    $root
-}
-
 Test-Case "Python syntax: code_assist.py" {
-    $out = python -m py_compile "$caRoot\scripts\code_assist.py" 2>&1
+    $out = python -m py_compile "$root\scripts\code_assist.py" 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Syntax error: $out" }
 }
 
 Test-Case "All 5 prompt files exist" {
     foreach ($mode in @("explain","review","fix","test","plan")) {
-        $p = "$caRoot\scripts\prompts\$mode.txt"
+        $p = "$root\scripts\prompts\$mode.txt"
         if (-not (Test-Path $p)) { throw "Missing prompt file: $p" }
     }
 }
@@ -396,14 +391,14 @@ if (-not $CI) {
 }
 
 Test-Case "code_assist.py --help exits cleanly" {
-    $out = (python "$caRoot\scripts\code_assist.py" --help 2>&1) -join " "
+    $out = (python "$root\scripts\code_assist.py" --help 2>&1) -join " "
     if ($LASTEXITCODE -ne 0) { throw "Script exited with error on --help: $out" }
     if ($out -notmatch "mode") { throw "--help output missing expected 'mode' flag description" }
 }
 
 Test-Case "code_assist.py accepts --profile and --mode flags" {
     # Pipe empty input to trigger clean startup then EOF exit
-    $out = "" | python "$caRoot\scripts\code_assist.py" --profile coding --mode review 2>&1
+    $out = "" | python "$root\scripts\code_assist.py" --profile coding --mode review 2>&1
     if ($LASTEXITCODE -gt 1) { throw "Script crashed on startup (exit $LASTEXITCODE): $out" }
 }
 
