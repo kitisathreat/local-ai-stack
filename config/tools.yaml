@@ -164,6 +164,12 @@ pipelines:
     description: "Automatically inject date, time, and user context into every system prompt."
     type: filter
 
+  clarification_filter:
+    file: pipelines/clarification_filter.py
+    title: "Clarification Gate"
+    description: "Injects clarification protocol into the system prompt and reformats [CLARIFY] blocks in model responses into polished multiple-choice UI. Works alongside the ask_clarification tool."
+    type: filter
+
   web_search_rag:
     file: pipelines/web_search_rag.py
     title: "Web Search RAG"
@@ -398,3 +404,11 @@ additional_tools:
     requires_service: jupyter
     api_key_required: false
     requirements: "httpx websockets"
+
+# ── Interaction & UX ──────────────────────────────────────────────────────────
+  ask_clarification:
+    file: tools/ask_clarification.py
+    title: "Ask Clarification — Multiple-Choice Questions"
+    description: "Lets the model present structured clarifying questions before tackling ambiguous tasks. Renders numbered multiple-choice options with an optional free-text field. Model calls ask_user(), ask_yes_no(), or ask_scope() — user replies with a number or custom text."
+    api_key_required: false
+    default_enabled: true
