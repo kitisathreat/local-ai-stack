@@ -1,0 +1,167 @@
+# Ollama Model Registry
+# Models pulled via: .\scripts\setup-ollama-models.ps1
+# Browse all available models at: https://ollama.com/library
+#
+# Ollama runs at: http://localhost:11434
+# Open WebUI connects automatically via OLLAMA_BASE_URL
+
+# Models to auto-pull on setup (name: pull tag)
+auto_pull:
+  - llama3.2:3b          # Meta Llama 3.2 3B — fast, general purpose
+  - phi4-mini:latest     # Microsoft Phi-4 Mini — small but capable
+  - mistral:7b           # Mistral 7B — strong reasoning
+  - nomic-embed-text     # Nomic embedding model for RAG
+  - llava:7b             # LLaVA multimodal vision + text
+
+# Full model catalog (for reference / manual pull)
+models:
+  # ── General Purpose ──────────────────────────────────────────────────────────
+  llama3.2:
+    tag: "llama3.2:3b"
+    description: "Meta Llama 3.2 3B — lightweight, fast, strong instruction following"
+    size_gb: 2.0
+    use_case: "Quick chat, drafting, summarization"
+
+  llama3.2-vision:
+    tag: "llama3.2-vision:11b"
+    description: "Meta Llama 3.2 Vision 11B — multimodal image + text understanding"
+    size_gb: 7.9
+    use_case: "Image analysis, visual Q&A, document OCR"
+
+  phi4-mini:
+    tag: "phi4-mini:latest"
+    description: "Microsoft Phi-4 Mini — highly efficient small model"
+    size_gb: 2.5
+    use_case: "Fast responses, mobile-friendly workloads"
+
+  phi4:
+    tag: "phi4:14b"
+    description: "Microsoft Phi-4 14B — strong reasoning in smaller footprint"
+    size_gb: 8.9
+    use_case: "Reasoning, math, science"
+
+  mistral:
+    tag: "mistral:7b"
+    description: "Mistral 7B — balanced speed and capability"
+    size_gb: 4.1
+    use_case: "General assistant, writing, analysis"
+
+  mistral-nemo:
+    tag: "mistral-nemo:12b"
+    description: "Mistral NeMo 12B — extended context, strong multilingual"
+    size_gb: 7.1
+    use_case: "Long documents, multilingual tasks"
+
+  # ── Coding ───────────────────────────────────────────────────────────────────
+  codellama:
+    tag: "codellama:7b"
+    description: "Meta Code Llama 7B — code generation and completion"
+    size_gb: 3.8
+    use_case: "Code generation, debugging, refactoring"
+
+  deepseek-coder-v2:
+    tag: "deepseek-coder-v2:16b"
+    description: "DeepSeek Coder V2 16B MoE — state-of-the-art coding"
+    size_gb: 8.9
+    use_case: "Advanced code generation, multi-language support"
+
+  qwen2.5-coder:
+    tag: "qwen2.5-coder:7b"
+    description: "Qwen 2.5 Coder 7B — strong coding with tool use"
+    size_gb: 4.7
+    use_case: "Code completion, code review, debugging"
+
+  # ── Vision / Multimodal ───────────────────────────────────────────────────────
+  llava:
+    tag: "llava:7b"
+    description: "LLaVA 7B — vision-language model for image understanding"
+    size_gb: 4.5
+    use_case: "Image captioning, visual Q&A, chart reading"
+
+  llava-llama3:
+    tag: "llava-llama3:8b"
+    description: "LLaVA on Llama 3 8B — improved multimodal reasoning"
+    size_gb: 5.5
+    use_case: "Advanced image analysis, document understanding"
+
+  moondream:
+    tag: "moondream:1.8b"
+    description: "Moondream 1.8B — tiny but capable vision model"
+    size_gb: 1.1
+    use_case: "Fast image descriptions, edge device use"
+
+  # ── Embeddings (for RAG) ──────────────────────────────────────────────────────
+  nomic-embed-text:
+    tag: "nomic-embed-text:latest"
+    description: "Nomic Embed Text — high-quality text embeddings for RAG"
+    size_gb: 0.3
+    use_case: "Document embedding, semantic search, RAG"
+
+  mxbai-embed-large:
+    tag: "mxbai-embed-large:latest"
+    description: "MixedBread AI Large Embedding — state-of-the-art retrieval"
+    size_gb: 0.7
+    use_case: "High-accuracy semantic search and RAG"
+
+  # ── Specialized ───────────────────────────────────────────────────────────────
+  gemma3:
+    tag: "gemma3:4b"
+    description: "Google Gemma 3 4B — strong multilingual and reasoning"
+    size_gb: 3.3
+    use_case: "Multilingual tasks, structured output, Q&A"
+
+  gemma3:12b:
+    tag: "gemma3:12b"
+    description: "Google Gemma 3 12B — higher capability version"
+    size_gb: 8.1
+    use_case: "Complex reasoning, research assistance"
+
+  orca-mini:
+    tag: "orca-mini:3b"
+    description: "Orca Mini 3B — instruction-tuned small model"
+    size_gb: 1.9
+    use_case: "Fast Q&A, lightweight assistant"
+
+  neural-chat:
+    tag: "neural-chat:7b"
+    description: "Intel Neural Chat 7B — optimized conversational AI"
+    size_gb: 4.1
+    use_case: "Natural conversation, customer-facing chat"
+
+  stablelm2:
+    tag: "stablelm2:1.6b"
+    description: "Stability AI StableLM 2 1.6B — ultra-compact model"
+    size_gb: 1.0
+    use_case: "Embedded AI, very fast responses"
+
+# Pull groups — run setup-ollama-models.ps1 -Group <name>
+groups:
+  minimal:
+    - llama3.2:3b
+    - nomic-embed-text
+
+  standard:
+    - llama3.2:3b
+    - phi4-mini:latest
+    - nomic-embed-text
+    - llava:7b
+
+  full:
+    - llama3.2:3b
+    - phi4:14b
+    - mistral:7b
+    - codellama:7b
+    - llava:7b
+    - nomic-embed-text
+    - mxbai-embed-large
+
+  coding:
+    - codellama:7b
+    - deepseek-coder-v2:16b
+    - qwen2.5-coder:7b
+
+  vision:
+    - llava:7b
+    - llava-llama3:8b
+    - moondream:1.8b
+    - llama3.2-vision:11b

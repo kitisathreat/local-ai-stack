@@ -1,0 +1,131 @@
+# Knowledge Base Sources
+# Documents and data sources to ingest into Open WebUI's RAG system.
+# Upload files via Open WebUI Admin > Documents, or use the RAG API.
+#
+# Qdrant (vector DB) stores embeddings at: http://localhost:6333
+# Open WebUI RAG docs: https://docs.openwebui.com/features/rag/
+
+# ── Knowledge Domains ─────────────────────────────────────────────────────────
+knowledge_bases:
+  # General reference
+  general:
+    description: "Broad factual knowledge for general Q&A"
+    sources:
+      - type: web
+        url: https://en.wikipedia.org/wiki/Main_Page
+        refresh: weekly
+        notes: "Wikipedia main page — use URL reader tool for specific articles"
+
+  # AI & Machine Learning
+  ai_ml:
+    description: "AI/ML concepts, models, and research"
+    sources:
+      - type: web
+        url: https://huggingface.co/docs
+        refresh: monthly
+        notes: "HuggingFace documentation"
+      - type: web
+        url: https://docs.openwebui.com
+        refresh: monthly
+        notes: "Open WebUI documentation"
+      - type: web
+        url: https://lmstudio.ai/docs
+        refresh: monthly
+        notes: "LM Studio documentation"
+      - type: arxiv
+        category: cs.AI
+        max_papers: 50
+        refresh: weekly
+        notes: "Latest AI research papers"
+      - type: arxiv
+        category: cs.LG
+        max_papers: 50
+        refresh: weekly
+        notes: "Latest ML research papers"
+
+  # PC Hardware & Gaming (Kit's specialty)
+  hardware:
+    description: "PC hardware, GPU, gaming, and tech specs"
+    sources:
+      - type: web
+        url: https://www.techpowerup.com/gpu-specs/
+        refresh: monthly
+        notes: "GPU specifications database"
+      - type: web
+        url: https://www.tomshardware.com
+        refresh: weekly
+        notes: "Hardware reviews and news"
+      - type: web
+        url: https://www.reddit.com/r/hardware.json
+        refresh: daily
+        notes: "r/hardware community discussions"
+
+  # Local AI & Self-Hosting
+  local_ai:
+    description: "Local AI tools, self-hosting, and open source models"
+    sources:
+      - type: web
+        url: https://ollama.com/library
+        refresh: weekly
+        notes: "Ollama model library"
+      - type: web
+        url: https://huggingface.co/models
+        refresh: weekly
+        notes: "HuggingFace model hub"
+      - type: web
+        url: https://github.com/open-webui/open-webui
+        refresh: monthly
+        notes: "Open WebUI GitHub repository"
+
+  # Development & Coding
+  development:
+    description: "Programming, software development, DevOps"
+    sources:
+      - type: web
+        url: https://docs.docker.com
+        refresh: monthly
+        notes: "Docker documentation"
+      - type: web
+        url: https://docs.python.org/3/
+        refresh: monthly
+        notes: "Python 3 documentation"
+      - type: web
+        url: https://stackoverflow.com
+        refresh: real_time
+        notes: "Use web search or GitHub search tool for live queries"
+
+# ── RAG Configuration ─────────────────────────────────────────────────────────
+rag_settings:
+  chunk_size: 1500          # Characters per chunk
+  chunk_overlap: 200        # Overlap between chunks
+  top_k: 5                  # Documents retrieved per query
+  similarity_threshold: 0.3 # Minimum similarity score (0-1)
+  embedding_model: "nomic-ai/nomic-embed-text-v1.5-GGUF"
+
+# ── Document Types Supported ──────────────────────────────────────────────────
+supported_formats:
+  - PDF
+  - DOCX
+  - TXT
+  - MD (Markdown)
+  - HTML
+  - CSV
+  - XLSX
+  - PPTX
+  - YouTube transcripts (via URL)
+  - Web pages (via URL)
+
+# ── Ingestion Instructions ────────────────────────────────────────────────────
+# 1. Via Open WebUI UI:
+#    - Go to http://localhost:3000
+#    - Workspace > Knowledge > Create Knowledge Base
+#    - Upload files or paste URLs
+#    - Toggle RAG in any chat to query the knowledge base
+#
+# 2. Via API (curl example):
+#    curl -X POST http://localhost:3000/api/v1/knowledge/create \
+#      -H "Content-Type: application/json" \
+#      -d '{"name": "My KB", "description": "Description"}'
+#
+# 3. Via setup script:
+#    .\scripts\setup-connectors.ps1 -SetupKnowledge

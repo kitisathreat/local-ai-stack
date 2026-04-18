@@ -59,3 +59,68 @@ models:
     top_k: 40
     repeat_penalty: 1.05
     max_tokens: 8192
+
+  creative:
+    name: "Creative (Qwen 3.5 9B)"
+    id: "qwen/qwen3.5-9b"
+    gpu: max
+    context: 8192
+    parallel: 2
+    description: "High-creativity writing, brainstorming, storytelling, and ideation."
+    temperature: 1.1
+    top_p: 0.98
+    top_k: 60
+    repeat_penalty: 1.0
+    max_tokens: 4096
+
+  analyst:
+    name: "Analyst (DeepSeek R1 8B)"
+    id: "deepseek/deepseek-r1-0528-qwen3-8b"
+    gpu: max
+    context: 16384
+    parallel: 2
+    description: "Structured analysis, data interpretation, research, and precise Q&A."
+    temperature: 0.2
+    top_p: 0.9
+    top_k: 20
+    repeat_penalty: 1.1
+    max_tokens: 8192
+
+  balanced:
+    name: "Balanced (DeepSeek R1 8B)"
+    id: "deepseek/deepseek-r1-0528-qwen3-8b"
+    gpu: max
+    context: 8192
+    parallel: 3
+    description: "General-purpose assistant. Good speed/quality tradeoff."
+    temperature: 0.7
+    top_p: 0.92
+    top_k: 40
+    repeat_penalty: 1.08
+    max_tokens: 4096
+
+  roleplay:
+    name: "Roleplay (Qwen 3.5 9B)"
+    id: "qwen/qwen3.5-9b"
+    gpu: max
+    context: 8192
+    parallel: 2
+    description: "Character roleplay, interactive fiction, and conversational scenarios."
+    temperature: 0.95
+    top_p: 0.97
+    top_k: 50
+    repeat_penalty: 1.02
+    max_tokens: 2048
+
+  summarizer:
+    name: "Summarizer (Qwen 3.5 9B)"
+    id: "qwen/qwen3.5-9b"
+    gpu: max
+    context: 32768
+    parallel: 4
+    description: "Long-document summarization, meeting notes, article condensation."
+    temperature: 0.3
+    top_p: 0.9
+    top_k: 30
+    repeat_penalty: 1.1
+    max_tokens: 2048

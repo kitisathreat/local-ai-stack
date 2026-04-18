@@ -1,0 +1,97 @@
+# Open WebUI Tool Registry
+# Tools extend what models can DO — they are Python functions the model calls in conversations.
+# Install via Open WebUI Admin > Tools, or run: .\scripts\setup-tools.ps1
+#
+# Tool files live in: tools/
+# Open WebUI tool docs: https://docs.openwebui.com/features/plugin/tools/
+
+tools:
+  # ── Search & Research ─────────────────────────────────────────────────────────
+  web_search:
+    file: tools/web_search.py
+    title: "Web Search (SearXNG)"
+    description: "Search the web in real time via local SearXNG. Gives models access to current events and live data."
+    requires_service: searxng
+    default_enabled: true
+
+  wikipedia:
+    file: tools/wikipedia.py
+    title: "Wikipedia Lookup"
+    description: "Retrieve Wikipedia article summaries and full content. Great for encyclopedic knowledge."
+    requires_service: null
+    default_enabled: true
+
+  arxiv_search:
+    file: tools/arxiv_search.py
+    title: "ArXiv Paper Search"
+    description: "Search and retrieve academic papers from ArXiv. Gives models access to research."
+    requires_service: null
+    default_enabled: false
+
+  url_reader:
+    file: tools/url_reader.py
+    title: "URL Reader"
+    description: "Fetch and extract readable text from any URL. Lets the model read web pages."
+    requires_service: null
+    default_enabled: true
+
+  # ── Computation & Data ────────────────────────────────────────────────────────
+  calculator:
+    file: tools/calculator.py
+    title: "Calculator"
+    description: "Perform arithmetic, algebra, unit conversions, and financial calculations accurately."
+    requires_service: null
+    default_enabled: true
+
+  datetime_tool:
+    file: tools/datetime_tool.py
+    title: "Date & Time"
+    description: "Get current date/time in any timezone, calculate date differences, parse dates."
+    requires_service: null
+    default_enabled: true
+
+  weather:
+    file: tools/weather.py
+    title: "Weather (Open-Meteo)"
+    description: "Real-time weather and 7-day forecast via free Open-Meteo API. No API key needed."
+    requires_service: null
+    default_enabled: true
+
+  # ── Code & Development ────────────────────────────────────────────────────────
+  github_search:
+    file: tools/github_search.py
+    title: "GitHub Search"
+    description: "Search GitHub repositories, issues, and code. Useful for development assistance."
+    requires_service: null
+    default_enabled: false
+
+  # ── Memory & Persistence ──────────────────────────────────────────────────────
+  memory_tool:
+    file: tools/memory_tool.py
+    title: "Long-Term Memory"
+    description: "Store and recall facts across conversations. Persist important user context."
+    requires_service: null
+    default_enabled: true
+
+# Pipelines extend how requests are PROCESSED — they sit between the user and the model.
+# Pipeline files live in: pipelines/
+# Open WebUI adds them as API connections (http://pipelines:9099)
+
+pipelines:
+  rate_limiter:
+    file: pipelines/rate_limiter.py
+    title: "Rate Limiter"
+    description: "Limit requests per user to prevent abuse and manage GPU load."
+    type: filter
+
+  context_injector:
+    file: pipelines/context_injector.py
+    title: "System Context Injector"
+    description: "Automatically inject date, time, and user context into every system prompt."
+    type: filter
+
+  web_search_rag:
+    file: pipelines/web_search_rag.py
+    title: "Web Search RAG"
+    description: "Automatically search the web and inject results when the model lacks knowledge."
+    type: pipe
