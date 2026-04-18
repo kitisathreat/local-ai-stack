@@ -245,3 +245,55 @@ additional_tools:
     description: "Trigger any n8n automation workflow from chat. List workflows, call webhooks, get results."
     requires_service: n8n
     api_key_required: false
+
+# ── Excel & Spreadsheet ───────────────────────────────────────────────────────
+  excel_tool:
+    file: tools/excel_tool.py
+    title: "Excel & Spreadsheet Tool"
+    description: "Read/analyze Excel and CSV files from URLs, generate Python openpyxl code to create workbooks, analyze pasted CSV data with statistics, and get Excel formula help for financial/data tasks."
+    api_key_required: false
+    requirements: openpyxl
+
+# ── Finance & Economics ───────────────────────────────────────────────────────
+  fred:
+    file: tools/fred.py
+    title: "FRED — Federal Reserve Economic Data"
+    description: "Access 800,000+ economic series from the St. Louis Fed. GDP, CPI, unemployment, Fed funds rate, treasury yields, M2, VIX, housing, trade, and consumer data. Free API key required."
+    api_key_required: true
+    api_key_url: "https://fred.stlouisfed.org/docs/api/api_key.html"
+
+  yahoo_finance_extended:
+    file: tools/yahoo_finance_extended.py
+    title: "Yahoo Finance Extended — Financials, History & Options"
+    description: "Deep financial data: historical OHLCV prices, income/balance/cashflow statements, key ratios (P/E, P/B, beta), options chains, earnings calendar, and analyst recommendations."
+    api_key_required: false
+
+  sec_edgar:
+    file: tools/sec_edgar.py
+    title: "SEC EDGAR — Company Filings & Disclosures"
+    description: "Search SEC EDGAR for 10-K annual reports, 10-Q quarterly reports, 8-K current events, S-1 IPOs, proxy statements, and insider transactions. Find companies by name or ticker."
+    api_key_required: false
+
+  forex:
+    file: tools/forex.py
+    title: "Forex — Live Exchange Rates & Currency Conversion"
+    description: "Real-time foreign exchange rates via ECB/Frankfurter API. Convert between 30+ currencies, view historical rate charts, and get live rate tables. No API key required."
+    api_key_required: false
+
+  financial_calculator:
+    file: tools/financial_calculator.py
+    title: "Financial Calculator — NPV, IRR, DCF, Options & Portfolio"
+    description: "Professional financial math: NPV/IRR analysis, loan amortization schedules, Black-Scholes options pricing, bond yield-to-maturity, compound interest, and portfolio Sharpe/Sortino/drawdown metrics."
+    api_key_required: false
+
+  world_bank:
+    file: tools/world_bank.py
+    title: "World Bank — Global Economic & Development Data"
+    description: "200+ countries, 1000+ indicators: GDP, inflation, unemployment, poverty, education, health, trade, CO2 emissions. Compare countries side-by-side and build country profiles."
+    api_key_required: false
+
+  technical_analysis:
+    file: tools/technical_analysis.py
+    title: "Technical Analysis — RSI, MACD, Bollinger Bands & More"
+    description: "Full technical analysis from live Yahoo Finance data. RSI (overbought/oversold), MACD crossovers, Bollinger Bands, SMA/EMA golden/death cross, and full technical reports with overall signals."
+    api_key_required: false
