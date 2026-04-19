@@ -1,11 +1,14 @@
 /** @jsxImportSource preact */
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import {
-  adminApi, AdminOverview, AdminSeries, AdminTierStat, AdminUser,
-  AdminUserStat, AdminConfigSnapshot,
+  adminApi, api, AdminOverview, AdminSeries, AdminTierStat, AdminUser,
+  AdminUserStat, AdminConfigSnapshot, Tier, streamChat,
+  MultiAgentOptions, InteractionMode,
 } from "./api";
 
-type Tab = "overview" | "usage" | "users" | "models" | "router" | "vram" | "auth" | "tools";
+type Tab =
+  | "overview" | "usage" | "users" | "models" | "router" | "multi_agent"
+  | "vram" | "auth" | "tools";
 
 const WINDOW_OPTS: Array<{ label: string; s: number }> = [
   { label: "1h", s: 3600 },
@@ -429,52 +432,12 @@ function RouterConfigTab() {
       <h3 class="admin-h3">Auto-thinking: disable when any match</h3>
       {listEditor("disable_when_any")}
 
-      <h3 class="admin-h3">Multi-agent</h3>
-      <p class="admin-dim" style="margin-top:-0.4rem; font-size:0.85rem;">
-        Defaults that apply when a chat doesn't override them. Admins can
-        also tweak these per chat from the chat header (won't persist).
+      <p class="admin-dim" style="font-size:0.85rem;">
+        Multi-agent workflow defaults moved to the dedicated{" "}
+        <strong>Multi-agent</strong> tab — including the workflow diagram and
+        a live test runner. This tab now only edits the auto-thinking signal
+        regexes.
       </p>
-      <div class="admin-form-grid">
-        <Field label="Min workers" type="number" value={draft.multi_agent.min_workers}
-               hint="Lower bound the orchestrator targets when decomposing."
-               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, min_workers: v } })} />
-        <Field label="Max workers" type="number" value={draft.multi_agent.max_workers}
-               hint="Hard cap on parallel subtasks (1..8)."
-               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, max_workers: v } })} />
-        <Field label="Worker tier (size & quantization)"
-               value={draft.multi_agent.worker_tier}
-               hint='e.g. "fast" — each tier embeds model size + quantization.'
-               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, worker_tier: v } })} />
-        <Field label="Orchestrator tier" value={draft.multi_agent.orchestrator_tier}
-               hint="Plans subtasks and synthesizes the final answer."
-               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, orchestrator_tier: v } })} />
-        <Bool label="Workers reason (think mode) by default"
-              value={!!draft.multi_agent.reasoning_workers}
-              onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, reasoning_workers: v } })} />
-        <label class="admin-field">
-          <span>Interaction mode</span>
-          <select value={draft.multi_agent.interaction_mode || "independent"}
-                  onChange={(e) => setDraft({
-                    ...draft,
-                    multi_agent: {
-                      ...draft.multi_agent,
-                      interaction_mode: (e.target as HTMLSelectElement).value,
-                    },
-                  })}>
-            <option value="independent">Independent (parallel only)</option>
-            <option value="collaborative">Collaborative (peers refine)</option>
-          </select>
-          <small class="admin-dim">
-            Collaborative mode lets workers see each other's drafts and refine
-            their own answers between rounds before synthesis. Higher rigor,
-            higher cost.
-          </small>
-        </label>
-        <Field label="Refinement rounds (collaborative only)" type="number"
-               value={draft.multi_agent.interaction_rounds}
-               hint="Extra rounds where workers cross-read drafts (0..4)."
-               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, interaction_rounds: v } })} />
-      </div>
 
       <div class="admin-actions">
         <button class="primary" disabled={busy} onClick={() => save({ router: draft })}>Save</button>
@@ -483,6 +446,384 @@ function RouterConfigTab() {
       </div>
     </div>
   );
+}
+
+/* ── Multi-agent tab ───────────────────────────────────────────────── */
+//
+// Three sections, top to bottom:
+//   1. Workflow diagram — schematic of the current orchestrator → workers
+//      → synthesis pipeline, reflecting the *unsaved draft* settings so the
+//      admin can see the shape of the pipeline before saving.
+//   2. Defaults — same fields that used to live under Router. Saves to
+//      router.yaml via PATCH /admin/config (hot-reload).
+//   3. Live test — admin-only sandbox that submits a prompt with
+//      multi_agent_options.enabled=true and renders a worker card per
+//      subtask in real time. Useful for tuning min/max workers and
+//      collaborative rounds without polluting a real chat.
+
+type WorkerStatus = "pending" | "running" | "done" | "error";
+
+interface WorkerCard {
+  id: number;
+  tier: string;
+  task: string;
+  status: WorkerStatus;
+  chars: number;
+  round: number;
+  error?: string;
+}
+
+function tierLabel(tier: Tier | undefined, name: string): string {
+  if (!tier) return name;
+  // "Versatile (Qwen3.6 35B-A3B)" → "Versatile · 35B"
+  const m = tier.name.match(/^([^(]+?)\s*\(.*?(\d+\.?\d*[Bb]).*\)/);
+  return m ? `${m[1].trim()} · ${m[2]}` : tier.name;
+}
+
+function WorkflowDiagram({
+  orchestratorTier, workerTier, maxWorkers, interactionMode,
+  interactionRounds, reasoningWorkers, tiersByName,
+}: {
+  orchestratorTier: string;
+  workerTier: string;
+  maxWorkers: number;
+  interactionMode: string;
+  interactionRounds: number;
+  reasoningWorkers: boolean;
+  tiersByName: Record<string, Tier>;
+}) {
+  const orchTier = tiersByName[orchestratorTier];
+  const wTier = tiersByName[workerTier];
+  // Cap drawn workers at 6 so the row stays readable; show a "+N more"
+  // chip beyond that.
+  const drawn = Math.min(maxWorkers, 6);
+  const overflow = Math.max(0, maxWorkers - drawn);
+  const collaborative = interactionMode === "collaborative" && interactionRounds > 0;
+
+  return (
+    <div class="ma-flow">
+      <div class="ma-flow-row">
+        <div class="ma-node ma-node-orch">
+          <div class="ma-node-label">Orchestrator · plan</div>
+          <code>{orchestratorTier}</code>
+          <small class="admin-dim">{tierLabel(orchTier, orchestratorTier)}</small>
+        </div>
+      </div>
+      <div class="ma-flow-arrow">↓ decompose into ≤ {maxWorkers} subtasks</div>
+      <div class="ma-flow-row ma-flow-row-workers">
+        {Array.from({ length: drawn }).map((_, i) => (
+          <div key={i} class="ma-node ma-node-worker">
+            <div class="ma-node-label">Worker {i + 1}</div>
+            <code>{workerTier}</code>
+            <small class="admin-dim">{tierLabel(wTier, workerTier)}</small>
+            <div class="ma-node-flags">
+              {reasoningWorkers && <span class="ma-flag">🧠 reason</span>}
+            </div>
+          </div>
+        ))}
+        {overflow > 0 && (
+          <div class="ma-node ma-node-overflow">+{overflow} more</div>
+        )}
+      </div>
+      {collaborative && (
+        <div class="ma-flow-collab">
+          ↔ {interactionRounds} refinement round{interactionRounds === 1 ? "" : "s"} —
+          peers share drafts and revise
+        </div>
+      )}
+      <div class="ma-flow-arrow">↓ synthesize</div>
+      <div class="ma-flow-row">
+        <div class="ma-node ma-node-orch">
+          <div class="ma-node-label">Orchestrator · synthesize</div>
+          <code>{orchestratorTier}</code>
+          <small class="admin-dim">{tierLabel(orchTier, orchestratorTier)}</small>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MultiAgentTab() {
+  const { cfg, save, status, busy } = useConfig();
+  const [draft, setDraft] = useState<any>(null);
+  const [tiers, setTiers] = useState<Tier[]>([]);
+
+  useEffect(() => { if (cfg) setDraft(JSON.parse(JSON.stringify(cfg.router.multi_agent))); }, [cfg]);
+  useEffect(() => {
+    (async () => {
+      try { setTiers(await api.listTiers()); } catch { /* ignore */ }
+    })();
+  }, []);
+
+  // ── Live test runner state ───────────────────────────────────────────
+  const [prompt, setPrompt] = useState(
+    "Compare Python, Rust, and Go for building a high-throughput web service. " +
+    "For each, cover concurrency model, ecosystem maturity, and deployment story.",
+  );
+  const [running, setRunning] = useState(false);
+  const [workers, setWorkers] = useState<WorkerCard[]>([]);
+  const [events, setEvents] = useState<Array<{ type: string; data: any; ts: number }>>([]);
+  const [output, setOutput] = useState("");
+  const [testErr, setTestErr] = useState<string>("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  if (!draft) return <div class="admin-dim">Loading…</div>;
+
+  const tiersByName: Record<string, Tier> = {};
+  for (const t of tiers) tiersByName[t.id.replace(/^tier\./, "")] = t;
+  const tierOptions = tiers.map((t) => t.id.replace(/^tier\./, ""));
+
+  const setMA = (patch: any) => setDraft({ ...draft, ...patch });
+
+  async function runTest() {
+    if (running || !prompt.trim()) return;
+    setRunning(true);
+    setWorkers([]);
+    setEvents([]);
+    setOutput("");
+    setTestErr("");
+    const t0 = performance.now();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    // Use the *unsaved* draft so admins can preview tweaks before persisting.
+    const opts: MultiAgentOptions = {
+      enabled: true,
+      num_workers: draft.max_workers,
+      worker_tier: draft.worker_tier,
+      orchestrator_tier: draft.orchestrator_tier,
+      reasoning_workers: !!draft.reasoning_workers,
+      interaction_mode: (draft.interaction_mode as InteractionMode) || "independent",
+      interaction_rounds: draft.interaction_rounds,
+    };
+
+    try {
+      for await (const ev of streamChat({
+        model: `tier.${draft.orchestrator_tier || "versatile"}`,
+        messages: [{ role: "user", content: prompt }],
+        multi_agent_options: opts,
+        signal: ctrl.signal,
+      })) {
+        const ts = performance.now() - t0;
+        if (ev.kind === "agent" && ev.agent) {
+          const { type, data } = ev.agent;
+          setEvents((prev) => [...prev, { type, data, ts }]);
+          if (type === "agent.workers_start") {
+            const ws: WorkerCard[] = ((data.workers as any[]) || []).map((w) => ({
+              id: w.id, tier: w.tier, task: w.task,
+              status: "running", chars: 0, round: 1,
+            }));
+            setWorkers(ws);
+          } else if (type === "agent.refine_start") {
+            const r = (data as any).round as number || 2;
+            setWorkers((prev) => prev.map((w) => (
+              { ...w, status: "running" as WorkerStatus, round: r }
+            )));
+          } else if (type === "agent.worker_done") {
+            const d = data as { id: number; chars?: number; round?: number; error?: string | null };
+            setWorkers((prev) => prev.map((w) => {
+              if (w.id !== d.id) return w;
+              const next: WorkerCard = {
+                ...w,
+                status: (d.error ? "error" : "done") as WorkerStatus,
+                chars: Number(d.chars || 0),
+                round: Number(d.round || w.round),
+                error: d.error || undefined,
+              };
+              return next;
+            }));
+          } else if (type === "error") {
+            setTestErr(String((data as any).message || "unknown error"));
+          }
+        } else if (ev.kind === "token" && ev.text) {
+          setOutput((prev) => prev + ev.text);
+        } else if (ev.kind === "error" && ev.error) {
+          setTestErr(ev.error);
+        }
+      }
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setTestErr(e?.message || String(e));
+    } finally {
+      setRunning(false);
+      abortRef.current = null;
+    }
+  }
+
+  function cancelTest() { abortRef.current?.abort(); }
+
+  return (
+    <div class="ma-tab">
+      {/* ── 1. Workflow diagram ──────────────────────────────────── */}
+      <h3 class="admin-h3">Workflow (preview from current draft)</h3>
+      <WorkflowDiagram
+        orchestratorTier={draft.orchestrator_tier || "versatile"}
+        workerTier={draft.worker_tier || "fast"}
+        maxWorkers={draft.max_workers || 3}
+        interactionMode={draft.interaction_mode || "independent"}
+        interactionRounds={draft.interaction_rounds || 0}
+        reasoningWorkers={!!draft.reasoning_workers}
+        tiersByName={tiersByName}
+      />
+
+      {/* ── 2. Tuning ────────────────────────────────────────────── */}
+      <h3 class="admin-h3">Defaults (router.yaml)</h3>
+      <p class="admin-dim" style="font-size:0.85rem; margin-top:-0.4rem;">
+        Edits here apply globally. Per-chat overrides from the chat header
+        sit on top of these without persisting.
+      </p>
+      <div class="admin-form-grid">
+        <Field label="Min workers" type="number" value={draft.min_workers}
+               hint="Lower bound the orchestrator targets when decomposing."
+               onChange={(v) => setMA({ min_workers: v })} />
+        <Field label="Max workers" type="number" value={draft.max_workers}
+               hint="Hard cap on parallel subtasks (1..8)."
+               onChange={(v) => setMA({ max_workers: v })} />
+        <label class="admin-field">
+          <span>Worker tier (size & quantization)</span>
+          <select value={draft.worker_tier}
+                  onChange={(e) => setMA({ worker_tier: (e.target as HTMLSelectElement).value })}>
+            {tierOptions.length === 0 && <option value={draft.worker_tier}>{draft.worker_tier}</option>}
+            {tierOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <small class="admin-dim">Each tier embeds a model size and quantization.</small>
+        </label>
+        <label class="admin-field">
+          <span>Orchestrator tier</span>
+          <select value={draft.orchestrator_tier}
+                  onChange={(e) => setMA({ orchestrator_tier: (e.target as HTMLSelectElement).value })}>
+            {tierOptions.length === 0 && <option value={draft.orchestrator_tier}>{draft.orchestrator_tier}</option>}
+            {tierOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <small class="admin-dim">Plans subtasks and synthesizes the final answer.</small>
+        </label>
+        <Bool label="Workers reason (think mode) by default"
+              value={!!draft.reasoning_workers}
+              onChange={(v) => setMA({ reasoning_workers: v })} />
+        <label class="admin-field">
+          <span>Interaction mode</span>
+          <select value={draft.interaction_mode || "independent"}
+                  onChange={(e) => setMA({ interaction_mode: (e.target as HTMLSelectElement).value })}>
+            <option value="independent">Independent (parallel only)</option>
+            <option value="collaborative">Collaborative (peers refine)</option>
+          </select>
+          <small class="admin-dim">
+            Collaborative shares peer drafts between rounds for higher rigor.
+          </small>
+        </label>
+        <Field label="Refinement rounds (collaborative only)" type="number"
+               value={draft.interaction_rounds}
+               hint="Extra rounds where workers cross-read drafts (0..4)."
+               onChange={(v) => setMA({ interaction_rounds: v })} />
+      </div>
+      <div class="admin-actions">
+        <button class="primary" disabled={busy}
+                onClick={() => save({ router: { multi_agent: draft } as any })}>Save</button>
+        <button disabled={busy}
+                onClick={() => cfg && setDraft(JSON.parse(JSON.stringify(cfg.router.multi_agent)))}>Revert</button>
+        {status && <span class="admin-dim">{status}</span>}
+      </div>
+
+      {/* ── 3. Live test ─────────────────────────────────────────── */}
+      <h3 class="admin-h3">Live test</h3>
+      <p class="admin-dim" style="font-size:0.85rem; margin-top:-0.4rem;">
+        Send a prompt through the orchestrator using the unsaved draft above
+        and watch the workers run. Results aren't saved to any conversation.
+      </p>
+      <textarea
+        class="ma-test-prompt"
+        value={prompt}
+        onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
+        disabled={running}
+        rows={3}
+      />
+      <div class="admin-actions">
+        {!running ? (
+          <button class="primary" disabled={!prompt.trim()} onClick={runTest}>
+            ▶ Run test
+          </button>
+        ) : (
+          <button onClick={cancelTest}>■ Stop</button>
+        )}
+        <button disabled={running}
+                onClick={() => { setWorkers([]); setEvents([]); setOutput(""); setTestErr(""); }}>
+          Clear
+        </button>
+        {running && <span class="admin-dim">Streaming…</span>}
+      </div>
+
+      {testErr && <div class="admin-error" style="margin-top:0.6rem;">{testErr}</div>}
+
+      {(workers.length > 0 || events.length > 0) && (
+        <div class="ma-test-grid">
+          <div>
+            <h4 class="admin-h4">Workers</h4>
+            {workers.length === 0 && <div class="admin-dim">Waiting for plan…</div>}
+            <div class="ma-worker-grid">
+              {workers.map((w) => (
+                <div key={w.id} class={`ma-worker-card ma-status-${w.status}`}>
+                  <div class="ma-worker-card-head">
+                    <span>Worker {w.id}</span>
+                    <span class="ma-worker-status">{w.status}</span>
+                  </div>
+                  <code class="ma-worker-tier">{w.tier}</code>
+                  {w.round > 1 && <div class="ma-worker-round">round {w.round}</div>}
+                  <div class="ma-worker-task">{w.task}</div>
+                  <div class="ma-worker-meta">
+                    {w.status === "done" && <>{w.chars.toLocaleString()} chars</>}
+                    {w.status === "error" && <span class="ma-worker-err">{w.error}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <h4 class="admin-h4">Final output</h4>
+            <div class="ma-output">
+              {output || <span class="admin-dim">(no synthesis yet)</span>}
+            </div>
+          </div>
+          <div>
+            <h4 class="admin-h4">Event timeline</h4>
+            <div class="ma-event-log">
+              {events.length === 0 && <div class="admin-dim">No events yet.</div>}
+              {events.map((e, i) => (
+                <div key={i} class="ma-event-row">
+                  <span class="ma-event-ts">{(e.ts / 1000).toFixed(2)}s</span>
+                  <code class="ma-event-type">{e.type.replace(/^agent\./, "")}</code>
+                  <span class="ma-event-data">{summarizeEventData(e.type, e.data)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function summarizeEventData(type: string, data: any): string {
+  if (!data) return "";
+  if (type === "agent.plan_start") {
+    return `tier=${data.tier} mode=${data.interaction_mode} max=${data.max_workers}`;
+  }
+  if (type === "agent.plan_done") return `${data.subtask_count} subtasks`;
+  if (type === "agent.workers_start") {
+    return `${data.count} workers · reasoning=${!!data.reasoning_workers}`;
+  }
+  if (type === "agent.worker_done") {
+    return data.error
+      ? `worker ${data.id} ERROR ${data.error}`
+      : `worker ${data.id} → ${data.chars} chars (round ${data.round || 1})`;
+  }
+  if (type === "agent.refine_start") {
+    return `round ${data.round} of ${data.total_rounds}`;
+  }
+  if (type === "agent.synthesis_start") return `tier=${data.tier}`;
+  if (type === "agent.synthesis_done") return "complete";
+  if (type === "route.decision") {
+    return `tier=${data.tier} multi=${data.multi_agent} think=${data.think}`;
+  }
+  if (type === "error") return data.message || "";
+  return JSON.stringify(data).slice(0, 80);
 }
 
 function AuthConfigTab() {
@@ -619,6 +960,7 @@ export function AdminDashboard({ onExit }: { onExit: () => void }) {
     { id: "users", label: "Users" },
     { id: "models", label: "Models" },
     { id: "router", label: "Router" },
+    { id: "multi_agent", label: "Multi-agent" },
     { id: "vram", label: "VRAM" },
     { id: "auth", label: "Auth" },
     { id: "tools", label: "Tools" },
@@ -654,6 +996,7 @@ export function AdminDashboard({ onExit }: { onExit: () => void }) {
         {tab === "users" && <UsersTab />}
         {tab === "models" && <ModelsConfigTab />}
         {tab === "router" && <RouterConfigTab />}
+        {tab === "multi_agent" && <MultiAgentTab />}
         {tab === "vram" && <VramConfigTab />}
         {tab === "auth" && <AuthConfigTab />}
         {tab === "tools" && <ToolsTab />}
