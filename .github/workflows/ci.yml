@@ -130,3 +130,14 @@ jobs:
       - name: Run tests (CI mode)
         shell: pwsh
         run: .\tests\run_tests.ps1 -CI
+
+      - name: Print test log on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path tests/ci_results.txt) {
+            Write-Host "===== tests/ci_results.txt =====" -ForegroundColor Cyan
+            Get-Content tests/ci_results.txt | ForEach-Object { Write-Host $_ }
+          } else {
+            Write-Host "No ci_results.txt found." -ForegroundColor Yellow
+          }
