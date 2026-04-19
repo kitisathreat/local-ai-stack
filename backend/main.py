@@ -37,6 +37,7 @@ from .middleware.clarification import (
 )
 from .middleware.context import inject_system_context
 from .middleware.rate_limit import rate_limiter
+from .middleware.response_mode import inject_response_mode
 from .middleware.web_search import inject_web_results
 from .orchestrator import Orchestrator
 from .router import route
@@ -337,6 +338,7 @@ async def chat_completions(
     #   4. Per-user RAG + memory context (signed-in users only)
     inject_system_context(req.messages)
     inject_clarification_instruction(req.messages)
+    inject_response_mode(req.messages, req.response_mode, req.plan_text)
     await inject_web_results(req.messages)
     if user:
         await _inject_user_context(req, user)

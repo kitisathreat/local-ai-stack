@@ -3,7 +3,7 @@ import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 
 import {
-  api, adminApi, Message, Tier, ConversationSummary, streamChat,
+  api, adminApi, Message, Tier, ConversationSummary, streamChat, ResponseMode,
 } from "./api";
 import { AdminDashboard } from "./admin";
 
@@ -102,6 +102,102 @@ function ReasoningToggle({
           <option value="off">off</option>
         </select>
       </label>
+    </div>
+  );
+}
+
+/* ── Response-mode picker ───────────────────────────────────────────── */
+
+const RESPONSE_MODES: Array<{ id: ResponseMode; label: string; hint: string; icon: string }> = [
+  { id: "immediate", label: "Immediate", icon: "⚡", hint: "Answer directly (default)." },
+  { id: "plan", label: "Plan first", icon: "📋", hint: "Write a numbered plan, then wait for your go-ahead." },
+  { id: "clarify", label: "Clarify", icon: "❓", hint: "Ask a clarifying question before attempting the task." },
+  { id: "approval", label: "Step approval", icon: "✋", hint: "Execute step by step, pausing for approval after each major step." },
+  { id: "manual_plan", label: "My plan", icon: "🗒️", hint: "Follow a plan you provide verbatim." },
+];
+
+function ResponseModePicker({
+  mode, onChange, onEditPlan, planSet,
+}: {
+  mode: ResponseMode;
+  onChange: (m: ResponseMode) => void;
+  onEditPlan: () => void;
+  planSet: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = RESPONSE_MODES.find((m) => m.id === mode) ?? RESPONSE_MODES[0];
+  return (
+    <div class="mode-picker-wrap">
+      <button
+        class={"mode-picker-btn" + (mode !== "immediate" ? " active" : "")}
+        onClick={() => setOpen((v) => !v)}
+        title={current.hint}
+      >
+        <span>{current.icon}</span>
+        <span>{current.label}</span>
+        <span class="admin-dim">▾</span>
+      </button>
+      {open && (
+        <>
+          <div class="mode-picker-backdrop" onClick={() => setOpen(false)} />
+          <div class="mode-picker-menu">
+            {RESPONSE_MODES.map((m) => (
+              <button
+                key={m.id}
+                class={"mode-picker-item" + (m.id === mode ? " active" : "")}
+                onClick={() => {
+                  onChange(m.id);
+                  setOpen(false);
+                  if (m.id === "manual_plan") onEditPlan();
+                }}
+              >
+                <span class="mode-picker-icon">{m.icon}</span>
+                <span>
+                  <strong>{m.label}</strong>
+                  <span class="admin-dim"> — {m.hint}</span>
+                </span>
+              </button>
+            ))}
+            {mode === "manual_plan" && (
+              <button class="mode-picker-item" onClick={() => { onEditPlan(); setOpen(false); }}>
+                <span class="mode-picker-icon">✏️</span>
+                <span>{planSet ? "Edit your plan" : "Write your plan"}</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PlanEditorModal({
+  initial, onClose, onSave,
+}: { initial: string; onClose: () => void; onSave: (text: string) => void }) {
+  const [text, setText] = useState(initial);
+  return (
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:60; display:flex; align-items:flex-start; justify-content:center; padding:2rem;"
+         onClick={onClose}>
+      <div class="signin-card" style="max-width:640px; width:100%;" onClick={(e) => e.stopPropagation()}>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0;">Your plan</h2>
+          <button onClick={onClose}>✕</button>
+        </div>
+        <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.3rem;">
+          The assistant will follow these steps verbatim and report
+          progress after each one. One step per line works best.
+        </p>
+        <textarea
+          value={text}
+          placeholder={"1. Draft an outline\n2. Expand each section\n3. Review for tone"}
+          onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
+          style="min-height:220px; width:100%; font-family:var(--mono); font-size:0.85rem;"
+        />
+        <div style="display:flex; gap:0.5rem; margin-top:1rem; justify-content:flex-end;">
+          <button onClick={onClose}>Cancel</button>
+          <button class="primary" onClick={() => { onSave(text); onClose(); }}>Save plan</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -489,6 +585,9 @@ function ChatView({
   const [showTools, setShowTools] = useState(false);
   const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
   const [uploadStatus, setUploadStatus] = useState<string>("");
+  const [responseMode, setResponseMode] = useState<ResponseMode>("immediate");
+  const [planText, setPlanText] = useState<string>("");
+  const [showPlanEditor, setShowPlanEditor] = useState(false);
   const [telemetryOpen, setTelemetryOpen] = useState(false);
   const [telemetry, setTelemetry] = useState<TelemetryState>({
     ping_ms: null, tps: null,
@@ -631,6 +730,8 @@ function ChatView({
               type: "function", function: { name: n },
             }))
           : null,
+        response_mode: responseMode,
+        plan_text: responseMode === "manual_plan" ? planText : null,
         signal: ctrl.signal,
       })) {
         if (ev.kind === "token" && ev.text) {
@@ -723,6 +824,12 @@ function ChatView({
         <header class="chat-header">
           <TierPicker tiers={tiers} activeId={tier} onPick={setTier} />
           <ReasoningToggle mode={reasoning} onChange={setReasoning} />
+          <ResponseModePicker
+            mode={responseMode}
+            onChange={setResponseMode}
+            onEditPlan={() => setShowPlanEditor(true)}
+            planSet={!!planText.trim()}
+          />
           <div style="flex:1" />
           {isAdmin && (
             <button onClick={onOpenAdmin} title="Admin dashboard" style="font-size:0.85rem;">Admin</button>
@@ -779,6 +886,13 @@ function ChatView({
             selected={selectedTools}
             onClose={() => setShowTools(false)}
             onApply={(s) => setSelectedTools(s)}
+          />
+        )}
+        {showPlanEditor && (
+          <PlanEditorModal
+            initial={planText}
+            onClose={() => setShowPlanEditor(false)}
+            onSave={setPlanText}
           />
         )}
       </section>

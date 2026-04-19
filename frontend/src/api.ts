@@ -262,12 +262,16 @@ export const adminApi = {
 
 // ── SSE chat stream ────────────────────────────────────────────────────
 
+export type ResponseMode = "immediate" | "plan" | "clarify" | "approval" | "manual_plan";
+
 export async function* streamChat(params: {
   model: string;
   messages: Message[];
   think?: boolean | null;
   multi_agent?: boolean | null;
   tools?: Array<Record<string, unknown>> | null;
+  response_mode?: ResponseMode | null;
+  plan_text?: string | null;
   signal?: AbortSignal;
 }): AsyncGenerator<SseEnvelope> {
   const body: Record<string, unknown> = {
@@ -278,6 +282,12 @@ export async function* streamChat(params: {
     multi_agent: params.multi_agent ?? null,
   };
   if (params.tools && params.tools.length) body.tools = params.tools;
+  if (params.response_mode && params.response_mode !== "immediate") {
+    body.response_mode = params.response_mode;
+  }
+  if (params.plan_text && params.plan_text.trim()) {
+    body.plan_text = params.plan_text;
+  }
   const r = await fetch("/api/v1/chat/completions", {
     method: "POST",
     credentials: "include",
