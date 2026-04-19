@@ -18,6 +18,10 @@ function Test-Case($name, $block) {
         $script:pass++
     } catch {
         "  [FAIL] $name - $_" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Red
+        # Also emit a GitHub Actions workflow annotation so the failure is
+        # surfaced in the check_runs API even without log access.
+        $msg = "$_" -replace "`n"," " -replace "`r",""
+        Write-Host "::error title=Test failed: $name::$msg"
         $script:fail++
     }
 }
