@@ -20,7 +20,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
               capabilities: [gpu]
     depends_on:
       - ollama
@@ -97,7 +96,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
               capabilities: [gpu]
     restart: always
 
@@ -131,7 +129,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
               capabilities: [gpu]
     restart: unless-stopped
 
