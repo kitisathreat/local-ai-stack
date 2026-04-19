@@ -161,34 +161,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          set -e
-          echo "PR: $PR_NUMBER, repo: $REPO, run: $RUN_ID"
+          echo "PR: $PR_NUMBER, run: $RUN_ID"
           if [ ! -f tests/ci_results.txt ]; then
             echo "ci_results.txt missing"
-            ls -la tests/
+            ls -la tests/ || true
             exit 0
           fi
           echo "---- FULL ci_results.txt ----"
           cat tests/ci_results.txt
           echo "---- end ----"
-          fails=$(grep -E '^\s*\[FAIL\]' tests/ci_results.txt || true)
+          # Use POSIX character class so this works on Git Bash / BSD grep too.
+          fails=$(grep -E '^[[:space:]]*\[FAIL\]' tests/ci_results.txt || true)
           if [ -z "$fails" ]; then
             echo "No [FAIL] lines found; not posting comment"
             exit 0
           fi
-          # Build JSON body via jq to avoid escaping issues
-          body_text=$(printf "### Windows CI test failures (run %s)\n\n\`\`\`text\n%s\n\`\`\`\n" "$RUN_ID" "$fails")
-          printf '%s' "$body_text" > /tmp/body.md
-          jq -Rs '{body: .}' /tmp/body.md > /tmp/payload.json
-          echo "---- payload ----"
-          cat /tmp/payload.json
-          echo "---- POST ----"
-          curl -sS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d @/tmp/payload.json
-          echo ""
+          # Write body to a file in the workspace (avoid /tmp path translation on Git Bash).
+          {
+            echo "### Windows CI test failures (run $RUN_ID)"
+            echo ""
+            echo '```text'
+            echo "$fails"
+            echo '```'
+          } > fail_comment.md
+          echo "---- comment body ----"
+          cat fail_comment.md
+          echo "---- gh pr comment ----"
+          gh pr comment "$PR_NUMBER" --body-file fail_comment.md || \
+            echo "gh pr comment failed"
