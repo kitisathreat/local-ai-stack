@@ -3,7 +3,7 @@ import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 
 import {
-  api, Message, Tier, ConversationSummary, streamChat,
+  api, adminApi, Message, Tier, ConversationSummary, streamChat, ResponseMode,
 } from "./api";
 import { AdminDashboard } from "./admin";
 
@@ -102,6 +102,102 @@ function ReasoningToggle({
           <option value="off">off</option>
         </select>
       </label>
+    </div>
+  );
+}
+
+/* ── Response-mode picker ───────────────────────────────────────────── */
+
+const RESPONSE_MODES: Array<{ id: ResponseMode; label: string; hint: string; icon: string }> = [
+  { id: "immediate", label: "Immediate", icon: "⚡", hint: "Answer directly (default)." },
+  { id: "plan", label: "Plan first", icon: "📋", hint: "Write a numbered plan, then wait for your go-ahead." },
+  { id: "clarify", label: "Clarify", icon: "❓", hint: "Ask a clarifying question before attempting the task." },
+  { id: "approval", label: "Step approval", icon: "✋", hint: "Execute step by step, pausing for approval after each major step." },
+  { id: "manual_plan", label: "My plan", icon: "🗒️", hint: "Follow a plan you provide verbatim." },
+];
+
+function ResponseModePicker({
+  mode, onChange, onEditPlan, planSet,
+}: {
+  mode: ResponseMode;
+  onChange: (m: ResponseMode) => void;
+  onEditPlan: () => void;
+  planSet: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = RESPONSE_MODES.find((m) => m.id === mode) ?? RESPONSE_MODES[0];
+  return (
+    <div class="mode-picker-wrap">
+      <button
+        class={"mode-picker-btn" + (mode !== "immediate" ? " active" : "")}
+        onClick={() => setOpen((v) => !v)}
+        title={current.hint}
+      >
+        <span>{current.icon}</span>
+        <span>{current.label}</span>
+        <span class="admin-dim">▾</span>
+      </button>
+      {open && (
+        <>
+          <div class="mode-picker-backdrop" onClick={() => setOpen(false)} />
+          <div class="mode-picker-menu">
+            {RESPONSE_MODES.map((m) => (
+              <button
+                key={m.id}
+                class={"mode-picker-item" + (m.id === mode ? " active" : "")}
+                onClick={() => {
+                  onChange(m.id);
+                  setOpen(false);
+                  if (m.id === "manual_plan") onEditPlan();
+                }}
+              >
+                <span class="mode-picker-icon">{m.icon}</span>
+                <span>
+                  <strong>{m.label}</strong>
+                  <span class="admin-dim"> — {m.hint}</span>
+                </span>
+              </button>
+            ))}
+            {mode === "manual_plan" && (
+              <button class="mode-picker-item" onClick={() => { onEditPlan(); setOpen(false); }}>
+                <span class="mode-picker-icon">✏️</span>
+                <span>{planSet ? "Edit your plan" : "Write your plan"}</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PlanEditorModal({
+  initial, onClose, onSave,
+}: { initial: string; onClose: () => void; onSave: (text: string) => void }) {
+  const [text, setText] = useState(initial);
+  return (
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:60; display:flex; align-items:flex-start; justify-content:center; padding:2rem;"
+         onClick={onClose}>
+      <div class="signin-card" style="max-width:640px; width:100%;" onClick={(e) => e.stopPropagation()}>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0;">Your plan</h2>
+          <button onClick={onClose}>✕</button>
+        </div>
+        <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.3rem;">
+          The assistant will follow these steps verbatim and report
+          progress after each one. One step per line works best.
+        </p>
+        <textarea
+          value={text}
+          placeholder={"1. Draft an outline\n2. Expand each section\n3. Review for tone"}
+          onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
+          style="min-height:220px; width:100%; font-family:var(--mono); font-size:0.85rem;"
+        />
+        <div style="display:flex; gap:0.5rem; margin-top:1rem; justify-content:flex-end;">
+          <button onClick={onClose}>Cancel</button>
+          <button class="primary" onClick={() => { onSave(text); onClose(); }}>Save plan</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -251,6 +347,180 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+/* ── Tool picker (modal) ────────────────────────────────────────────── */
+
+function ToolPicker({
+  selected, onClose, onApply,
+}: {
+  selected: Set<string>;
+  onClose: () => void;
+  onApply: (next: Set<string>) => void;
+}) {
+  const [tools, setTools] = useState<Array<{ name: string; description: string; default_enabled: boolean; requires_service: string | null }>>([]);
+  const [pick, setPick] = useState<Set<string>>(new Set(selected));
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await api.listTools();
+        setTools(r.data);
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  const toggle = (name: string) => {
+    const next = new Set(pick);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    setPick(next);
+  };
+  const filtered = tools.filter((t) =>
+    !q || t.name.toLowerCase().includes(q.toLowerCase()) ||
+    (t.description || "").toLowerCase().includes(q.toLowerCase())
+  );
+
+  return (
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:60; display:flex; align-items:flex-start; justify-content:center; padding:2rem;" onClick={onClose}>
+      <div class="signin-card" style="max-width:640px; width:100%; max-height:80vh; overflow-y:auto;" onClick={(e) => e.stopPropagation()}>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0;">Tools & connectors</h2>
+          <button onClick={onClose}>✕</button>
+        </div>
+        <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.3rem;">
+          Pick which tools the assistant may call for your next message. An
+          empty selection falls back to the server defaults.
+        </p>
+        <input type="text" placeholder="Filter…"
+               value={q}
+               onInput={(e) => setQ((e.target as HTMLInputElement).value)}
+               style="margin-bottom:0.8rem;" />
+        <ul style="padding-left:0; list-style:none; margin:0;">
+          {filtered.map((t) => (
+            <li key={t.name} class="tool-row">
+              <label style="display:flex; gap:0.6rem; align-items:flex-start; cursor:pointer;">
+                <input type="checkbox"
+                       checked={pick.has(t.name)}
+                       onChange={() => toggle(t.name)} />
+                <span>
+                  <code>{t.name}</code>
+                  {t.requires_service && (
+                    <span class="admin-badge" style="background:var(--bg-alt); color:var(--fg-dim); border:1px solid var(--border);">{t.requires_service}</span>
+                  )}
+                  <div style="color:var(--fg-dim); font-size:0.85rem;">{t.description}</div>
+                </span>
+              </label>
+            </li>
+          ))}
+          {filtered.length === 0 && <li style="color:var(--fg-dim); font-size:0.9rem;">No tools match.</li>}
+        </ul>
+        <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+          <button class="primary" onClick={() => { onApply(pick); onClose(); }}>
+            Apply ({pick.size})
+          </button>
+          <button onClick={() => setPick(new Set())}>Clear</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Telemetry panel ────────────────────────────────────────────────── */
+
+type TelemetryState = {
+  ping_ms: number | null;
+  tps: number | null;
+  vram_used_gb: number;
+  vram_total_gb: number;
+  ram_used_gb: number;
+  ram_total_gb: number;
+  ctx_used: number;
+  ctx_total: number;
+};
+
+function pct(n: number, d: number): number {
+  if (!d) return 0;
+  return Math.max(0, Math.min(100, (n / d) * 100));
+}
+
+function TelemetryPanel({
+  state, open, onToggle,
+}: { state: TelemetryState; open: boolean; onToggle: () => void }) {
+  const vramP = pct(state.vram_used_gb, state.vram_total_gb);
+  const ramP = pct(state.ram_used_gb, state.ram_total_gb);
+  const ctxP = pct(state.ctx_used, state.ctx_total);
+  return (
+    <div class={"telemetry" + (open ? " open" : "")}>
+      <button class="telemetry-toggle" onClick={onToggle}
+              title="Toggle telemetry">
+        <span class="dot"
+              style={state.ping_ms == null
+                ? "background:var(--fg-dim)"
+                : state.ping_ms > 500
+                  ? "background:var(--danger)"
+                  : state.ping_ms > 150
+                    ? "background:var(--warn)"
+                    : "background:var(--success)"} />
+        <span class="telemetry-compact">
+          {state.ping_ms != null ? `${Math.round(state.ping_ms)} ms` : "—"}
+          {state.tps != null && <> · {state.tps.toFixed(1)} tok/s</>}
+        </span>
+        <span class="telemetry-chev">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div class="telemetry-body">
+          <div class="telemetry-row">
+            <span class="telemetry-label">Ping</span>
+            <span class="telemetry-value">
+              {state.ping_ms != null ? `${Math.round(state.ping_ms)} ms` : "—"}
+            </span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Tokens / sec</span>
+            <span class="telemetry-value">
+              {state.tps != null ? state.tps.toFixed(1) : "—"}
+            </span>
+          </div>
+          <TelemetryBar
+            label="VRAM"
+            used={state.vram_used_gb} total={state.vram_total_gb}
+            unit="GB" pct={vramP}
+          />
+          <TelemetryBar
+            label="RAM"
+            used={state.ram_used_gb} total={state.ram_total_gb}
+            unit="GB" pct={ramP}
+          />
+          <TelemetryBar
+            label="Context"
+            used={state.ctx_used} total={state.ctx_total}
+            unit="tok" pct={ctxP}
+            danger={ctxP > 90}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TelemetryBar({
+  label, used, total, unit, pct, danger,
+}: { label: string; used: number; total: number; unit: string; pct: number; danger?: boolean }) {
+  return (
+    <div class="telemetry-bar-row">
+      <span class="telemetry-label">{label}</span>
+      <div class="telemetry-bar">
+        <div style={`width:${pct}%; background:${danger ? "var(--danger)" : pct > 80 ? "var(--warn)" : "var(--accent)"}`} />
+      </div>
+      <span class="telemetry-value">
+        {unit === "GB"
+          ? `${used.toFixed(1)} / ${total.toFixed(1)} ${unit}`
+          : `${used} / ${total} ${unit}`}
+        <span class="telemetry-pct"> ({Math.round(pct)}%)</span>
+      </span>
+    </div>
+  );
+}
+
 /* ── Agent panel (multi-agent visualization) ────────────────────────── */
 
 type AgentStep = { label: string; state: "pending" | "active" | "done" };
@@ -300,8 +570,8 @@ function splitThinking(content: string): { thinking: string | null; body: string
 /* ── Main chat view ─────────────────────────────────────────────────── */
 
 function ChatView({
-  me, tiers, onOpenAdmin,
-}: { me: { email: string }; tiers: Tier[]; onOpenAdmin: () => void }) {
+  me, tiers, isAdmin, onOpenAdmin,
+}: { me: { email: string }; tiers: Tier[]; isAdmin: boolean; onOpenAdmin: () => void }) {
   const [chats, setChats] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -312,11 +582,87 @@ function ChatView({
   const [draft, setDraft] = useState<string>("");
   const [sending, setSending] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTools, setShowTools] = useState(false);
+  const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
+  const [uploadStatus, setUploadStatus] = useState<string>("");
+  const [responseMode, setResponseMode] = useState<ResponseMode>("immediate");
+  const [planText, setPlanText] = useState<string>("");
+  const [showPlanEditor, setShowPlanEditor] = useState(false);
+  const [telemetryOpen, setTelemetryOpen] = useState(false);
+  const [telemetry, setTelemetry] = useState<TelemetryState>({
+    ping_ms: null, tps: null,
+    vram_used_gb: 0, vram_total_gb: 0,
+    ram_used_gb: 0, ram_total_gb: 0,
+    ctx_used: 0, ctx_total: 8192,
+  });
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => { refreshChats(); }, []);
   useEffect(() => { scrollRef.current?.scrollTo(0, 1e9); }, [messages, pendingAsst, agentSteps]);
+
+  // Telemetry polling: ping + VRAM/RAM. Runs always so the indicator dot
+  // is meaningful even before the first message. Cadence is intentionally
+  // gentle (3s) to stay off the hot path.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const t0 = performance.now();
+      try { await api.healthz(); }
+      catch { if (!cancelled) setTelemetry((s) => ({ ...s, ping_ms: null })); return; }
+      const ping = performance.now() - t0;
+      try {
+        const sys = await api.systemStatus();
+        if (cancelled) return;
+        setTelemetry((s) => ({
+          ...s,
+          ping_ms: ping,
+          vram_used_gb: sys.vram.used_gb,
+          vram_total_gb: sys.vram.total_gb,
+          ram_used_gb: sys.ram.used_gb,
+          ram_total_gb: sys.ram.total_gb,
+        }));
+      } catch {
+        if (cancelled) return;
+        setTelemetry((s) => ({ ...s, ping_ms: ping }));
+      }
+    };
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  // Context-window fill %: whitespace-word proxy against the active tier's
+  // context_window. Mirrors how the backend records tokens_in, so the ratio
+  // stays honest even if it's not tokenizer-accurate.
+  useEffect(() => {
+    const ctxTotal = tiers.find((t) => t.id === tier)?.context_window ?? 8192;
+    const used = messages.reduce((n, m) => {
+      const c = typeof m.content === "string" ? m.content : "";
+      return n + (c ? c.split(/\s+/).length : 0);
+    }, 0) + (draft ? draft.split(/\s+/).length : 0);
+    setTelemetry((s) => ({ ...s, ctx_used: used, ctx_total: ctxTotal }));
+  }, [messages, draft, tier, tiers]);
+
+  async function onUploadClick() {
+    uploadInputRef.current?.click();
+  }
+
+  async function onUploadChange(e: Event) {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    setUploadStatus(`Uploading ${f.name}…`);
+    try {
+      const r = await api.uploadRAG(f);
+      setUploadStatus(`✓ ${r.filename} (${r.chunks} chunks) — available as RAG context.`);
+      setTimeout(() => setUploadStatus(""), 6000);
+    } catch (err: any) {
+      setUploadStatus(`Upload failed: ${err?.message || "error"}`);
+    } finally {
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+    }
+  }
 
   async function refreshChats() {
     try {
@@ -372,15 +718,31 @@ function ChatView({
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     let assembled = "";
+    let firstTokenAt = 0;
+    let tokenCount = 0;
     try {
       for await (const ev of streamChat({
         model: tier,
         messages: newMsgs,
         think: reasoning === "auto" ? null : reasoning === "on",
+        tools: selectedTools.size
+          ? Array.from(selectedTools).map((n) => ({
+              type: "function", function: { name: n },
+            }))
+          : null,
+        response_mode: responseMode,
+        plan_text: responseMode === "manual_plan" ? planText : null,
         signal: ctrl.signal,
       })) {
         if (ev.kind === "token" && ev.text) {
+          if (!firstTokenAt) firstTokenAt = performance.now();
           assembled += ev.text;
+          tokenCount += Math.max(1, ev.text.split(/\s+/).filter(Boolean).length);
+          const elapsed = (performance.now() - firstTokenAt) / 1000;
+          if (elapsed > 0.15) {
+            const tps = tokenCount / elapsed;
+            setTelemetry((s) => ({ ...s, tps }));
+          }
           setPendingAsst(assembled);
         } else if (ev.kind === "agent" && ev.agent) {
           updateAgentSteps(ev.agent.type, ev.agent.data);
@@ -393,6 +755,7 @@ function ChatView({
       console.error(e);
       assembled += `\n[Connection error: ${e?.message}]`;
     } finally {
+      setTelemetry((s) => ({ ...s, tps: null }));
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: assembled, tier, think: reasoning === "on" },
@@ -461,8 +824,16 @@ function ChatView({
         <header class="chat-header">
           <TierPicker tiers={tiers} activeId={tier} onPick={setTier} />
           <ReasoningToggle mode={reasoning} onChange={setReasoning} />
+          <ResponseModePicker
+            mode={responseMode}
+            onChange={setResponseMode}
+            onEditPlan={() => setShowPlanEditor(true)}
+            planSet={!!planText.trim()}
+          />
           <div style="flex:1" />
-          <button onClick={onOpenAdmin} title="Admin dashboard" style="font-size:0.85rem;">Admin</button>
+          {isAdmin && (
+            <button onClick={onOpenAdmin} title="Admin dashboard" style="font-size:0.85rem;">Admin</button>
+          )}
           <div style="color:var(--fg-dim); font-size:0.85rem;">{me.email}</div>
         </header>
         <div class="chat-body" ref={scrollRef}>
@@ -476,7 +847,27 @@ function ChatView({
           {pendingBubble}
           <AgentPanel steps={agentSteps} />
         </div>
+        <TelemetryPanel
+          state={telemetry}
+          open={telemetryOpen}
+          onToggle={() => setTelemetryOpen((v) => !v)}
+        />
+        {uploadStatus && (
+          <div class="composer-status">{uploadStatus}</div>
+        )}
         <div class="composer">
+          <div class="composer-actions">
+            <input ref={uploadInputRef} type="file"
+                   accept=".pdf,.md,.txt,.html,.htm"
+                   style="display:none;" onChange={onUploadChange} />
+            <button class="icon-btn" onClick={onUploadClick}
+                    title="Upload a document to your knowledge base"
+                    disabled={sending}>📎</button>
+            <button class={"icon-btn" + (selectedTools.size ? " active" : "")}
+                    onClick={() => setShowTools(true)}
+                    title="Pick tools / connectors for this message"
+                    disabled={sending}>🧰{selectedTools.size > 0 && <span class="icon-count">{selectedTools.size}</span>}</button>
+          </div>
           <textarea
             value={draft}
             placeholder={"Message " + shortName(tiers.find((t) => t.id === tier)?.name || tier) + "…"}
@@ -490,6 +881,20 @@ function ChatView({
             ? <button class="send-btn" onClick={cancel}>Stop</button>
             : <button class="send-btn primary" onClick={send} disabled={!draft.trim()}>Send</button>}
         </div>
+        {showTools && (
+          <ToolPicker
+            selected={selectedTools}
+            onClose={() => setShowTools(false)}
+            onApply={(s) => setSelectedTools(s)}
+          />
+        )}
+        {showPlanEditor && (
+          <PlanEditorModal
+            initial={planText}
+            onClose={() => setShowPlanEditor(false)}
+            onSave={setPlanText}
+          />
+        )}
       </section>
     </div>
   );
@@ -515,6 +920,7 @@ function App() {
   const [me, setMe] = useState<null | { id: number; email: string }>(null);
   const [loaded, setLoaded] = useState(false);
   const [tiers, setTiers] = useState<Tier[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [hash, nav] = useHashRoute();
 
   useEffect(() => {
@@ -526,6 +932,14 @@ function App() {
         ]);
         setMe(u);
         setTiers(ts);
+        if (u) {
+          // adminApi.me() returns is_admin=false for non-admin users and
+          // throws 503 when ADMIN_EMAILS is unset — both collapse to false.
+          try {
+            const r = await adminApi.me();
+            setIsAdmin(!!r.is_admin);
+          } catch { setIsAdmin(false); }
+        }
       } finally {
         setLoaded(true);
       }
@@ -534,8 +948,23 @@ function App() {
 
   if (!loaded) return <div style="padding:2rem; color:var(--fg-dim);">Loading…</div>;
   if (!me) return <SignIn onHint={() => {}} />;
-  if (hash === "#/admin") return <AdminDashboard onExit={() => nav("")} />;
-  return <ChatView me={me} tiers={tiers} onOpenAdmin={() => nav("#/admin")} />;
+  if (hash === "#/admin") {
+    // Server 403s non-admins, but block the route here too so the bundle
+    // doesn't even render the config forms.
+    if (!isAdmin) {
+      return (
+        <div class="admin-root">
+          <div class="admin-gate">
+            <h2>Admin dashboard</h2>
+            <p>Signed in as <code>{me.email}</code> — not an admin account.</p>
+            <button onClick={() => nav("")}>Back to chat</button>
+          </div>
+        </div>
+      );
+    }
+    return <AdminDashboard onExit={() => nav("")} />;
+  }
+  return <ChatView me={me} tiers={tiers} isAdmin={isAdmin} onOpenAdmin={() => nav("#/admin")} />;
 }
 
 render(<App />, document.getElementById("app")!);

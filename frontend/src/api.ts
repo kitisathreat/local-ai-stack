@@ -90,6 +90,16 @@ export const api = {
   // ── VRAM (debug) ─────────────────────────────────────────────────────
   vramStatus: () => j<any>("/api/vram"),
 
+  // ── System telemetry (VRAM + RAM, for the chat status panel) ────────
+  systemStatus: () => j<{
+    vram: { total_gb: number; free_gb: number; used_gb: number; loaded_tiers: string[] };
+    ram:  { total_gb: number; used_gb: number; free_gb: number };
+    ts: number;
+  }>("/api/system"),
+
+  // ── Health ping (for RTT measurement) ───────────────────────────────
+  healthz: () => j<{ ok: boolean }>("/api/healthz"),
+
   // ── Tools ────────────────────────────────────────────────────────────
   listTools: () => j<{ data: Array<{ name: string; description: string; default_enabled: boolean }> }>("/api/tools"),
 
@@ -252,20 +262,32 @@ export const adminApi = {
 
 // ── SSE chat stream ────────────────────────────────────────────────────
 
+export type ResponseMode = "immediate" | "plan" | "clarify" | "approval" | "manual_plan";
+
 export async function* streamChat(params: {
   model: string;
   messages: Message[];
   think?: boolean | null;
   multi_agent?: boolean | null;
+  tools?: Array<Record<string, unknown>> | null;
+  response_mode?: ResponseMode | null;
+  plan_text?: string | null;
   signal?: AbortSignal;
 }): AsyncGenerator<SseEnvelope> {
-  const body = {
+  const body: Record<string, unknown> = {
     model: params.model,
     messages: params.messages,
     stream: true,
     think: params.think ?? null,
     multi_agent: params.multi_agent ?? null,
   };
+  if (params.tools && params.tools.length) body.tools = params.tools;
+  if (params.response_mode && params.response_mode !== "immediate") {
+    body.response_mode = params.response_mode;
+  }
+  if (params.plan_text && params.plan_text.trim()) {
+    body.plan_text = params.plan_text;
+  }
   const r = await fetch("/api/v1/chat/completions", {
     method: "POST",
     credentials: "include",

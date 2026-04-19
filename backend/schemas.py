@@ -55,6 +55,14 @@ class ChatRequest(BaseModel):
     # distillation every N turns.
     conversation_id: int | None = None
 
+    # Response-mode steering — see middleware/response_mode.py. One of
+    # immediate | plan | clarify | approval | manual_plan. Unknown values
+    # and `immediate` are no-ops.
+    response_mode: str | None = None
+    # For `manual_plan` mode: the user-supplied plan text the model must
+    # follow verbatim.
+    plan_text: str | None = None
+
 
 class TierInfo(BaseModel):
     """Returned by GET /v1/models — one entry per tier."""
