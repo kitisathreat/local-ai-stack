@@ -36,11 +36,11 @@ Three GUIs ship with the stack. The chat SPA and admin dashboard are the same Pr
 
 ### Chat (Preact SPA, `:3000`)
 
-User-facing chat at `http://localhost:3000`. Sidebar lists conversations; the main column hosts the tier picker, reasoning toggle, streaming message bubbles, and a collapsible multi-agent step panel.
+User-facing chat at `http://localhost:3000`. The sidebar lists conversations; the header hosts the tier picker, reasoning toggle, and a **response-mode picker** (Immediate · Plan first · Clarify · Step approval · My plan). The composer has 📎 upload and 🧰 tool-picker buttons; a collapsible telemetry strip above it shows ping, tokens/sec, VRAM, RAM, and context-window fill. The "Admin" button only appears for users in `ADMIN_EMAILS`.
 
 ![Chat UI mockup](docs/images/frontend-chat.svg)
 
-Code: [`frontend/src/app.tsx`](frontend/src/app.tsx). Theme tokens in [`frontend/src/styles.css`](frontend/src/styles.css); light mode auto-engages via `prefers-color-scheme`.
+Code: [`frontend/src/app.tsx`](frontend/src/app.tsx). Theme tokens in [`frontend/src/styles.css`](frontend/src/styles.css); light mode auto-engages via `prefers-color-scheme`. Response modes are steered server-side by [`backend/middleware/response_mode.py`](backend/middleware/response_mode.py).
 
 ### Admin dashboard (`#/admin`)
 
