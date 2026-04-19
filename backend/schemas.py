@@ -108,3 +108,60 @@ class AgentEvent(BaseModel):
         "route.decision", "vram.eviction", "token", "error",
     ]
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Auth ────────────────────────────────────────────────────────────────
+
+class MagicLinkRequest(BaseModel):
+    email: str
+
+
+class MagicLinkResponse(BaseModel):
+    ok: bool
+    message: str
+
+
+class MeResponse(BaseModel):
+    id: int
+    email: str
+    created_at: float
+    last_login_at: float | None = None
+
+
+# ── Chats ────────────────────────────────────────────────────────────────
+
+class ConversationSummary(BaseModel):
+    id: int
+    title: str
+    tier: str | None = None
+    created_at: float
+    updated_at: float
+
+
+class ConversationListResponse(BaseModel):
+    data: list[ConversationSummary]
+
+
+class MessageOut(BaseModel):
+    id: int
+    role: str
+    content: str
+    tier: str | None = None
+    think: bool | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    created_at: float
+
+
+class ConversationWithMessages(BaseModel):
+    id: int
+    title: str
+    tier: str | None = None
+    created_at: float
+    updated_at: float
+    messages: list[MessageOut]
+
+
+class ConversationUpdate(BaseModel):
+    title: str | None = None
+    tier: str | None = None

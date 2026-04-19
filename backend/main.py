@@ -21,10 +21,11 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from . import auth, db
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
@@ -33,6 +34,14 @@ from .router import route
 from .schemas import (
     AgentEvent,
     ChatRequest,
+    ConversationListResponse,
+    ConversationSummary,
+    ConversationUpdate,
+    ConversationWithMessages,
+    MagicLinkRequest,
+    MagicLinkResponse,
+    MeResponse,
+    MessageOut,
     ModelsListResponse,
     TierInfo,
 )
@@ -65,6 +74,10 @@ async def lifespan(app: FastAPI):
     logger.info("Loading config…")
     state.config = AppConfig.load()
     state.signals = state.config.compile_signals()
+    app.state.app_config = state.config       # for auth dependencies
+
+    logger.info("Initialising database…")
+    await db.init_db()
 
     # Backend clients — endpoint overridable per-tier, these are fallbacks
     default_ollama = os.getenv("OLLAMA_URL", "http://ollama:11434")
@@ -303,6 +316,125 @@ async def _multi_agent_sse(req: ChatRequest, decision) -> AsyncIterator[str]:
 
     yield _openai_chunk("", model_id, done=True)
     yield "data: [DONE]\n\n"
+
+
+# ── Auth routes ─────────────────────────────────────────────────────────
+
+@app.post("/auth/request", response_model=MagicLinkResponse)
+async def auth_request(req: MagicLinkRequest, request: Request):
+    cfg = state.config.auth
+    email = req.email.lower().strip()
+    if not auth.valid_email(email, cfg):
+        raise HTTPException(400, "Invalid or disallowed email address")
+
+    await auth.check_rate_limits(email, cfg)
+
+    expiry_s = cfg.magic_link.expiry_minutes * 60
+    client_ip = request.headers.get("x-forwarded-for", "") or (request.client.host if request.client else "")
+    token = await db.create_magic_link(email, expiry_s, client_ip)
+
+    base = os.getenv("PUBLIC_BASE_URL", f"http://{request.url.hostname}:{request.url.port or 8000}")
+    verify_url = f"{base}/auth/verify?token={token}"
+    try:
+        await auth.send_magic_email(email, verify_url, cfg)
+    except Exception as e:
+        logger.exception("Failed to send magic-link email")
+        raise HTTPException(500, f"Failed to send email: {e}")
+
+    return MagicLinkResponse(ok=True, message="Check your inbox for a sign-in link.")
+
+
+@app.get("/auth/verify")
+async def auth_verify(token: str, request: Request):
+    cfg = state.config.auth
+    consumed = await db.consume_magic_link(token)
+    if not consumed:
+        raise HTTPException(400, "Magic link is invalid, expired, or already used")
+
+    user = await db.get_or_create_user(consumed["email"])
+    session_token = auth.issue_session_token(user["id"], cfg)
+
+    # Redirect to the app root with the session cookie set.
+    redirect_to = os.getenv("PUBLIC_BASE_URL", "/")
+    resp = Response(status_code=302)
+    resp.headers["Location"] = redirect_to
+    resp.set_cookie(
+        key=cfg.session.cookie_name,
+        value=session_token,
+        max_age=cfg.session.cookie_ttl_days * 86400,
+        httponly=True,
+        secure=cfg.session.cookie_secure,
+        samesite=cfg.session.cookie_samesite,
+        path="/",
+    )
+    return resp
+
+
+@app.post("/auth/logout")
+async def auth_logout():
+    cfg = state.config.auth
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(cfg.session.cookie_name, path="/")
+    return resp
+
+
+@app.get("/me", response_model=MeResponse)
+async def me(user: dict = Depends(auth.current_user)):
+    return MeResponse(**user)
+
+
+# ── Conversations ───────────────────────────────────────────────────────
+
+@app.get("/chats", response_model=ConversationListResponse)
+async def list_chats(user: dict = Depends(auth.current_user)):
+    rows = await db.list_conversations(user["id"])
+    return ConversationListResponse(data=[ConversationSummary(**r) for r in rows])
+
+
+@app.post("/chats", response_model=ConversationSummary)
+async def create_chat(
+    body: ConversationUpdate,
+    user: dict = Depends(auth.current_user),
+):
+    conv = await db.create_conversation(
+        user["id"],
+        title=body.title or "New chat",
+        tier=body.tier,
+    )
+    return ConversationSummary(**conv)
+
+
+@app.get("/chats/{conv_id}", response_model=ConversationWithMessages)
+async def get_chat(conv_id: int, user: dict = Depends(auth.current_user)):
+    conv = await db.get_conversation(conv_id, user["id"])
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    msgs = await db.list_messages(conv_id)
+    return ConversationWithMessages(
+        **conv,
+        messages=[MessageOut(**m) for m in msgs],
+    )
+
+
+@app.patch("/chats/{conv_id}", response_model=ConversationSummary)
+async def update_chat(
+    conv_id: int,
+    body: ConversationUpdate,
+    user: dict = Depends(auth.current_user),
+):
+    ok = await db.update_conversation(conv_id, user["id"], title=body.title, tier=body.tier)
+    if not ok:
+        raise HTTPException(404, "Conversation not found")
+    conv = await db.get_conversation(conv_id, user["id"])
+    return ConversationSummary(**conv)
+
+
+@app.delete("/chats/{conv_id}")
+async def delete_chat(conv_id: int, user: dict = Depends(auth.current_user)):
+    ok = await db.delete_conversation(conv_id, user["id"])
+    if not ok:
+        raise HTTPException(404, "Conversation not found")
+    return {"ok": True}
 
 
 @app.exception_handler(Exception)

@@ -1,10 +1,12 @@
 services:
-  # ── Local AI Stack backend — tier router, VRAM scheduler, multi-agent ─────────
+  # ── FastAPI backend — tier router, VRAM scheduler, multi-agent, auth ─────────
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
     container_name: lai-backend
+    expose:
+      - "8000"
     ports:
       - "8000:8000"
     environment:
@@ -12,6 +14,15 @@ services:
       - LLAMACPP_URL=http://llama-server:8001/v1
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3000}
+      # ── Auth secrets — set via .env.local (see .env.example) ──────────────────
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY}
+      - AUTH_EMAIL_FROM=${AUTH_EMAIL_FROM:-noreply@localaistack.local}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
@@ -23,61 +34,19 @@ services:
               capabilities: [gpu]
     depends_on:
       - ollama
-      # llama-server is optional; scheduler handles unavailability
     restart: unless-stopped
 
-  # ── Open WebUI — chat UI (Phase 1: still used; replaced in Phase 4) ───────────
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
+  # ── Frontend (static Preact bundle served by nginx) ──────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: lai-frontend
     ports:
-      - "3000:8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - open-webui:/app/backend/data
-    environment:
-      - WEBUI_AUTH=False
-
-      # ── Backend is the single OpenAI-compatible endpoint ──────────────────────
-      - OPENAI_API_BASE_URLS=http://backend:8000/v1
-      - OPENAI_API_KEYS=local-ai-stack
-
-      # ── Ollama listed directly so raw-tag access is available to admins ───────
-      - OLLAMA_BASE_URL=http://ollama:11434
-
-      # ── Vector database ───────────────────────────────────────────────────────
-      - VECTOR_DB=qdrant
-      - QDRANT_URL=http://qdrant:6333
-
-      # ── Embeddings via Ollama (no longer depends on LM Studio) ────────────────
-      - RAG_EMBEDDING_ENGINE=ollama
-      - RAG_EMBEDDING_MODEL=nomic-embed-text
-
-      # ── Web search ────────────────────────────────────────────────────────────
-      - ENABLE_RAG_WEB_SEARCH=True
-      - RAG_WEB_SEARCH_ENGINE=searxng
-      - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>&format=json
-      - RAG_WEB_SEARCH_RESULT_COUNT=5
-      - RAG_WEB_SEARCH_CONCURRENT_REQUESTS=10
-
-      # ── Code interpreter: Jupyter ─────────────────────────────────────────────
-      - CODE_EXECUTION_ENGINE=jupyter
-      - CODE_EXECUTION_JUPYTER_URL=http://jupyter:8888
-      - CODE_EXECUTION_JUPYTER_AUTH=token
-      - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=local-ai-stack-token
-
-      # ── Misc ──────────────────────────────────────────────────────────────────
-      - ENABLE_IMAGE_GENERATION=False
-      - ENABLE_COMMUNITY_SHARING=False
-      - ENABLE_MESSAGE_RATING=True
-      - DEFAULT_MODELS=tier.versatile
-    restart: always
+      - "3000:80"
     depends_on:
       - backend
-      - jupyter
-      - qdrant
-      - searxng
+    restart: unless-stopped
 
   # ── Ollama — primary inference backend ────────────────────────────────────────
   ollama:
@@ -192,7 +161,6 @@ services:
     restart: always
 
 volumes:
-  open-webui:
   jupyter-data:
   qdrant-data:
   ollama-data:

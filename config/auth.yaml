@@ -1,0 +1,34 @@
+# Authentication config — consumed by backend/auth.py and backend/config.py.
+#
+# Secrets (SMTP creds, JWT secret) come from environment variables set via
+# .env.local (see .env.example). This file holds the non-secret policy.
+
+magic_link:
+  expiry_minutes: 15                      # how long a magic-link token is valid
+  email_subject: "Sign in to Local AI Stack"
+  email_from: "noreply@localaistack.local" # override via AUTH_EMAIL_FROM env
+  email_body_template: |
+    Hello,
+
+    Click the link below to sign in to Local AI Stack. The link expires in
+    {expiry_minutes} minutes and can only be used once.
+
+    {verify_url}
+
+    If you didn't request this, you can safely ignore it.
+
+session:
+  cookie_name: "lai_session"
+  cookie_ttl_days: 30
+  cookie_secure: true                     # set false for local http testing
+  cookie_samesite: lax                    # "lax" | "strict" | "none"
+  jwt_algorithm: HS256
+
+# Empty list = any email domain is allowed. Set to e.g. ["yourdomain.tld"]
+# to restrict signups to a single domain.
+allowed_email_domains: []
+
+# Rate limits — magic-link requests per email per hour.
+rate_limits:
+  requests_per_hour_per_email: 5
+  requests_per_hour_per_ip: 30

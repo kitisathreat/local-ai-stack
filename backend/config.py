@@ -122,19 +122,51 @@ class VRAMConfig(BaseModel):
     observed_costs: ObservedCosts = Field(default_factory=ObservedCosts)
 
 
+class MagicLinkConfig(BaseModel):
+    expiry_minutes: int = 15
+    email_subject: str = "Sign in to Local AI Stack"
+    email_from: str = "noreply@localaistack.local"
+    email_body_template: str = ""
+
+
+class SessionCookieConfig(BaseModel):
+    cookie_name: str = "lai_session"
+    cookie_ttl_days: int = 30
+    cookie_secure: bool = True
+    cookie_samesite: str = "lax"
+    jwt_algorithm: str = "HS256"
+
+
+class AuthRateLimits(BaseModel):
+    requests_per_hour_per_email: int = 5
+    requests_per_hour_per_ip: int = 30
+
+
+class AuthConfig(BaseModel):
+    magic_link: MagicLinkConfig = Field(default_factory=MagicLinkConfig)
+    session: SessionCookieConfig = Field(default_factory=SessionCookieConfig)
+    allowed_email_domains: list[str] = Field(default_factory=list)
+    rate_limits: AuthRateLimits = Field(default_factory=AuthRateLimits)
+
+
 class AppConfig(BaseModel):
     models: ModelsConfig
     router: RouterConfig
     vram: VRAMConfig
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
     @classmethod
     def load(cls, config_dir: Path | None = None) -> "AppConfig":
         d = config_dir or CONFIG_DIR
-        return cls(
+        kwargs = dict(
             models=ModelsConfig(**_read_yaml(d / "models.yaml")),
             router=RouterConfig(**_read_yaml(d / "router.yaml")),
             vram=VRAMConfig(**_read_yaml(d / "vram.yaml")),
         )
+        auth_path = d / "auth.yaml"
+        if auth_path.exists():
+            kwargs["auth"] = AuthConfig(**_read_yaml(auth_path))
+        return cls(**kwargs)
 
     def compile_signals(self) -> "CompiledSignals":
         """Pre-compile all regexes so hot-path evaluation is cheap."""

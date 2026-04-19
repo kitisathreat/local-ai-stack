@@ -272,13 +272,7 @@ def test_ollama_models_yaml_has_tier_group():
 # ── docker-compose.yml ────────────────────────────────────────────────────────
 
 REQUIRED_SERVICES = [
-    "backend", "open-webui", "jupyter", "qdrant", "searxng", "ollama", "llama-server", "n8n",
-]
-
-REQUIRED_OPEN_WEBUI_ENV = [
-    "WEBUI_AUTH",
-    "OPENAI_API_BASE_URLS",
-    "OLLAMA_BASE_URL",
+    "backend", "frontend", "jupyter", "qdrant", "searxng", "ollama", "llama-server", "n8n",
 ]
 
 
@@ -314,21 +308,16 @@ def test_docker_compose_backend_routes_ollama():
     assert "OLLAMA_URL" in env, "backend must set OLLAMA_URL"
 
 
-def test_docker_compose_open_webui_points_at_backend():
+def test_docker_compose_frontend_proxies_backend():
+    """Frontend service uses the built nginx image; nginx.conf proxies /api/
+    to backend:8000. We validate both the service exists with correct port
+    and the nginx.conf reference to backend:8000."""
     data = _load_yaml("docker-compose.yml")
-    webui = data["services"].get("open-webui", {})
-    env = str(webui.get("environment", ""))
-    assert "backend:8000" in env, (
-        "open-webui should talk to the backend (LM Studio dependency removed)"
-    )
-
-
-def test_docker_compose_webui_auth_disabled():
-    data = _load_yaml("docker-compose.yml")
-    webui = data["services"].get("open-webui", {})
-    env = str(webui.get("environment", []))
-    assert "WEBUI_AUTH" in env
-    assert "False" in env
+    frontend = data["services"].get("frontend", {})
+    ports = str(frontend.get("ports", ""))
+    assert "3000" in ports, "frontend must expose port 3000"
+    nginx_conf = (ROOT / "frontend" / "nginx.conf").read_text(encoding="utf-8")
+    assert "backend:8000" in nginx_conf, "frontend/nginx.conf must proxy to backend:8000"
 
 
 def test_docker_compose_jupyter_token_set():
@@ -345,11 +334,12 @@ def test_docker_compose_backend_port():
     assert "8000" in ports
 
 
-def test_docker_compose_open_webui_port():
+def test_docker_compose_no_open_webui_service():
+    """Open WebUI was replaced by the custom frontend in Phase 4."""
     data = _load_yaml("docker-compose.yml")
-    webui = data["services"].get("open-webui", {})
-    ports = str(webui.get("ports", ""))
-    assert "3000" in ports
+    assert "open-webui" not in data["services"], (
+        "open-webui service should be removed in Phase 4; frontend replaces it"
+    )
 
 
 def test_docker_compose_all_services_have_image_or_build():

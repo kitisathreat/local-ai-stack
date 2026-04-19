@@ -11,6 +11,11 @@ data/*
 models/*
 !models/.gitkeep
 
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/package-lock.json
+
 # Docker override files
 docker-compose.override.yml
 
