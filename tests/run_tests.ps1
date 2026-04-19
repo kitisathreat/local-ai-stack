@@ -161,8 +161,8 @@ Test-Case "Phase 6 tool files exist (chart_generator, financial_model, jupyter_t
     }
 }
 
-Test-Case "clarification_filter pipeline exists" {
-    Test-Path "$root\pipelines\clarification_filter.py"
+Test-Case "clarification middleware exists (Phase 6 migration)" {
+    Test-Path "$root\backend\middleware\clarification.py"
 }
 
 Test-Case "tools directory has at least 52 tool files" {
@@ -185,9 +185,9 @@ Test-Case "searxng settings.yml has academic engines" {
     }
 }
 
-Test-Case "pipelines directory exists with pipeline files" {
-    $files = Get-ChildItem "$root\pipelines\*.py" -ErrorAction SilentlyContinue
-    if ($files.Count -eq 0) { throw "No .py pipeline files in pipelines/" }
+Test-Case "backend/middleware directory has 4+ modules (ported from pipelines/ in Phase 6)" {
+    $files = Get-ChildItem "$root\backend\middleware\*.py" -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "__init__.py" }
+    if ($files.Count -lt 4) { throw "Expected 4+ middleware modules, found $($files.Count)" }
 }
 
 Test-Case "knowledge/sources.yaml exists" {
@@ -219,10 +219,13 @@ Test-Case "squarespace-embed.html exists" {
     Test-Path "$root\squarespace-embed.html"
 }
 
-Test-Case "embed HTML contains correct Tailscale hostname" {
+Test-Case "embed HTML uses Cloudflare hostname placeholder (Phase 6)" {
     $html = Get-Content "$root\squarespace-embed.html" -Raw
-    if ($html -notmatch "desktop-j4g42gi\.taila2838f\.ts\.net") {
-        throw "Tailscale hostname missing or incorrect"
+    if ($html -notmatch "__CLOUDFLARE_HOSTNAME__") {
+        throw "Embed should use __CLOUDFLARE_HOSTNAME__ placeholder (run scripts/render-embed.sh to substitute)"
+    }
+    if ($html -match "taila2838f\.ts\.net") {
+        throw "Embed still references Tailscale hostname — should be Cloudflare placeholder"
     }
 }
 

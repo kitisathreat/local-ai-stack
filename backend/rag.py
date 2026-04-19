@@ -35,6 +35,10 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
+# Phase 6: minimum cosine similarity for a chunk to be injected. Tuned to
+# filter out near-noise hits while keeping genuinely relevant ones. Set to
+# 0 via env to disable the gate.
+MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.55"))
 
 
 def collection_name(user_id: int) -> str:
@@ -207,23 +211,32 @@ async def ingest_document(
     }
 
 
-async def retrieve(user_id: int, query: str, k: int = 5) -> list[dict]:
-    """Retrieve top-K relevant chunks for a user query. Returns payload
-    dicts, highest-scoring first."""
+async def retrieve(
+    user_id: int, query: str, k: int = 5, min_score: float | None = None,
+) -> list[dict]:
+    """Retrieve top-K relevant chunks for a user query, filtered by a
+    minimum similarity score. Returns payload dicts, highest-scoring first.
+
+    `min_score=None` uses the module default (RAG_MIN_SCORE env, 0.55).
+    """
+    threshold = MIN_SCORE if min_score is None else float(min_score)
     coll = collection_name(user_id)
     vectors = await embed([query])
     if not vectors:
         return []
     hits = await qdrant.search(coll, vectors[0], limit=k)
-    return [
-        {
-            "score": h.get("score"),
+    filtered: list[dict] = []
+    for h in hits:
+        score = h.get("score") or 0.0
+        if score < threshold:
+            continue
+        filtered.append({
+            "score": score,
             "filename": (h.get("payload") or {}).get("filename"),
             "chunk_index": (h.get("payload") or {}).get("chunk_index"),
             "text": (h.get("payload") or {}).get("chunk_text", ""),
-        }
-        for h in hits
-    ]
+        })
+    return filtered
 
 
 def format_context_block(hits: list[dict]) -> str:

@@ -78,13 +78,17 @@ class Subtask:
 
 
 class Orchestrator:
-    def __init__(self, config: AppConfig, scheduler, backends: dict):
+    def __init__(self, config: AppConfig, scheduler, backends: dict, tools=None):
         """
         backends: {"ollama": OllamaClient, "llama_cpp": LlamaCppClient}
+        tools:    optional ToolRegistry. When set, Ollama workers receive the
+                  tool schemas — letting them call functions within subtasks.
+                  Phase 6: added to thread tool use into multi-agent workers.
         """
         self.cfg = config
         self.scheduler = scheduler
         self.backends = backends
+        self.tools = tools
 
     async def run(
         self,
@@ -136,6 +140,12 @@ class Orchestrator:
             "workers": [{"id": s.id, "tier": s.resolved_tier(ma_cfg), "task": s.task[:100]} for s in subtasks],
         })
 
+        worker_tool_schemas: list[dict] | None = None
+        if self.tools is not None:
+            enabled = self.tools.all_schemas(only_enabled=True)
+            if enabled:
+                worker_tool_schemas = enabled
+
         async def run_worker(s: Subtask) -> dict:
             worker_tier_name = s.resolved_tier(ma_cfg)
             worker_tier = self.cfg.models.tiers[worker_tier_name]
@@ -143,11 +153,32 @@ class Orchestrator:
             try:
                 async with self.scheduler.reserve(worker_tier_name):
                     overrides = {"think": ma_cfg.worker_overrides.get("think", False)}
-                    output = await worker_client.chat_once(
-                        worker_tier,
-                        [ChatMessage(role="user", content=s.task)],
-                        think=overrides["think"],
-                    )
+                    # Only Ollama workers get the tool schema today (llama_cpp
+                    # vision tier bypasses tools anyway).
+                    kwargs = {}
+                    if worker_tier.backend == "ollama" and worker_tool_schemas:
+                        kwargs["extra_options"] = None
+                        # chat_once is a thin wrapper — pass tools via a
+                        # custom path: call chat_stream manually.
+                        text_chunks: list[str] = []
+                        async for chunk in worker_client.chat_stream(
+                            worker_tier,
+                            [ChatMessage(role="user", content=s.task)],
+                            think=overrides["think"],
+                            tools=worker_tool_schemas,
+                        ):
+                            msg = chunk.get("message") or {}
+                            if msg.get("content"):
+                                text_chunks.append(msg["content"])
+                            if chunk.get("done"):
+                                break
+                        output = "".join(text_chunks)
+                    else:
+                        output = await worker_client.chat_once(
+                            worker_tier,
+                            [ChatMessage(role="user", content=s.task)],
+                            think=overrides["think"],
+                        )
                 return {"id": s.id, "task": s.task, "output": output, "error": None}
             except Exception as e:
                 return {"id": s.id, "task": s.task, "output": "", "error": str(e)}

@@ -19,15 +19,18 @@ import pytest
 
 ROOT = Path(__file__).parent.parent
 TOOLS_DIR = ROOT / "tools"
-PIPELINES_DIR = ROOT / "pipelines"
+# Phase 6: pipelines/ migrated to backend/middleware/.
+MIDDLEWARE_DIR = ROOT / "backend" / "middleware"
 
 TOOL_FILES = sorted(TOOLS_DIR.glob("*.py"))
-PIPELINE_FILES = sorted(PIPELINES_DIR.glob("*.py"))
+MIDDLEWARE_FILES = sorted(
+    p for p in MIDDLEWARE_DIR.glob("*.py") if p.name != "__init__.py"
+)
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
 MIN_TOOL_COUNT = 52
-MIN_PIPELINE_COUNT = 4
+MIN_MIDDLEWARE_COUNT = 4
 
 # ── Required docstring metadata fields ───────────────────────────────────────
 
@@ -80,11 +83,8 @@ def test_tool_count():
     )
 
 
-def test_pipeline_count():
-    """Must have at least MIN_PIPELINE_COUNT pipeline files."""
-    assert len(PIPELINE_FILES) >= MIN_PIPELINE_COUNT, (
-        f"Expected {MIN_PIPELINE_COUNT}+ pipeline files, found {len(PIPELINE_FILES)}"
-    )
+# test_pipeline_count was removed in Phase 6 when pipelines/ was migrated
+# to backend/middleware/. Replaced by test_middleware_count below.
 
 
 # ── Tool file tests ───────────────────────────────────────────────────────────
@@ -144,11 +144,18 @@ def test_tool_no_forbidden_patterns(path):
         assert not matches, f"{path.name}: {message} (matched: {matches[:2]})"
 
 
-# ── Pipeline file tests ───────────────────────────────────────────────────────
+# ── Middleware tests (Phase 6: formerly pipelines/) ──────────────────────────
 
-@pytest.mark.parametrize("path", PIPELINE_FILES, ids=lambda p: p.name)
-def test_pipeline_syntax(path):
-    """Pipeline file must have valid Python syntax."""
+def test_middleware_count():
+    """Expect at least MIN_MIDDLEWARE_COUNT .py files in backend/middleware/."""
+    assert len(MIDDLEWARE_FILES) >= MIN_MIDDLEWARE_COUNT, (
+        f"Expected {MIN_MIDDLEWARE_COUNT}+ middleware files, found {len(MIDDLEWARE_FILES)}"
+    )
+
+
+@pytest.mark.parametrize("path", MIDDLEWARE_FILES, ids=lambda p: p.name)
+def test_middleware_syntax(path):
+    """Middleware file must have valid Python syntax."""
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as tmp:
         tmp.write(path.read_bytes())
         tmp_path = tmp.name
@@ -158,54 +165,12 @@ def test_pipeline_syntax(path):
         pytest.fail(f"{path.name}: syntax error — {e}")
 
 
-@pytest.mark.parametrize("path", PIPELINE_FILES, ids=lambda p: p.name)
-def test_pipeline_has_module_docstring(path):
-    """Pipeline file must have a module-level docstring."""
+@pytest.mark.parametrize("path", MIDDLEWARE_FILES, ids=lambda p: p.name)
+def test_middleware_has_module_docstring(path):
+    """Middleware file must have a module-level docstring."""
     tree = _parse(path)
     docstring = ast.get_docstring(tree)
     assert docstring, f"{path.name}: missing module docstring"
-
-
-@pytest.mark.parametrize("path", PIPELINE_FILES, ids=lambda p: p.name)
-def test_pipeline_docstring_metadata(path):
-    """Pipeline docstring must contain title: and version:."""
-    source = path.read_text(encoding="utf-8")
-    for field in PIPELINE_DOCSTRING_REQUIRED:
-        assert field in source, f"{path.name}: docstring missing '{field}'"
-
-
-@pytest.mark.parametrize("path", PIPELINE_FILES, ids=lambda p: p.name)
-def test_pipeline_has_correct_class(path):
-    """Pipeline file must define a top-level 'Filter' or 'Pipeline' class."""
-    tree = _parse(path)
-    top_classes = _top_class_names(tree)
-    assert "Filter" in top_classes or "Pipeline" in top_classes, (
-        f"{path.name}: must define a top-level 'class Filter' or 'class Pipeline'"
-    )
-
-
-@pytest.mark.parametrize("path", PIPELINE_FILES, ids=lambda p: p.name)
-def test_pipeline_has_valves(path):
-    """Filter/Pipeline class must contain a nested 'Valves' class."""
-    tree = _parse(path)
-    top_classes = _top_class_names(tree)
-    outer = "Filter" if "Filter" in top_classes else "Pipeline"
-    assert _has_nested_class(tree, outer, "Valves"), (
-        f"{path.name}: '{outer}' class must contain a nested 'class Valves(BaseModel)'"
-    )
-
-
-@pytest.mark.parametrize("path", PIPELINE_FILES, ids=lambda p: p.name)
-def test_pipeline_filter_has_inlet_outlet(path):
-    """Filter pipelines must implement both inlet() and outlet() methods."""
-    tree = _parse(path)
-    top_classes = _top_class_names(tree)
-    if "Filter" not in top_classes:
-        pytest.skip("Not a filter pipeline")
-
-    source = path.read_text(encoding="utf-8")
-    assert "def inlet" in source, f"{path.name}: Filter missing inlet() method"
-    assert "def outlet" in source, f"{path.name}: Filter missing outlet() method"
 
 
 # ── Specific tool presence tests ──────────────────────────────────────────────
@@ -233,8 +198,9 @@ REQUIRED_TOOLS = [
     "memory_tool",
 ]
 
-REQUIRED_PIPELINES = [
-    "rate_limiter", "context_injector", "web_search_rag", "clarification_filter",
+REQUIRED_MIDDLEWARE = [
+    # Phase 6: ported from pipelines/ to backend/middleware/
+    "rate_limit", "context", "web_search", "clarification",
 ]
 
 
@@ -246,9 +212,9 @@ def test_required_tool_exists(tool_name):
     )
 
 
-@pytest.mark.parametrize("pipeline_name", REQUIRED_PIPELINES)
-def test_required_pipeline_exists(pipeline_name):
-    """All expected pipeline files must exist."""
-    assert (PIPELINES_DIR / f"{pipeline_name}.py").exists(), (
-        f"Required pipeline file missing: pipelines/{pipeline_name}.py"
+@pytest.mark.parametrize("middleware_name", REQUIRED_MIDDLEWARE)
+def test_required_middleware_exists(middleware_name):
+    """All expected middleware modules must exist in backend/middleware/."""
+    assert (MIDDLEWARE_DIR / f"{middleware_name}.py").exists(), (
+        f"Required middleware file missing: backend/middleware/{middleware_name}.py"
     )

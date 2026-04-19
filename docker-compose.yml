@@ -48,6 +48,20 @@ services:
       - backend
     restart: unless-stopped
 
+  # ── Cloudflare Tunnel — public HTTPS access without opening router ports ─────
+  # Users run `bash scripts/setup-cloudflared.sh` once to provision a tunnel.
+  # When CLOUDFLARE_TUNNEL_TOKEN is unset, docker compose skips the service so
+  # local-only users aren't forced to set up Cloudflare.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: lai-cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env.local or omit this service}
+    depends_on:
+      - frontend
+    restart: unless-stopped
+    profiles:
+      - public                          # opt-in: `docker compose --profile public up`
+
   # ── Ollama — primary inference backend ────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest

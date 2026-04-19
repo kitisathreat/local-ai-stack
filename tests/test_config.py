@@ -273,6 +273,9 @@ def test_ollama_models_yaml_has_tier_group():
 
 REQUIRED_SERVICES = [
     "backend", "frontend", "jupyter", "qdrant", "searxng", "ollama", "llama-server", "n8n",
+    # Phase 6: cloudflared is profile-gated (only starts with `--profile public`)
+    # but must be declared as a service for compose config validity.
+    "cloudflared",
 ]
 
 
@@ -399,6 +402,18 @@ def test_squarespace_embed_exists():
 def test_squarespace_embed_has_error_fallback():
     html = (ROOT / "squarespace-embed.html").read_text(encoding="utf-8")
     assert "ai-error" in html
+
+
+def test_squarespace_embed_uses_cloudflare_placeholder():
+    """Phase 6: Tailscale hostname replaced with a placeholder substituted
+    at render time via scripts/render-embed.sh."""
+    html = (ROOT / "squarespace-embed.html").read_text(encoding="utf-8")
+    assert "__CLOUDFLARE_HOSTNAME__" in html, (
+        "embed should use __CLOUDFLARE_HOSTNAME__ placeholder; "
+        "run scripts/render-embed.sh to substitute before pasting into Squarespace"
+    )
+    assert "taila2838f.ts.net" not in html, "embed still references Tailscale hostname"
+    assert "tailscale://" not in html, "embed still has tailscale:// link"
 
 
 # ── .gitignore ────────────────────────────────────────────────────────────────

@@ -31,6 +31,13 @@ from . import auth, db, memory, rag
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
+from .middleware.clarification import (
+    format_clarifications,
+    inject_clarification_instruction,
+)
+from .middleware.context import inject_system_context
+from .middleware.rate_limit import rate_limiter
+from .middleware.web_search import inject_web_results
 from .orchestrator import Orchestrator
 from .router import route
 from .schemas import ChatMessage, MessagePart
@@ -126,7 +133,9 @@ async def lifespan(app: FastAPI):
     )
     await state.scheduler.start()
 
-    state.orchestrator = Orchestrator(state.config, state.scheduler, clients)
+    # Phase 6: threads the tool registry into the orchestrator so workers
+    # can call tools within subtasks.
+    state.orchestrator = Orchestrator(state.config, state.scheduler, clients, tools=state.tools)
 
     logger.info("Ready. Tiers: %s", list(state.config.models.tiers))
     try:
@@ -137,14 +146,39 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
 
-# CORS — tightened in Phase 6 to the Cloudflare hostname
+# CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
+# Cloudflare Tunnel hostname is set via setup-cloudflared.sh. Local dev
+# defaults to wildcard. We warn if wildcard+credentials is configured since
+# browsers ignore that combination.
+_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+if _allowed_origins == ["*"]:
+    logger.warning(
+        "CORS set to wildcard with credentials=True — browsers will ignore "
+        "credentials. Set ALLOWED_ORIGINS to your Cloudflare hostname in "
+        "production (see scripts/setup-cloudflared.sh)."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["content-type"],
+    max_age=600,
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Attach HSTS and content-type protection headers to every response.
+    Only meaningful when served behind HTTPS (Cloudflare Tunnel)."""
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if os.getenv("PUBLIC_BASE_URL", "").startswith("https://"):
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return resp
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
@@ -235,7 +269,21 @@ async def chat_completions(
     except KeyError as e:
         raise HTTPException(404, str(e))
 
-    # Signed-in users get per-user memory + RAG context prepended.
+    # Rate-limit by user ID (falls back to client IP for anonymous).
+    rate_key = str(user["id"]) if user else (
+        request.headers.get("x-forwarded-for") or
+        (request.client.host if request.client else "anon")
+    )
+    rate_limiter.check(rate_key)
+
+    # Middleware pipeline — inlet:
+    #   1. Datetime/system context injection
+    #   2. Clarification-protocol system prompt + ambiguity nudge
+    #   3. Web-search auto-inject (if trigger patterns match the user msg)
+    #   4. Per-user RAG + memory context (signed-in users only)
+    inject_system_context(req.messages)
+    inject_clarification_instruction(req.messages)
+    await inject_web_results(req.messages)
     if user:
         await _inject_user_context(req, user)
 
@@ -297,6 +345,7 @@ async def _single_agent_sse(
     user: dict | None = None,
 ) -> AsyncIterator[str]:
     model_id = f"tier.{decision.tier_name}"
+    assembled_text = []   # accumulated assistant content for post-stream persist
 
     # Route decision event (for UI display)
     yield _agent_event_sse(
@@ -337,6 +386,7 @@ async def _single_agent_sse(
                         msg = chunk.get("message") or {}
                         text = msg.get("content")
                         if text:
+                            assembled_text.append(text)
                             yield _openai_chunk(text, model_id)
                         if msg.get("tool_calls"):
                             tool_calls_accum.extend(msg["tool_calls"])
@@ -350,6 +400,7 @@ async def _single_agent_sse(
                             delta = choice.get("delta") or {}
                             text = delta.get("content")
                             if text:
+                                assembled_text.append(text)
                                 yield _openai_chunk(text, model_id)
                     break
 
@@ -384,8 +435,52 @@ async def _single_agent_sse(
             model_id,
         )
 
+    # Phase 6: post-stream persistence + memory distillation (fire-and-forget).
+    full_text = "".join(assembled_text)
+    asyncio.create_task(_finalize_conversation(req, user, decision, full_text))
+
     yield _openai_chunk("", model_id, done=True)
     yield "data: [DONE]\n\n"
+
+
+async def _finalize_conversation(
+    req: ChatRequest, user: dict | None, decision, assistant_text: str,
+) -> None:
+    """Persist the user+assistant messages and periodically distill memory.
+    Runs as a background task after the stream completes; never raises."""
+    if not user or not req.conversation_id or not assistant_text.strip():
+        return
+    try:
+        conv = await db.get_conversation(req.conversation_id, user["id"])
+        if not conv:
+            return
+
+        # Save the trailing user message + the assistant reply.
+        from .router import last_user_text
+        user_text = last_user_text(req.messages)
+        if user_text:
+            await db.add_message(
+                req.conversation_id, "user", user_text,
+                tier=decision.tier_name, think=False,
+            )
+        await db.add_message(
+            req.conversation_id, "assistant", assistant_text,
+            tier=decision.tier_name, think=decision.think,
+        )
+
+        # Distill every 5th assistant turn in a conversation to avoid
+        # hammering the Versatile tier.
+        msgs = await db.list_messages(req.conversation_id)
+        asst_count = sum(1 for m in msgs if m["role"] == "assistant")
+        if asst_count > 0 and asst_count % 5 == 0:
+            logger.info("Triggering memory distillation for conv %d (asst turn %d)",
+                        req.conversation_id, asst_count)
+            versatile_tier = state.config.models.tiers["versatile"]
+            await memory.distill_and_store(
+                user["id"], req.conversation_id, state.ollama, versatile_tier,
+            )
+    except Exception:
+        logger.exception("Post-stream finalization failed")
 
 
 async def _multi_agent_sse(req: ChatRequest, decision) -> AsyncIterator[str]:

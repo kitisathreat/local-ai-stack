@@ -30,8 +30,13 @@ _parser = argparse.ArgumentParser(
 )
 _parser.add_argument("--mode", choices=["explain","review","fix","test","plan"], default="explain",
     help="Conversation mode: explain, review, fix, test, plan (default: explain)")
-_parser.add_argument("--profile", choices=["fast","quality","coding","large","fixed"], default="",
-    help="Model profile from models.yaml. Use 'fixed' to disable auto-routing.")
+_parser.add_argument(
+    "--profile",
+    choices=["fast","versatile","highest_quality","coding","vision",
+             "fixed","quality","large","balanced","analyst","creative","roleplay","summarizer"],
+    default="",
+    help="Tier from config/models.yaml (new 5-tier schema; legacy 9-profile names are accepted as aliases). Use 'fixed' to disable auto-routing.",
+)
 if "--help" in sys.argv or "-h" in sys.argv:
     _parser.print_help()
     sys.exit(0)
@@ -52,9 +57,27 @@ JUPYTER_URL  = "http://localhost:8888"
 JUPYTER_TOKEN = "local-ai-stack-token"
 
 VALID_MODES    = ["explain", "review", "fix", "test", "plan"]
-VALID_PROFILES = ["fast", "quality", "coding", "large"]
+# New 5-tier schema — code_assist reads `tiers:` and `model_tag:` from models.yaml.
+VALID_PROFILES = ["fast", "versatile", "highest_quality", "coding", "vision"]
 
-DIFFICULTY_MAP = {"EASY": "fast", "MEDIUM": "quality", "HARD": "coding", "EXPERT": "large"}
+# Legacy 9-profile names map to the new tiers (matches config/models.yaml aliases).
+LEGACY_ALIASES = {
+    "quality": "highest_quality",
+    "large": "highest_quality",
+    "balanced": "versatile",
+    "analyst": "versatile",
+    "creative": "fast",
+    "roleplay": "fast",
+    "summarizer": "fast",
+}
+
+# Difficulty → tier routing.
+DIFFICULTY_MAP = {
+    "EASY": "fast",
+    "MEDIUM": "versatile",
+    "HARD": "coding",
+    "EXPERT": "highest_quality",
+}
 
 # Keywords that signal a particular specialization need
 VISION_KEYWORDS  = ["image", "photo", "picture", "screenshot", "diagram", "chart", "visual",
@@ -78,19 +101,40 @@ DIM    = "\033[2m"
 RESET  = "\033[0m"
 
 
-# ── models.yaml helpers ───────────────────────────────────────────────────────
+# ── models.yaml helpers (Phase 6: reads new 5-tier schema) ───────────────────
 
-def _yaml_field(yaml_path: Path, profile: str, field: str) -> str:
-    """Read a single field from a profile block in models.yaml (no yaml library needed)."""
+def _resolve_alias(name: str) -> str:
+    """Map legacy profile names to current tier names."""
+    return LEGACY_ALIASES.get(name, name)
+
+
+def _tier_field(yaml_path: Path, tier: str, field: str) -> str:
+    """Read a single field from a tier block under `tiers:` in models.yaml.
+    Also consults the top-level `aliases:` table if `tier` is a legacy name."""
+    tier = _resolve_alias(tier)
+    in_tiers_section = False
     in_block = False
     with open(yaml_path) as f:
         for line in f:
-            if line.startswith(f"  {profile}:"):
+            stripped = line.rstrip()
+            if stripped == "tiers:":
+                in_tiers_section = True
+                continue
+            if in_tiers_section and stripped and not stripped.startswith(" "):
+                # Left the tiers: section (e.g. hit `aliases:`).
+                in_tiers_section = False
+                in_block = False
+                continue
+            if not in_tiers_section:
+                continue
+            # Tier key is at 2-space indent.
+            if line.startswith(f"  {tier}:"):
                 in_block = True
                 continue
             if in_block:
+                # Next sibling tier at 2-space indent ends the block.
                 if line.startswith("  ") and not line.startswith("   "):
-                    break  # next sibling profile — stop
+                    break
                 m = re.match(rf"\s+{field}:\s+[\"']?(.+?)[\"']?\s*$", line)
                 if m:
                     return m.group(1).strip()
@@ -103,18 +147,22 @@ def get_default_profile(yaml_path: Path) -> str:
             m = re.match(r"^default:\s+(\w+)", line)
             if m:
                 return m.group(1)
-    return "quality"
+    return "versatile"
 
 
 def load_model_id(profile: str, yaml_path: Path = MODELS_YAML) -> str:
-    model_id = _yaml_field(yaml_path, profile, "id")
-    if not model_id:
-        sys.exit(f"Profile '{profile}' not found in {yaml_path}")
-    return model_id
+    """Return the Ollama/llama.cpp model_tag for a tier (or alias)."""
+    # New schema uses `model_tag`; legacy used `id`. Try both for forward
+    # compatibility in case the schema evolves further.
+    for field in ("model_tag", "id"):
+        val = _tier_field(yaml_path, profile, field)
+        if val:
+            return val
+    sys.exit(f"Tier '{profile}' not found in {yaml_path}")
 
 
 def load_all_model_ids(yaml_path: Path = MODELS_YAML) -> dict:
-    """Return {profile: model_id} for all profiles."""
+    """Return {tier: model_tag} for all tiers code_assist routes to."""
     return {p: load_model_id(p, yaml_path) for p in VALID_PROFILES}
 
 
@@ -184,17 +232,19 @@ def resolve_model_for_task(task_text: str, model_ids: dict, client: OpenAI) -> t
         vision_id = find_vision_model(client)
         if vision_id:
             return vision_id, f"vision model ({vision_id})"
-        # Fallback: use large model and warn
-        return model_ids["large"], "large model (no vision model loaded — load LLaVA or similar in LM Studio for true vision)"
+        # Fallback: the dedicated vision tier if loaded locally, else highest_quality.
+        return (
+            model_ids.get("vision") or model_ids["highest_quality"],
+            "vision tier (no LM Studio vision model detected; using Qwen3.6 mmproj if available)",
+        )
 
     if spec == "math":
-        # DeepSeek R1 is a strong reasoning/math model
-        return model_ids["quality"], "quality model (math/reasoning)"
+        return model_ids["highest_quality"], "highest_quality tier (math/reasoning)"
 
     if spec == "coding":
-        return model_ids["coding"], "coding model (code-specialized)"
+        return model_ids["coding"], "coding tier (code-specialized)"
 
-    return model_ids["quality"], "quality model (general)"
+    return model_ids["versatile"], "versatile tier (general)"
 
 
 # ── Difficulty classifier (Claude Code sideQuery pattern) ─────────────────────
@@ -581,14 +631,14 @@ def main():
                     active_model_id = vision_id
                     print(f"{DIM}[Specialization: vision → {vision_id}]{RESET}")
                 else:
-                    active_model_id = model_ids["large"]
-                    print(f"{YELLOW}[Vision task detected but no vision model found in LM Studio. "
-                          f"Using large model. Load LLaVA or similar for image tasks.]{RESET}")
+                    active_model_id = model_ids.get("vision") or model_ids["highest_quality"]
+                    print(f"{YELLOW}[Vision task detected — using vision tier (or highest_quality fallback). "
+                          f"Load Qwen3.6 + mmproj via scripts/setup-models.sh for true vision.]{RESET}")
             elif spec in ("math", "coding"):
-                # Use coding model for math+code, quality for pure math
-                routed_profile = "coding" if spec == "coding" else "quality"
+                # Coding tier for code, highest_quality for pure math
+                routed_profile = "coding" if spec == "coding" else "highest_quality"
                 active_model_id = model_ids[routed_profile]
-                print(f"{DIM}[Specialization: {spec} → {routed_profile} model]{RESET}")
+                print(f"{DIM}[Specialization: {spec} → {routed_profile} tier]{RESET}")
             else:
                 # 2. Fall back to difficulty-based routing for general tasks
                 difficulty = classify_difficulty(user_input, client, model_ids["fast"])
