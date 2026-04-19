@@ -211,6 +211,59 @@ async def vram_status():
     return await state.scheduler.status()
 
 
+def _read_meminfo() -> dict[str, int]:
+    """Parse /proc/meminfo into bytes. Linux-only; non-Linux hosts return {}."""
+    try:
+        lines = Path("/proc/meminfo").read_text().splitlines()
+    except OSError:
+        return {}
+    out: dict[str, int] = {}
+    for line in lines:
+        key, _, rest = line.partition(":")
+        parts = rest.strip().split()
+        if not parts:
+            continue
+        try:
+            val = int(parts[0])
+        except ValueError:
+            continue
+        # Values are in kB per meminfo convention; normalize to bytes.
+        if len(parts) > 1 and parts[1].lower() == "kb":
+            val *= 1024
+        out[key.strip()] = val
+    return out
+
+
+@app.get("/api/system")
+async def system_status():
+    """Lightweight telemetry snapshot for the chat-side status panel.
+
+    Pulls GPU stats from the scheduler (which already caches NVML reads)
+    and system RAM straight from /proc/meminfo so we don't add a psutil
+    dep for what amounts to four integers.
+    """
+    vram = await state.scheduler.status()
+    mi = _read_meminfo()
+    ram_total_b = mi.get("MemTotal", 0)
+    ram_avail_b = mi.get("MemAvailable", mi.get("MemFree", 0))
+    ram_used_b = max(0, ram_total_b - ram_avail_b)
+    gb = 1 << 30
+    return {
+        "vram": {
+            "total_gb": vram.get("total_vram_gb", 0.0),
+            "free_gb": vram.get("free_vram_gb_actual", vram.get("free_vram_gb_projected", 0.0)),
+            "used_gb": max(0.0, vram.get("total_vram_gb", 0.0) - vram.get("free_vram_gb_projected", 0.0)),
+            "loaded_tiers": [m.get("tier_id") for m in vram.get("loaded", [])],
+        },
+        "ram": {
+            "total_gb": ram_total_b / gb,
+            "used_gb": ram_used_b / gb,
+            "free_gb": ram_avail_b / gb,
+        },
+        "ts": time.time(),
+    }
+
+
 @app.get("/api/tools")
 async def list_tools():
     """List discovered tools. Tool names are `<module>.<method>`."""
