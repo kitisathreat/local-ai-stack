@@ -1,0 +1,20 @@
+# Cloudflare Tunnel config for LocalAIStack.
+# Replace TUNNEL_UUID_HERE with your tunnel's UUID (from `cloudflared tunnel list`).
+# Credentials file must exist at the path below (created by `cloudflared tunnel login`
+# + `cloudflared tunnel create local-ai-stack`).
+
+tunnel: TUNNEL_UUID_HERE
+credentials-file: /home/nonroot/.cloudflared/TUNNEL_UUID_HERE.json
+
+ingress:
+  # Main chat UI (goes through Cloudflare Access magic-link policy)
+  - hostname: chat.mylensandi.com
+    service: http://web:3001
+
+  # Optional: separate API hostname (if you prefer over path routing).
+  # Make sure Cloudflare Access protects this too, or restrict it to Service Tokens.
+  # - hostname: api.chat.mylensandi.com
+  #   service: http://api:8787
+
+  # Catch-all: required last rule
+  - service: http_status:404

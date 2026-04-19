@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-    Start the local AI stack.
+    Start the local AI stack (manual / headless entry point).
 .DESCRIPTION
-    Starts Docker Desktop if needed, brings up all services via docker compose,
-    and loads the default model (or specified profile) in LM Studio.
+    For the normal end-user experience use launcher\dist\LocalAIStack.exe.
+    This script brings up Docker, starts LM Studio, runs docker compose up,
+    and loads the default model. Tunnel is part of docker compose now.
 .PARAMETER Profile
     Model profile to load. Defaults to the 'default' in config/models.yaml.
 .EXAMPLE
@@ -31,7 +32,7 @@ function Get-ModelConfig($profileName) {
     foreach ($line in $yaml) {
         if ($line -match "^  ${profileName}:") { $inBlock = $true; continue }
         if ($inBlock) {
-            if ($line -match "^  \w") { break }  # next sibling
+            if ($line -match "^  \w") { break }
             if ($line -match "^\s+(\w+):\s+[`"']?(.+?)[`"']?\s*$") {
                 $config[$Matches[1]] = $Matches[2]
             }
@@ -65,21 +66,29 @@ if (-not $dockerReady) { Write-Fail "Docker did not start in time."; exit 1 }
 Write-OK "Docker is running"
 
 # ── 3. Start services via docker compose ─────────────────────────────────────
-Write-Step "Starting services (Open WebUI + Jupyter)..."
+Write-Step "Starting services (web, api, cloudflared, jupyter, pipelines, qdrant, searxng, ollama, n8n)..."
 Set-Location $root
 docker compose up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor DarkGray }
 if ($LASTEXITCODE -ne 0) { Write-Fail "docker compose up failed"; exit 1 }
 
-# Wait for Open WebUI
-Write-Host "   Waiting for Open WebUI to be ready..."
+# Wait for web + api to be ready
+Write-Host "   Waiting for api..."
 for ($i = 0; $i -lt 24; $i++) {
     try {
-        $r = Invoke-WebRequest http://localhost:3000 -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        $r = Invoke-WebRequest http://localhost:8787/health -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
         if ($r.StatusCode -eq 200) { break }
     } catch {}
     Start-Sleep 5
 }
-Write-OK "Open WebUI is up at http://localhost:3000"
+Write-Host "   Waiting for web..."
+for ($i = 0; $i -lt 24; $i++) {
+    try {
+        $r = Invoke-WebRequest http://localhost:3001 -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { break }
+    } catch {}
+    Start-Sleep 5
+}
+Write-OK "Stack is up (api :8787, web :3001)"
 
 # ── 4. Load model in LM Studio ───────────────────────────────────────────────
 Write-Step "Loading model in LM Studio..."
@@ -96,7 +105,6 @@ Write-Host "   Model   : $($model['id'])"
 Write-Host "   GPU     : $($model['gpu'])"
 Write-Host "   Context : $($model['context'])"
 
-# Check LM Studio server is running
 $serverUp = lms server status 2>&1
 if ($serverUp -notlike "*running*") {
     Write-Host "   LM Studio server not running - starting..."
@@ -104,7 +112,6 @@ if ($serverUp -notlike "*running*") {
     Start-Sleep 3
 }
 
-# Unload any current model
 $running = lms ps 2>&1
 if ($running -match "IDLE|LOADING") {
     Write-Host "   Unloading current model..."
@@ -112,36 +119,17 @@ if ($running -match "IDLE|LOADING") {
     Start-Sleep 2
 }
 
-# Load the new model
 lms load $model['id'] --gpu $model['gpu'] --context-length $model['context'] --parallel $model['parallel'] -y 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Fail "Failed to load model"; exit 1 }
 Write-OK "Model loaded: $($model['id'])"
 
-# ── 5. Register model presets in Open WebUI and LM Studio ────────────────────
-Write-Step "Syncing model presets..."
-& "$PSScriptRoot\setup-webui-models.ps1"
-
-# ── 6. Tailscale Serve (HTTPS for Squarespace embed) ─────────────────────────
-Write-Step "Ensuring Tailscale Serve is active..."
-$tailscale = "C:\Program Files\Tailscale\tailscale.exe"
-$serveStatus = & $tailscale serve status 2>&1
-if ($serveStatus -notlike "*localhost:3000*") {
-    & $tailscale serve --bg http://localhost:3000 2>&1 | Out-Null
-    Start-Sleep 2
-    $serveStatus = & $tailscale serve status 2>&1
-}
-if ($serveStatus -like "*localhost:3000*") {
-    Write-OK "Tailscale Serve active → https://desktop-j4g42gi.taila2838f.ts.net"
-} else {
-    Write-Host "   Note: Tailscale Serve not configured (run once as admin to enable)" -ForegroundColor Yellow
-}
-
-# ── 7. Done ──────────────────────────────────────────────────────────────────
+# ── 5. Done ──────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "=========================================" -ForegroundColor Green
 Write-Host "  Stack is ready!" -ForegroundColor Green
-Write-Host "  Local:    http://localhost:3000" -ForegroundColor Green
-Write-Host "  Tailscale: https://desktop-j4g42gi.taila2838f.ts.net" -ForegroundColor Green
-Write-Host "  Web:      https://www.mylensandi.com/ai" -ForegroundColor Green
-Write-Host "  Model:    $($model['name'])" -ForegroundColor Green
+Write-Host "  Local UI:  http://localhost:3001" -ForegroundColor Green
+Write-Host "  API:       http://localhost:8787" -ForegroundColor Green
+Write-Host "  Public:    https://chat.mylensandi.com" -ForegroundColor Green
+Write-Host "  Landing:   https://www.mylensandi.com/chat" -ForegroundColor Green
+Write-Host "  Model:     $($model['name'])" -ForegroundColor Green
 Write-Host "=========================================" -ForegroundColor Green

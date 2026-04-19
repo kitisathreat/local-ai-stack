@@ -1,60 +1,59 @@
 services:
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
+  # ── Custom chat UI ───────────────────────────────────────────────────────────
+  web:
+    build: ./web
+    container_name: web
+    depends_on:
+      - api
+    environment:
+      - API_URL=http://api:8787
+    expose:
+      - "3001"
     ports:
-      - "3000:8080"
+      - "3001:3001"
+    restart: always
+
+  # ── Chat API: routes chats, stores sqlite, streams telemetry ────────────────
+  api:
+    build: ./api
+    container_name: api
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - open-webui:/app/backend/data
+      - api-data:/app/data
+      - ./config:/app/config:ro
     environment:
-      - WEBUI_AUTH=False
-
-      # ── LM Studio + Pipelines as OpenAI-compatible backends ──────────────────
-      - OPENAI_API_BASE_URLS=http://host.docker.internal:1234/v1;http://pipelines:9099
-      - OPENAI_API_KEYS=lmstudio;0p3n-w3bu!
-
-      # ── Ollama integration (local model hub) ──────────────────────────────────
-      - OLLAMA_BASE_URL=http://ollama:11434
-
-      # ── Vector database: Qdrant for semantic RAG ──────────────────────────────
-      - VECTOR_DB=qdrant
-      - QDRANT_URL=http://qdrant:6333
-
-      # ── Embeddings (via LM Studio OpenAI-compatible endpoint) ─────────────────
-      - RAG_EMBEDDING_ENGINE=openai
-      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5-GGUF
-
-      # ── Web search via SearXNG ────────────────────────────────────────────────
-      - ENABLE_RAG_WEB_SEARCH=True
-      - RAG_WEB_SEARCH_ENGINE=searxng
-      - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>&format=json
-      - RAG_WEB_SEARCH_RESULT_COUNT=5
-      - RAG_WEB_SEARCH_CONCURRENT_REQUESTS=10
-
-      # ── Code interpreter: Jupyter ─────────────────────────────────────────────
-      - CODE_EXECUTION_ENGINE=jupyter
-      - CODE_EXECUTION_JUPYTER_URL=http://jupyter:8888
-      - CODE_EXECUTION_JUPYTER_AUTH=token
-      - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=local-ai-stack-token
-
-      # ── Image generation (point to Automatic1111 / ComfyUI if running) ────────
-      - ENABLE_IMAGE_GENERATION=False
-      - IMAGE_GENERATION_ENGINE=openai
-
-      # ── Miscellaneous features ────────────────────────────────────────────────
-      - ENABLE_COMMUNITY_SHARING=False
-      - ENABLE_MESSAGE_RATING=True
-      - DEFAULT_MODELS=quality
-    restart: always
+      - PORT=8787
+      - DB_PATH=/app/data/local-ai-stack.db
+      - UPLOAD_DIR=/app/data/uploads
+      - MODELS_YAML=/app/config/models.yaml
+      - LMSTUDIO_URL=http://host.docker.internal:1234/v1
+      - GPU_AGENT_URL=http://host.docker.internal:8788/
+      - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
+      - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
+      - DEV_TRUSTED_EMAIL=${DEV_TRUSTED_EMAIL:-}
+    expose:
+      - "8787"
+    ports:
+      - "8787:8787"
     depends_on:
-      - jupyter
-      - pipelines
       - qdrant
-      - searxng
-      # ollama is optional — remove from depends_on to allow starting without it
+    restart: always
 
+  # ── Cloudflare Tunnel: public URL with Access magic-link auth ───────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflare:/etc/cloudflared:ro
+      - cloudflared-data:/home/nonroot/.cloudflared
+    depends_on:
+      - web
+      - api
+    restart: always
+
+  # ── Jupyter: code execution for assistant ────────────────────────────────────
   jupyter:
     image: quay.io/jupyter/scipy-notebook:latest
     container_name: jupyter
@@ -67,7 +66,7 @@ services:
       - "8888"
     restart: always
 
-  # ── Open WebUI Pipelines: function-calling, filters, RAG pipelines ────────────
+  # ── Pipelines: function-calling, filters, RAG pipelines ──────────────────────
   pipelines:
     image: ghcr.io/open-webui/pipelines:main
     container_name: pipelines
@@ -80,7 +79,7 @@ services:
       - PIPELINES_API_KEY=0p3n-w3bu!
     restart: always
 
-  # ── Qdrant: high-performance vector database for RAG ─────────────────────────
+  # ── Qdrant: vector database for RAG ──────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -91,7 +90,7 @@ services:
       - qdrant-data:/qdrant/storage
     restart: always
 
-  # ── SearXNG: self-hosted meta-search engine (web search for models) ───────────
+  # ── SearXNG: self-hosted meta-search (web search for the assistant) ─────────
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
@@ -109,7 +108,7 @@ services:
       - SETUID
     restart: always
 
-  # ── Ollama: local model hub (llama3, phi4, mistral, llava, etc.) ──────────────
+  # ── Ollama: fallback local model hub ─────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -119,7 +118,7 @@ services:
       - ollama-data:/root/.ollama
     restart: always
 
-  # ── n8n: low-code workflow automation connected to AI ─────────────────────────
+  # ── n8n: low-code workflow automation ────────────────────────────────────────
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
@@ -137,9 +136,10 @@ services:
     restart: always
 
 volumes:
-  open-webui:
+  api-data:
   jupyter-data:
   pipelines-data:
   qdrant-data:
   ollama-data:
   n8n-data:
+  cloudflared-data:
