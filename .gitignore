@@ -1,8 +1,15 @@
 .env.local
-__pycache__/
-*.pyc
-tests/ci_results.txt
+.env
 openapi.json
+tests/ci_results.txt
+
+# Runtime state (SQLite db, Qdrant volumes, VRAM observed costs)
+data/*
+!data/.gitkeep
+
+# Downloaded model files (GGUF + mmproj for llama.cpp vision tier)
+models/*
+!models/.gitkeep
 
 # Docker override files
 docker-compose.override.yml

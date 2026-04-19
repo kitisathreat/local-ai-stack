@@ -1,126 +1,124 @@
-# Model profiles for LM Studio
-# Run: .\scripts\switch-model.ps1 -Profile <name>
-# Default is loaded on startup via start.ps1
+# Model tier registry — backend-agnostic
 #
-# Load params (lms load):  gpu, context, parallel
-# Inference params (preset): temperature, top_p, top_k, repeat_penalty, max_tokens
+# The backend (FastAPI at /backend) reads this and:
+#   - exposes each tier as a virtual model id (tier.<name>) to the frontend
+#   - dispatches requests to the correct backend (ollama | llama_cpp)
+#   - passes per-tier inference params (temperature, top_p, num_ctx, think, ...)
+#   - lets the VRAM scheduler know the cost of each tier
+#
+# Old 9-profile schema (fast/quality/coding/large/creative/analyst/balanced/
+# roleplay/summarizer) is preserved via the `aliases:` block at the bottom.
 
-default: quality
+default: versatile
 
-models:
+tiers:
+  # ── Highest Quality — Qwen3 72B dense, hardest reasoning ────────────────────
+  highest_quality:
+    name: "Highest Quality (Qwen3 72B)"
+    description: "Maximum reasoning quality. Slow (~15-20 t/s with RAM spillover). Use for hardest problems."
+    backend: ollama
+    endpoint: http://ollama:11434
+    model_tag: "qwen3:72b-q3_k_m"
+    context_window: 8192
+    think_default: true
+    think_supported: true
+    params:
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 20
+      repeat_penalty: 1.0
+      num_predict: 8192
+    vram_estimate_gb: 24
+
+  # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
+  versatile:
+    name: "Versatile (Qwen3.6 35B-A3B)"
+    description: "MoE with 3B active params. Fast (~120+ t/s) and capable. Default tier + multi-agent orchestrator."
+    backend: ollama
+    endpoint: http://ollama:11434
+    model_tag: "qwen3.6:35b-a3b"
+    context_window: 16384
+    think_default: false
+    think_supported: true
+    preserve_thinking: true             # Qwen3.6 feature — carries reasoning across agent turns
+    params:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 4096
+    vram_estimate_gb: 21
+    is_orchestrator: true
+
+  # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
   fast:
-    name: "Fast (Qwen 3.5 9B)"
-    id: "qwen/qwen3.5-9b"
-    gpu: max
-    context: 4096
-    parallel: 4
-    description: "Quick responses, lower GPU load. Good for simple Q&A."
-    temperature: 0.7
-    top_p: 0.9
-    top_k: 40
-    repeat_penalty: 1.1
-    max_tokens: 2048
+    name: "Fast (Qwen3.5 9B)"
+    description: "Small, fully GPU-offloaded. 3 instances fit in 24GB VRAM simultaneously — used as multi-agent workers."
+    backend: ollama
+    endpoint: http://ollama:11434
+    model_tag: "qwen3.5:9b"
+    context_window: 4096
+    think_default: false
+    think_supported: true
+    params:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      repeat_penalty: 1.0
+      num_predict: 2048
+    vram_estimate_gb: 7
+    parallel_workers_max: 3
 
-  quality:
-    name: "Quality (DeepSeek R1 8B)"
-    id: "deepseek/deepseek-r1-0528-qwen3-8b"
-    gpu: max
-    context: 16384
-    parallel: 2
-    description: "Best reasoning quality. Kit's Assistant default."
-    temperature: 0.6
-    top_p: 0.95
-    top_k: 40
-    repeat_penalty: 1.05
-    max_tokens: 8192
-
+  # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
   coding:
-    name: "Coding (Qwen Coder)"
-    id: "qwen/qwen3-coder-next"
-    gpu: max
-    context: 32768
-    parallel: 2
-    description: "Optimized for code generation and review."
-    temperature: 0.1
-    top_p: 0.95
-    top_k: 20
-    repeat_penalty: 1.05
-    max_tokens: 8192
+    name: "Coding (Qwen3-Coder-Next 80B-A3B)"
+    description: "71.3% SWE-bench Verified. RL-trained on 800K real GitHub PRs. Native tool calling."
+    backend: ollama
+    endpoint: http://ollama:11434
+    model_tag: "hf.co/bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF:Q4_K_XL"
+    fallback_tag: "qwen2.5-coder:32b"
+    context_window: 32768
+    think_default: true                 # always on for coding tasks
+    think_supported: true
+    params:
+      temperature: 1.0                  # official recommendation for agentic coding
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 8192
+    vram_estimate_gb: 24
+    reasoning_format: none              # strip <think> tags from API output
 
-  large:
-    name: "Large (Qwen 3.5 35B MoE)"
-    id: "qwen/qwen3.5-35b-a3b"
-    gpu: max
-    context: 8192
-    parallel: 1
-    description: "Highest capability. Slow — use for complex tasks."
-    temperature: 0.7
-    top_p: 0.95
-    top_k: 40
-    repeat_penalty: 1.05
-    max_tokens: 8192
+  # ── Vision — Qwen3.6 35B-A3B + mmproj via llama.cpp ─────────────────────────
+  vision:
+    name: "Vision (Qwen3.6 35B + mmproj)"
+    description: "Multimodal via llama.cpp with mmproj-F16.gguf. Charts, screenshots, UI, documents."
+    backend: llama_cpp
+    endpoint: http://llama-server:8001/v1
+    model_tag: "qwen3.6-35b-a3b"
+    mmproj_path: "/models/mmproj-qwen3.6-35b-F16.gguf"
+    context_window: 16384
+    think_default: false
+    think_supported: true
+    chat_template_kwargs:
+      enable_thinking: false
+    params:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      num_predict: 4096
+    vram_estimate_gb: 21
+    pinned: true                        # llama.cpp can't unload without restart
 
-  creative:
-    name: "Creative (Qwen 3.5 9B)"
-    id: "qwen/qwen3.5-9b"
-    gpu: max
-    context: 8192
-    parallel: 2
-    description: "High-creativity writing, brainstorming, storytelling, and ideation."
-    temperature: 1.1
-    top_p: 0.98
-    top_k: 60
-    repeat_penalty: 1.0
-    max_tokens: 4096
-
-  analyst:
-    name: "Analyst (DeepSeek R1 8B)"
-    id: "deepseek/deepseek-r1-0528-qwen3-8b"
-    gpu: max
-    context: 16384
-    parallel: 2
-    description: "Structured analysis, data interpretation, research, and precise Q&A."
-    temperature: 0.2
-    top_p: 0.9
-    top_k: 20
-    repeat_penalty: 1.1
-    max_tokens: 8192
-
-  balanced:
-    name: "Balanced (DeepSeek R1 8B)"
-    id: "deepseek/deepseek-r1-0528-qwen3-8b"
-    gpu: max
-    context: 8192
-    parallel: 3
-    description: "General-purpose assistant. Good speed/quality tradeoff."
-    temperature: 0.7
-    top_p: 0.92
-    top_k: 40
-    repeat_penalty: 1.08
-    max_tokens: 4096
-
-  roleplay:
-    name: "Roleplay (Qwen 3.5 9B)"
-    id: "qwen/qwen3.5-9b"
-    gpu: max
-    context: 8192
-    parallel: 2
-    description: "Character roleplay, interactive fiction, and conversational scenarios."
-    temperature: 0.95
-    top_p: 0.97
-    top_k: 50
-    repeat_penalty: 1.02
-    max_tokens: 2048
-
-  summarizer:
-    name: "Summarizer (Qwen 3.5 9B)"
-    id: "qwen/qwen3.5-9b"
-    gpu: max
-    context: 32768
-    parallel: 4
-    description: "Long-document summarization, meeting notes, article condensation."
-    temperature: 0.3
-    top_p: 0.9
-    top_k: 30
-    repeat_penalty: 1.1
-    max_tokens: 2048
+# Backwards compat — map old profile names to new tiers
+aliases:
+  quality: highest_quality
+  large: highest_quality
+  balanced: versatile
+  analyst: versatile
+  creative: fast
+  roleplay: fast
+  summarizer: fast
+  # `fast` and `coding` keep their names; no alias entry needed

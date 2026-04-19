@@ -7,14 +7,50 @@
 
 # Models to auto-pull on setup (name: pull tag)
 auto_pull:
-  - llama3.2:3b          # Meta Llama 3.2 3B — fast, general purpose
-  - phi4-mini:latest     # Microsoft Phi-4 Mini — small but capable
-  - mistral:7b           # Mistral 7B — strong reasoning
-  - nomic-embed-text     # Nomic embedding model for RAG
-  - llava:7b             # LLaVA multimodal vision + text
+  # ── Tier models (required by backend/config/models.yaml) ────────────────
+  - qwen3:72b-q3_k_m                                       # Highest Quality tier
+  - qwen3.6:35b-a3b                                        # Versatile tier (orchestrator)
+  - qwen3.5:9b                                             # Fast tier (parallel workers)
+  - qwen2.5-coder:32b                                      # Coding tier fallback
+  # - hf.co/bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF:Q4_K_XL  # Coding tier primary
+  #   Uncomment when available. Pulled on-demand by the scheduler otherwise.
+
+  # ── Supporting ──────────────────────────────────────────────────────────
+  - nomic-embed-text                                       # RAG embeddings
 
 # Full model catalog (for reference / manual pull)
 models:
+  # ── Qwen3 family — the 5 backend tiers ───────────────────────────────────────
+  qwen3-72b:
+    tag: "qwen3:72b-q3_k_m"
+    description: "Qwen3 72B dense @ Q3_K_M — Highest Quality tier. ~15-20 t/s with RAM spillover."
+    size_gb: 33.0
+    use_case: "Hardest reasoning, multi-step problems, nuanced long-form output"
+
+  qwen36-35b-a3b:
+    tag: "qwen3.6:35b-a3b"
+    description: "Qwen3.6 35B-A3B MoE (3B active) — Versatile tier / multi-agent orchestrator."
+    size_gb: 21.0
+    use_case: "Default chat, planning, synthesis, general reasoning at ~120 t/s"
+
+  qwen35-9b:
+    tag: "qwen3.5:9b"
+    description: "Qwen3.5 9B dense — Fast tier. Fits 3× in 24GB for parallel workers."
+    size_gb: 7.0
+    use_case: "Quick responses, parallel subtask workers in multi-agent mode"
+
+  qwen3-coder-next:
+    tag: "hf.co/bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF:Q4_K_XL"
+    description: "Qwen3-Coder-Next 80B-A3B — Coding tier primary. 71.3% SWE-bench Verified."
+    size_gb: 48.5
+    use_case: "Repository-level coding, SWE-bench-style tasks, native tool calling"
+
+  qwen25-coder-32b:
+    tag: "qwen2.5-coder:32b"
+    description: "Qwen2.5 Coder 32B — Coding tier fallback. Fully GPU-offloaded at Q4."
+    size_gb: 19.0
+    use_case: "Code generation, review, debugging when Coder-Next unavailable"
+
   # ── General Purpose ──────────────────────────────────────────────────────────
   llama3.2:
     tag: "llama3.2:3b"
@@ -136,8 +172,15 @@ models:
 
 # Pull groups — run setup-ollama-models.ps1 -Group <name>
 groups:
+  tiers:                              # primary group — everything the backend needs
+    - qwen3:72b-q3_k_m
+    - qwen3.6:35b-a3b
+    - qwen3.5:9b
+    - qwen2.5-coder:32b
+    - nomic-embed-text
+
   minimal:
-    - llama3.2:3b
+    - qwen3.5:9b                      # only Fast tier — ~7GB
     - nomic-embed-text
 
   standard:

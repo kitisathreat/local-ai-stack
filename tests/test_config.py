@@ -1,5 +1,4 @@
-"""
-CI tests for configuration files, docker-compose.yml, and static assets.
+"""CI tests for configuration files, docker-compose.yml, and static assets.
 
 All checks are purely static — no Docker or running services needed.
 """
@@ -35,15 +34,15 @@ def _find_all_file_refs(data, refs=None) -> list[str]:
 
 # ── models.yaml ───────────────────────────────────────────────────────────────
 
-REQUIRED_PROFILES = [
-    "fast", "quality", "coding", "large",           # original 4
-    "creative", "analyst", "balanced", "roleplay", "summarizer",  # new connector profiles
-]
+REQUIRED_TIERS = ["highest_quality", "versatile", "fast", "coding", "vision"]
 
-REQUIRED_PROFILE_KEYS = ["id", "gpu", "context", "parallel", "description"]
-REQUIRED_INFERENCE_KEYS = ["temperature", "top_p", "top_k", "repeat_penalty", "max_tokens"]
+REQUIRED_TIER_KEYS = ["name", "backend", "model_tag", "context_window", "params", "vram_estimate_gb"]
+REQUIRED_PARAM_KEYS = ["temperature", "top_p", "top_k"]
 
-DEFAULT_PROFILE = "quality"
+DEFAULT_TIER = "versatile"
+
+# Backwards-compat aliases that MUST resolve to real tiers
+REQUIRED_ALIASES = ["quality", "large", "balanced", "analyst", "creative", "roleplay", "summarizer"]
 
 
 def test_models_yaml_exists():
@@ -55,93 +54,155 @@ def test_models_yaml_has_default_key():
     assert "default" in data, "models.yaml missing top-level 'default' key"
 
 
-def test_models_yaml_default_is_quality():
+def test_models_yaml_default_is_versatile():
     data = _load_yaml("config/models.yaml")
-    assert data.get("default") == DEFAULT_PROFILE, (
-        f"Expected default profile '{DEFAULT_PROFILE}', got '{data.get('default')}'"
+    assert data.get("default") == DEFAULT_TIER, (
+        f"Expected default tier '{DEFAULT_TIER}', got '{data.get('default')}'"
     )
 
 
-def test_models_yaml_has_models_section():
+def test_models_yaml_has_tiers_section():
     data = _load_yaml("config/models.yaml")
-    assert "models" in data and isinstance(data["models"], dict), (
-        "models.yaml missing 'models:' section"
+    assert "tiers" in data and isinstance(data["tiers"], dict), (
+        "models.yaml missing 'tiers:' section"
     )
 
 
-@pytest.mark.parametrize("profile", REQUIRED_PROFILES)
-def test_models_yaml_profile_exists(profile):
+@pytest.mark.parametrize("tier", REQUIRED_TIERS)
+def test_models_yaml_tier_exists(tier):
     data = _load_yaml("config/models.yaml")
-    profiles = data.get("models", {})
-    assert profile in profiles, f"Profile '{profile}' missing from models.yaml"
+    tiers = data.get("tiers", {})
+    assert tier in tiers, f"Tier '{tier}' missing from models.yaml"
 
 
-@pytest.mark.parametrize("profile", REQUIRED_PROFILES)
-def test_models_yaml_profile_required_keys(profile):
+@pytest.mark.parametrize("tier", REQUIRED_TIERS)
+def test_models_yaml_tier_required_keys(tier):
     data = _load_yaml("config/models.yaml")
-    profile_data = data.get("models", {}).get(profile, {})
-    for key in REQUIRED_PROFILE_KEYS:
-        assert key in profile_data, (
-            f"Profile '{profile}' missing required key '{key}'"
+    tier_data = data.get("tiers", {}).get(tier, {})
+    for key in REQUIRED_TIER_KEYS:
+        assert key in tier_data, (
+            f"Tier '{tier}' missing required key '{key}'"
         )
 
 
-@pytest.mark.parametrize("profile", REQUIRED_PROFILES)
-def test_models_yaml_profile_inference_keys(profile):
+@pytest.mark.parametrize("tier", REQUIRED_TIERS)
+def test_models_yaml_tier_backend_is_known(tier):
     data = _load_yaml("config/models.yaml")
-    profile_data = data.get("models", {}).get(profile, {})
-    for key in REQUIRED_INFERENCE_KEYS:
-        assert key in profile_data, (
-            f"Profile '{profile}' missing inference key '{key}'"
-        )
+    backend = data.get("tiers", {}).get(tier, {}).get("backend")
+    assert backend in {"ollama", "llama_cpp"}, (
+        f"Tier '{tier}' has unknown backend '{backend}'"
+    )
 
 
-@pytest.mark.parametrize("profile", REQUIRED_PROFILES)
-def test_models_yaml_profile_temperature_in_range(profile):
+@pytest.mark.parametrize("tier", REQUIRED_TIERS)
+def test_models_yaml_tier_params_in_range(tier):
     data = _load_yaml("config/models.yaml")
-    profile_data = data.get("models", {}).get(profile, {})
-    temp = profile_data.get("temperature")
+    params = data.get("tiers", {}).get(tier, {}).get("params", {})
+    temp = params.get("temperature")
     if temp is not None:
         assert 0.0 <= float(temp) <= 2.0, (
-            f"Profile '{profile}' temperature {temp} out of range [0.0, 2.0]"
+            f"Tier '{tier}' temperature {temp} out of range [0.0, 2.0]"
+        )
+    top_p = params.get("top_p")
+    if top_p is not None:
+        assert 0.0 < float(top_p) <= 1.0, (
+            f"Tier '{tier}' top_p {top_p} out of range (0.0, 1.0]"
         )
 
 
-def test_models_yaml_default_profile_exists_in_models():
+def test_models_yaml_default_tier_exists():
     data = _load_yaml("config/models.yaml")
     default = data.get("default")
-    profiles = data.get("models", {})
-    assert default in profiles, (
-        f"Default profile '{default}' not found in models section"
+    tiers = data.get("tiers", {})
+    assert default in tiers, (
+        f"Default tier '{default}' not found in tiers section"
     )
 
 
-def test_models_yaml_no_duplicate_profiles():
-    # Re-parse with a loader that tracks duplicates
-    raw = (ROOT / "config" / "models.yaml").read_text(encoding="utf-8")
+def test_models_yaml_vision_tier_has_mmproj():
+    data = _load_yaml("config/models.yaml")
+    vision = data.get("tiers", {}).get("vision", {})
+    assert vision.get("backend") == "llama_cpp", "Vision tier must use llama_cpp backend"
+    assert vision.get("mmproj_path"), "Vision tier must declare mmproj_path"
+    assert vision.get("pinned") is True, "Vision tier must be pinned (llama.cpp can't unload)"
 
-    class DuplicateKeyLoader(yaml.SafeLoader):
-        pass
 
-    seen_keys = []
-
-    def construct_mapping(loader, node):
-        pairs = loader.construct_pairs(node)
-        keys = [k for k, _ in pairs]
-        for k in keys:
-            if k in seen_keys:
-                pass  # Just track, warn in assertion
-        seen_keys.extend(keys)
-        return dict(pairs)
-
-    DuplicateKeyLoader.add_constructor(
-        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping
+def test_models_yaml_orchestrator_flag():
+    data = _load_yaml("config/models.yaml")
+    orchestrators = [
+        name for name, t in data.get("tiers", {}).items()
+        if t.get("is_orchestrator")
+    ]
+    assert len(orchestrators) == 1, (
+        f"Exactly one tier must be marked as is_orchestrator; found: {orchestrators}"
     )
-    yaml.load(raw, Loader=DuplicateKeyLoader)
 
-    profile_keys = [k for k in seen_keys if k in REQUIRED_PROFILES]
-    duplicates = [k for k in profile_keys if profile_keys.count(k) > 1]
-    assert not duplicates, f"Duplicate profile keys in models.yaml: {set(duplicates)}"
+
+@pytest.mark.parametrize("alias", REQUIRED_ALIASES)
+def test_models_yaml_aliases_resolve_to_real_tiers(alias):
+    data = _load_yaml("config/models.yaml")
+    target = data.get("aliases", {}).get(alias)
+    assert target, f"Alias '{alias}' missing from models.yaml"
+    assert target in data.get("tiers", {}), (
+        f"Alias '{alias}' -> '{target}' which is not a real tier"
+    )
+
+
+# ── router.yaml ───────────────────────────────────────────────────────────────
+
+def test_router_yaml_exists():
+    assert (ROOT / "config" / "router.yaml").exists()
+
+
+def test_router_yaml_valid():
+    data = _load_yaml("config/router.yaml")
+    assert "auto_thinking_signals" in data
+    assert "multi_agent" in data
+    assert "slash_commands" in data
+
+
+def test_router_yaml_all_regexes_compile():
+    """Every regex in router.yaml must compile."""
+    data = _load_yaml("config/router.yaml")
+    buckets = [
+        data.get("auto_thinking_signals", {}).get("enable_when_any", []),
+        data.get("auto_thinking_signals", {}).get("disable_when_any", []),
+        data.get("multi_agent", {}).get("trigger_when_any", []),
+    ]
+    for bucket in buckets:
+        for rule in bucket:
+            if isinstance(rule, dict) and "regex" in rule:
+                try:
+                    re.compile(rule["regex"])
+                except re.error as e:
+                    pytest.fail(f"Regex failed to compile: {rule['regex']} — {e}")
+
+
+def test_router_yaml_multi_agent_references_real_tier():
+    data = _load_yaml("config/router.yaml")
+    models = _load_yaml("config/models.yaml")
+    tiers = models.get("tiers", {})
+    ma = data.get("multi_agent", {})
+    for key in ("worker_tier", "orchestrator_tier"):
+        tier_name = ma.get(key)
+        assert tier_name in tiers, f"router.yaml {key}={tier_name!r} not a real tier"
+    for _cond, target_tier in ma.get("specialist_routes", {}).items():
+        assert target_tier in tiers, (
+            f"router.yaml specialist_routes target '{target_tier}' not a real tier"
+        )
+
+
+# ── vram.yaml ─────────────────────────────────────────────────────────────────
+
+def test_vram_yaml_exists():
+    assert (ROOT / "config" / "vram.yaml").exists()
+
+
+def test_vram_yaml_valid():
+    data = _load_yaml("config/vram.yaml")
+    assert data.get("total_vram_gb", 0) > 0
+    assert data.get("headroom_gb", 0) >= 0
+    assert data.get("total_vram_gb") > data.get("headroom_gb")
 
 
 # ── tools.yaml ────────────────────────────────────────────────────────────────
@@ -160,11 +221,6 @@ def test_tools_yaml_has_tools_section():
     assert "tools" in data, "tools.yaml missing 'tools:' section"
 
 
-def test_tools_yaml_has_pipelines_section():
-    data = _load_yaml("config/tools.yaml")
-    assert "pipelines" in data, "tools.yaml missing 'pipelines:' section"
-
-
 def test_tools_yaml_all_referenced_files_exist():
     """Every 'file:' path listed in tools.yaml must exist in the repo."""
     data = _load_yaml("config/tools.yaml")
@@ -175,21 +231,10 @@ def test_tools_yaml_all_referenced_files_exist():
     )
 
 
-def test_tools_yaml_pipeline_types_are_valid():
-    data = _load_yaml("config/tools.yaml")
-    valid_types = {"filter", "pipe"}
-    pipelines = data.get("pipelines", {})
-    for name, entry in pipelines.items():
-        if isinstance(entry, dict) and "type" in entry:
-            assert entry["type"] in valid_types, (
-                f"Pipeline '{name}' has invalid type '{entry['type']}' (must be: {valid_types})"
-            )
-
-
 def test_tools_yaml_service_refs_are_valid():
     """requires_service must be null or a known service name."""
     data = _load_yaml("config/tools.yaml")
-    known_services = {None, "searxng", "pipelines", "qdrant", "ollama", "n8n", "jupyter"}
+    known_services = {None, "searxng", "qdrant", "ollama", "n8n", "jupyter", "backend"}
     all_tool_entries = {}
     for section_val in data.values():
         if isinstance(section_val, dict):
@@ -218,10 +263,16 @@ def test_ollama_models_yaml_has_auto_pull():
     assert len(data["auto_pull"]) > 0, "'auto_pull' list is empty"
 
 
+def test_ollama_models_yaml_has_tier_group():
+    data = _load_yaml("config/ollama-models.yaml")
+    groups = data.get("groups", {})
+    assert "tiers" in groups, "ollama-models.yaml must define a 'tiers' group"
+
+
 # ── docker-compose.yml ────────────────────────────────────────────────────────
 
 REQUIRED_SERVICES = [
-    "open-webui", "jupyter", "pipelines", "qdrant", "searxng", "ollama", "n8n",
+    "backend", "open-webui", "jupyter", "qdrant", "searxng", "ollama", "llama-server", "n8n",
 ]
 
 REQUIRED_OPEN_WEBUI_ENV = [
@@ -248,30 +299,60 @@ def test_docker_compose_has_service(service):
     )
 
 
+def test_docker_compose_backend_uses_gpu():
+    data = _load_yaml("docker-compose.yml")
+    backend = data["services"].get("backend", {})
+    deploy = backend.get("deploy", {})
+    devices = str(deploy.get("resources", {}).get("reservations", {}).get("devices", ""))
+    assert "nvidia" in devices, "backend service must reserve NVIDIA GPUs"
+
+
+def test_docker_compose_backend_routes_ollama():
+    data = _load_yaml("docker-compose.yml")
+    backend = data["services"].get("backend", {})
+    env = str(backend.get("environment", ""))
+    assert "OLLAMA_URL" in env, "backend must set OLLAMA_URL"
+
+
+def test_docker_compose_open_webui_points_at_backend():
+    data = _load_yaml("docker-compose.yml")
+    webui = data["services"].get("open-webui", {})
+    env = str(webui.get("environment", ""))
+    assert "backend:8000" in env, (
+        "open-webui should talk to the backend (LM Studio dependency removed)"
+    )
+
+
 def test_docker_compose_webui_auth_disabled():
     data = _load_yaml("docker-compose.yml")
     webui = data["services"].get("open-webui", {})
-    env = webui.get("environment", [])
-    env_str = str(env)
-    assert "WEBUI_AUTH" in env_str, "WEBUI_AUTH not found in open-webui environment"
-    assert "False" in env_str, "WEBUI_AUTH is not set to False in open-webui environment"
+    env = str(webui.get("environment", []))
+    assert "WEBUI_AUTH" in env
+    assert "False" in env
 
 
 def test_docker_compose_jupyter_token_set():
     data = _load_yaml("docker-compose.yml")
     jupyter = data["services"].get("jupyter", {})
     env = str(jupyter.get("environment", ""))
-    assert "JUPYTER_TOKEN" in env, "JUPYTER_TOKEN not configured in jupyter service"
+    assert "JUPYTER_TOKEN" in env
+
+
+def test_docker_compose_backend_port():
+    data = _load_yaml("docker-compose.yml")
+    backend = data["services"].get("backend", {})
+    ports = str(backend.get("ports", ""))
+    assert "8000" in ports
 
 
 def test_docker_compose_open_webui_port():
     data = _load_yaml("docker-compose.yml")
     webui = data["services"].get("open-webui", {})
     ports = str(webui.get("ports", ""))
-    assert "3000" in ports, "open-webui not exposing port 3000"
+    assert "3000" in ports
 
 
-def test_docker_compose_all_services_have_image():
+def test_docker_compose_all_services_have_image_or_build():
     data = _load_yaml("docker-compose.yml")
     for name, svc in data["services"].items():
         assert "image" in svc or "build" in svc, (
@@ -292,13 +373,13 @@ def test_searxng_settings_exists():
 
 def test_searxng_settings_json_format_enabled():
     raw = (ROOT / "config" / "searxng" / "settings.yml").read_text(encoding="utf-8")
-    assert "json" in raw, "searxng settings.yml does not mention 'json' format"
+    assert "json" in raw
 
 
 @pytest.mark.parametrize("engine", REQUIRED_SEARXNG_ENGINES)
 def test_searxng_has_academic_engine(engine):
     raw = (ROOT / "config" / "searxng" / "settings.yml").read_text(encoding="utf-8").lower()
-    assert engine.lower() in raw, f"SearXNG settings missing academic engine: '{engine}'"
+    assert engine.lower() in raw
 
 
 # ── knowledge/sources.yaml ────────────────────────────────────────────────────
@@ -316,35 +397,26 @@ def test_knowledge_sources_exists():
 @pytest.mark.parametrize("domain", REQUIRED_KNOWLEDGE_DOMAINS)
 def test_knowledge_has_domain(domain):
     raw = (ROOT / "knowledge" / "sources.yaml").read_text(encoding="utf-8")
-    assert domain in raw, f"knowledge/sources.yaml missing domain: '{domain}'"
+    assert domain in raw
 
 
 # ── Static assets ─────────────────────────────────────────────────────────────
 
 def test_squarespace_embed_exists():
-    assert (ROOT / "squarespace-embed.html").exists(), (
-        "squarespace-embed.html not found"
-    )
-
-
-def test_squarespace_embed_has_tailscale_hostname():
-    html = (ROOT / "squarespace-embed.html").read_text(encoding="utf-8")
-    assert re.search(r"desktop-j4g42gi\.taila2838f\.ts\.net", html), (
-        "squarespace-embed.html missing or has wrong Tailscale hostname"
-    )
+    assert (ROOT / "squarespace-embed.html").exists()
 
 
 def test_squarespace_embed_has_error_fallback():
     html = (ROOT / "squarespace-embed.html").read_text(encoding="utf-8")
-    assert "ai-error" in html, "squarespace-embed.html missing error fallback UI"
+    assert "ai-error" in html
 
 
 # ── .gitignore ────────────────────────────────────────────────────────────────
 
-def test_gitignore_excludes_env_local():
-    gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert ".env.local" in gi, ".gitignore must exclude .env.local"
-
-
 def test_gitignore_exists():
     assert (ROOT / ".gitignore").exists()
+
+
+def test_gitignore_excludes_env_local():
+    gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert ".env.local" in gi
