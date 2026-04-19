@@ -155,29 +155,40 @@ jobs:
           if-no-files-found: warn
 
       - name: Post failing tests to PR comment
-        if: failure() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request'
         continue-on-error: true
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          if (-not (Test-Path tests/ci_results.txt)) {
-            Write-Host "ci_results.txt missing — nothing to post"
+          set -e
+          echo "PR: $PR_NUMBER, repo: $REPO, run: $RUN_ID"
+          if [ ! -f tests/ci_results.txt ]; then
+            echo "ci_results.txt missing"
+            ls -la tests/
             exit 0
-          }
-          $fails = Select-String -Path tests/ci_results.txt -Pattern '^\s*\[FAIL\]'
-          Write-Host "Found $($fails.Count) failing tests"
-          if (-not $fails) { exit 0 }
-          $lines = @(
-            "### Windows CI test failures (run ${{ github.run_id }})",
-            "",
-            "``````text"
-          )
-          foreach ($f in $fails) { $lines += $f.Line }
-          $lines += "``````"
-          $body = $lines -join "`n"
-          Set-Content -Path fail_comment.md -Value $body -Encoding UTF8
-          Write-Host "---- comment body ----"
-          Write-Host $body
-          Write-Host "---- /comment body ----"
-          gh pr comment ${{ github.event.pull_request.number }} --body-file fail_comment.md
+          fi
+          echo "---- FULL ci_results.txt ----"
+          cat tests/ci_results.txt
+          echo "---- end ----"
+          fails=$(grep -E '^\s*\[FAIL\]' tests/ci_results.txt || true)
+          if [ -z "$fails" ]; then
+            echo "No [FAIL] lines found; not posting comment"
+            exit 0
+          fi
+          # Build JSON body via jq to avoid escaping issues
+          body_text=$(printf "### Windows CI test failures (run %s)\n\n\`\`\`text\n%s\n\`\`\`\n" "$RUN_ID" "$fails")
+          printf '%s' "$body_text" > /tmp/body.md
+          jq -Rs '{body: .}' /tmp/body.md > /tmp/payload.json
+          echo "---- payload ----"
+          cat /tmp/payload.json
+          echo "---- POST ----"
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
+            -d @/tmp/payload.json
+          echo ""
