@@ -1,6 +1,20 @@
 .env
 .env.local
 openapi.json
+tests/ci_results.txt
+
+# Runtime state (SQLite db, Qdrant volumes, VRAM observed costs)
+data/*
+!data/.gitkeep
+
+# Downloaded model files (GGUF + mmproj for llama.cpp vision tier)
+models/*
+!models/.gitkeep
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/package-lock.json
 
 # Docker override files
 docker-compose.override.yml
@@ -14,17 +28,8 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
-# Node
-node_modules/
-.next/
-dist/
-*.tsbuildinfo
-
-# Launcher build output
+# Launcher build output (compiled ps2exe binaries)
 launcher/dist/
 
 # Logs
 *.log
-
-# Cloudflare tunnel credentials (never commit)
-cloudflare/*.json

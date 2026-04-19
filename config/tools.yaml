@@ -147,34 +147,29 @@ tools:
     requires_service: null
     default_enabled: true
 
-# Pipelines extend how requests are PROCESSED — they sit between the user and the model.
-# Pipeline files live in: pipelines/
-# Open WebUI adds them as API connections (http://pipelines:9099)
-
-pipelines:
+# Middleware (formerly Open WebUI pipelines) now lives in backend/middleware/.
+# It's invoked directly by the FastAPI chat endpoint — no separate service
+# required. Listed here for documentation only.
+middleware:
   rate_limiter:
-    file: pipelines/rate_limiter.py
+    file: backend/middleware/rate_limit.py
     title: "Rate Limiter"
-    description: "Limit requests per user to prevent abuse and manage GPU load."
-    type: filter
+    description: "Per-user per-minute/day rate limiting on /v1/chat/completions."
 
   context_injector:
-    file: pipelines/context_injector.py
+    file: backend/middleware/context.py
     title: "System Context Injector"
-    description: "Automatically inject date, time, and user context into every system prompt."
-    type: filter
+    description: "Prepends current date/time (and optionally system info) to the system prompt on every request."
 
   clarification_filter:
-    file: pipelines/clarification_filter.py
+    file: backend/middleware/clarification.py
     title: "Clarification Gate"
-    description: "Injects clarification protocol into the system prompt and reformats [CLARIFY] blocks in model responses into polished multiple-choice UI. Works alongside the ask_clarification tool."
-    type: filter
+    description: "Injects clarification protocol instruction and reformats [CLARIFY] blocks in model responses into multiple-choice UI."
 
-  web_search_rag:
-    file: pipelines/web_search_rag.py
-    title: "Web Search RAG"
-    description: "Automatically search the web and inject results when the model lacks knowledge."
-    type: pipe
+  web_search:
+    file: backend/middleware/web_search.py
+    title: "Web Search Auto-Inject"
+    description: "Detects 'current info' trigger patterns in the user message and appends top-K SearXNG results."
 
 # ── Additional Tools Added ────────────────────────────────────────────────────
 # Finance & Markets

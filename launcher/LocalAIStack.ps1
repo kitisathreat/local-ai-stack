@@ -2,10 +2,10 @@
 .SYNOPSIS
     LocalAIStack launcher — silent Windows GUI orchestrator.
 .DESCRIPTION
-    Shows a progress window while starting Docker, LM Studio, the containerized
-    stack, and the Cloudflare tunnel. Spawns all child processes hidden. On
-    success, opens chat.mylensandi.com in the default browser and minimizes to
-    the system tray.
+    Shows a progress window while starting Docker and the containerized stack
+    (backend + frontend + Ollama + optional Cloudflare Tunnel). Spawns all
+    child processes hidden. On success, opens the chat UI in the default
+    browser and minimizes to the system tray.
 .NOTES
     Compiled to .exe via launcher/build.ps1 (uses ps2exe).
     Must not print to a console — all output goes to $logPath.
@@ -25,7 +25,15 @@ $stepsDir    = Join-Path $PSScriptRoot "steps"
 $appDataDir  = Join-Path $env:APPDATA "LocalAIStack"
 $logPath     = Join-Path $appDataDir "launcher.log"
 $iconPath    = Join-Path $PSScriptRoot "assets\icon.ico"
-$chatUrl     = "https://chat.mylensandi.com"
+
+# Default to local frontend. Override by setting PUBLIC_BASE_URL in .env.local
+# (e.g. to the Cloudflare Tunnel hostname) to open the public URL instead.
+$chatUrl = "http://localhost:3000"
+$envLocal = Join-Path $repoRoot ".env.local"
+if (Test-Path $envLocal) {
+    $m = Select-String -Path $envLocal -Pattern "^PUBLIC_BASE_URL=(.+)$" | Select-Object -First 1
+    if ($m) { $chatUrl = $m.Matches[0].Groups[1].Value.Trim() }
+}
 
 if (-not (Test-Path $appDataDir)) { New-Item -ItemType Directory -Path $appDataDir | Out-Null }
 
@@ -49,11 +57,10 @@ function Write-Log {
 
 # ── Steps: each returns @{ok=$bool; message=$string; needsUser=$bool} ─────────
 $steps = @(
-    @{ Name = "Starting Docker Desktop";     Script = "ensure-docker.ps1" },
-    @{ Name = "Starting LM Studio";          Script = "ensure-lmstudio.ps1" },
-    @{ Name = "Preparing Cloudflare tunnel"; Script = "ensure-tunnel.ps1" },
-    @{ Name = "Bringing up services";        Script = "compose-up.ps1" },
-    @{ Name = "Waiting for services to be ready"; Script = "wait-ready.ps1" }
+    @{ Name = "Starting Docker Desktop";            Script = "ensure-docker.ps1" },
+    @{ Name = "Checking tunnel config";             Script = "ensure-tunnel.ps1" },
+    @{ Name = "Bringing up services";               Script = "compose-up.ps1" },
+    @{ Name = "Waiting for services to be ready";   Script = "wait-ready.ps1" }
 )
 
 # ── Progress window ───────────────────────────────────────────────────────────

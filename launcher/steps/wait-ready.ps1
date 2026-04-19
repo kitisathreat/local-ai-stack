@@ -1,9 +1,12 @@
 param([string]$RepoRoot)
 . (Join-Path $PSScriptRoot "_common.ps1")
 
+# Master's architecture:
+#   - backend (FastAPI) on :8000 with /healthz
+#   - frontend (nginx-served Preact) on :3000
 $checks = @(
-    @{ Name = "api";  Url = "http://localhost:8787/health" },
-    @{ Name = "web";  Url = "http://localhost:3001/" }
+    @{ Name = "backend";  Url = "http://localhost:8000/healthz" },
+    @{ Name = "frontend"; Url = "http://localhost:3000/" }
 )
 
 $deadline = (Get-Date).AddSeconds(120)

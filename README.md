@@ -1,0 +1,175 @@
+# local-ai-stack
+
+Self-hosted multi-model LLM workflow. A FastAPI backend routes each chat request to one of five GPU-resident model tiers, with a VRAM-aware scheduler, a multi-agent orchestrator, per-user RAG + memory, and an OpenAI-compatible SSE endpoint. Ships as a single `docker compose up`.
+
+## What it does
+
+- **Tier routing.** Every request is classified and dispatched to a specific model tier — images go to the vision tier, code blocks to the coding tier, ambiguous questions to the Versatile MoE default. Users can override with slash commands (`/tier`, `/think`, `/solo`, `/swarm`).
+- **VRAM scheduling.** A reference-counted scheduler with LRU eviction and observed-cost tracking keeps multiple tiers co-resident on a single GPU, evicting idle models when headroom is needed.
+- **Multi-agent orchestration.** For complex prompts, the Versatile tier acts as an orchestrator, decomposing the request into 2–5 parallel subtasks run on the Fast tier, then synthesizing. Workers can call tools.
+- **Tools + RAG + memory.** 100+ discoverable tools (web search, finance, science, data repos), per-user Qdrant RAG over uploaded documents, and memory distillation that extracts durable facts from chat history every Nth turn.
+- **Public access.** OpenAI-compatible `/v1/chat/completions` endpoint (works with Open WebUI, Cline, etc.) plus an opt-in Cloudflare Tunnel profile for HTTPS exposure without opening router ports.
+
+## Architecture
+
+```
+                      ┌───────────────────┐
+User ──► Frontend ──► │   FastAPI         │ ──► Router + middleware
+                      │   backend         │
+                      │                   │ ──► VRAM scheduler ──► Ollama
+                      │                   │                    └── llama.cpp (vision)
+                      │                   │
+                      │                   │ ──► Orchestrator ──► N × Fast workers
+                      │                   │
+                      │                   │ ──► Tool executor ──► 100+ tools
+                      │                   │                       (Jupyter, SearXNG, APIs)
+                      │                   │
+                      │                   │ ──► Qdrant ──► per-user RAG + memory
+                      │                   │
+                      │                   │ ──► SQLite ──► chats, memories, users
+                      └───────────────────┘
+```
+
+## Tiers
+
+All five tiers are defined in [`config/models.yaml`](config/models.yaml) and addressable as `tier.<name>` virtual model ids.
+
+| Tier | Model | Backend | VRAM | Role |
+|---|---|---|---|---|
+| `highest_quality` | Qwen3 72B | Ollama | ~24 GB | Hardest reasoning, slow. |
+| `versatile` | Qwen3.6 35B-A3B (MoE) | Ollama | ~21 GB | Default + multi-agent orchestrator. |
+| `fast` | Qwen3.5 9B | Ollama | ~7 GB | Multi-agent workers (3× parallel fit on 24 GB). |
+| `coding` | Qwen3-Coder-Next 80B-A3B | Ollama | ~24 GB | SWE-bench trained, native tool use. |
+| `vision` | Qwen3.6 35B + mmproj | llama.cpp | ~21 GB | Images, charts, screenshots. Pinned. |
+
+## Quick start
+
+```bash
+git clone https://github.com/kitisathreat/local-ai-stack
+cd local-ai-stack
+cp .env.example .env.local
+python -c 'import secrets; print(secrets.token_urlsafe(48))' >> .env.local   # set AUTH_SECRET_KEY
+bash scripts/setup-models.sh        # pull Ollama tags + optionally download vision GGUFs
+docker compose up -d
+```
+
+Then open http://localhost:3000.
+
+**Hardware minimums:** NVIDIA GPU with 24 GB VRAM (RTX 3090 / 4090 / A5000). CPU-only works but the 35B+ tiers will be unusably slow. Vision tier can be skipped by removing GGUF files from `models/`.
+
+## Services (docker-compose.yml)
+
+| Service | Port | Purpose |
+|---|---|---|
+| `backend` | 8000 | FastAPI — router, auth, RAG, memory, admin |
+| `frontend` | 3000 | Preact SPA served by nginx |
+| `ollama` | 11434 | Primary inference backend |
+| `llama-server` | 8001 | Vision-tier inference (llama.cpp, optional) |
+| `qdrant` | 6333 | Vector DB for RAG + memory |
+| `searxng` | 4000 | Meta-search backing the web-search middleware |
+| `jupyter` | 8888 | Code interpreter tool sandbox |
+| `n8n` | 5678 | Workflow automation (optional) |
+| `cloudflared` | — | Public HTTPS tunnel (opt-in via `--profile public`) |
+
+## Configuration
+
+All runtime config lives in [`config/`](config/):
+
+- [`models.yaml`](config/models.yaml) — tier definitions + aliases
+- [`router.yaml`](config/router.yaml) — auto-thinking / multi-agent / specialist regex rules
+- [`vram.yaml`](config/vram.yaml) — scheduler policy (headroom, eviction, pinning)
+- [`auth.yaml`](config/auth.yaml) — magic-link TTL, allowed domains, rate limits
+- [`tools.yaml`](config/tools.yaml) — tool manifest + default-enabled set
+- [`ollama-models.yaml`](config/ollama-models.yaml) — what `scripts/setup-models.sh` pulls
+
+Secrets go in `.env.local` (gitignored). See [`.env.example`](.env.example) for the full list.
+
+Several operationally-meaningful values are still hardcoded in `backend/*.py` — tracked by [#29](https://github.com/kitisathreat/local-ai-stack/issues/29).
+
+## API endpoints
+
+```
+GET  /healthz                     → {ok: true}
+GET  /v1/models                   → OpenAI-compatible tier list
+POST /v1/chat/completions         → SSE streaming chat (OpenAI-compatible)
+POST /auth/request                → Send magic link
+GET  /auth/verify?token=...       → Exchange for session cookie
+GET  /me                          → Current user
+GET  /api/memory                  → List distilled memories
+DELETE /api/memory/{id}           → Forget a memory
+POST /api/rag/upload              → Upload a document into per-user RAG
+GET  /api/rag/docs                → List uploaded documents
+GET  /api/vram                    → Current tier residency snapshot
+GET  /chats                       → List conversations
+GET  /chats/{id}                  → Conversation history
+```
+
+## Development
+
+```bash
+# Run backend locally (requires Ollama/Qdrant up)
+uv run --directory backend uvicorn main:app --reload
+
+# Frontend dev server
+cd frontend && npm run dev
+
+# Run tests
+uv run pytest
+# Live-backend tests (gated — requires compose up)
+LIVE_BACKEND_TESTS=1 uv run pytest tests/test_backends_live.py    # planned, see #22
+```
+
+### Project layout
+
+```
+backend/              FastAPI app
+  main.py             Endpoints, SSE producers, middleware pipeline
+  router.py           Tier selection + slash commands
+  vram_scheduler.py   GPU residency manager (LRU + refcount + pinning)
+  orchestrator.py     Multi-agent plan/synthesize
+  rag.py              Per-user Qdrant retrieval
+  memory.py           Distillation + injection
+  auth.py             Magic-link + JWT cookies
+  backends/           ollama.py, llama_cpp.py
+  middleware/         context, clarification, web_search, rate_limit
+  tools/              registry, executor
+frontend/             Preact SPA
+config/               YAML-driven tier + router + vram + auth + tools config
+tests/                Pytest suite
+scripts/              setup-models.sh, setup-cloudflared.sh, code_assist.py, ...
+tools/                Discoverable tools (one file per tool; auto-registered)
+```
+
+## Roadmap + contributing
+
+Work is organized as **epics** (tracking issues with child issues linked as sub-issues) grouped by theme:
+
+- [#34 Admin platform & config](https://github.com/kitisathreat/local-ai-stack/issues/34) — live parameter tuning GUI, per-user preferences, config externalization
+- [#35 Frontend UX polish](https://github.com/kitisathreat/local-ai-stack/issues/35) — `conversation_id` plumbing, tool-call cards, richer memory UI
+- [#36 Scaling & performance](https://github.com/kitisathreat/local-ai-stack/issues/36) — Redis rate limiter, lazy tool-registry load
+- [#37 Tooling quality & tests](https://github.com/kitisathreat/local-ai-stack/issues/37) — multi-agent tool tests, live-backend tests, vision-tier tools
+- [#38 Docs & security](https://github.com/kitisathreat/local-ai-stack/issues/38) — user-facing docs, Cloudflare hardening
+- [#39 Stability & correctness](https://github.com/kitisathreat/local-ai-stack/issues/39) — verified-bug backlog
+
+A living catalog of current / deprecated / anticipated features lives in [#33](https://github.com/kitisathreat/local-ai-stack/issues/33).
+
+### Labels
+
+- **Priority:** `p0` (urgent) → `p3` (nice-to-have)
+- **Group:** `group:admin-platform`, `group:user-polish`, `group:scaling`, `group:tooling-quality`, `group:docs-security`, `group:correctness`
+- **Status:** `status:ready` (pick it up), `status:blocked` (waiting on another issue), `status:needs-design` (scoping required)
+- **Type:** `bug`, `enhancement`, `refactor`, `documentation`, `tests`, `security`, `performance`, `observability`, `configuration`, `epic`
+
+Before closing an epic, confirm its "Review gate before closing" checklist is satisfied (every epic body has one).
+
+## Phase history
+
+- **Phase 0** — Docker compose scaffolding, Ollama + Qdrant + SearXNG + Jupyter + n8n services
+- **Phase 1** — Backend-agnostic tier router + VRAM scheduler + multi-agent orchestrator
+- **Phase 4** — Custom Preact frontend, magic-link auth, per-user storage
+- **Phase 5** — Tool registry, per-user RAG, memory distillation
+- **Phase 6** — Cloudflare Tunnel, middleware migration, tools-through-workers
+
+## License
+
+See repository settings.

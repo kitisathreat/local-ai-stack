@@ -1,6 +1,7 @@
 <!--
-  Landing page for www.mylensandi.com/chat.
-  Drop this into a Squarespace Code Block on the /chat page.
+  Paste this into a Squarespace Code Block on your page.
+  Recommended: use a Blank page with no header/footer,
+  or inject the CSS below via Design → Custom CSS.
 
   Also add this to Design → Custom CSS to make the page full-screen:
 
@@ -18,66 +19,112 @@
   }
 -->
 <style>
-  #lai-splash {
+  #ai-container {
     position: fixed;
     inset: 0;
     width: 100vw;
     height: 100dvh;
-    background: radial-gradient(ellipse at center, #0f0f12 0%, #050506 100%);
-    color: #e7e7e7;
+    background: #0a0a0a;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 28px;
     z-index: 9999;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    text-align: center;
-    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
-  #lai-splash h1 {
-    margin: 0;
-    font-size: clamp(28px, 5vw, 42px);
-    font-weight: 600;
-    letter-spacing: -0.02em;
+  #ai-frame {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: none;
   }
 
-  #lai-splash p {
-    margin: 0;
-    color: #9a9aa2;
-    font-size: 15px;
-    max-width: 420px;
-    line-height: 1.5;
-  }
-
-  #lai-open {
-    display: inline-flex;
+  #ai-loading {
+    color: #888;
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 10px;
-    background: #5b5fc7;
-    color: #fff;
+    gap: 16px;
+  }
+
+  #ai-loading .spinner {
+    width: 32px;
+    height: 32px;
+    border: 2px solid #333;
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  #ai-error {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    text-align: center;
+    color: #888;
+    max-width: 340px;
+  }
+
+  #ai-error h3 { color: #fff; margin: 0; font-size: 18px; }
+  #ai-error p  { margin: 0; font-size: 14px; line-height: 1.5; }
+
+  #ai-error a {
+    color: #5b5fc7;
     text-decoration: none;
-    font-size: 16px;
-    font-weight: 500;
-    padding: 14px 28px;
-    border-radius: 12px;
-    transition: transform 0.15s ease, background 0.15s ease;
-    box-shadow: 0 12px 40px -12px rgba(91, 95, 199, 0.6);
+    font-size: 13px;
+    border: 1px solid #333;
+    padding: 8px 16px;
+    border-radius: 8px;
+    margin-top: 4px;
   }
 
-  #lai-open:hover { background: #6b70d5; transform: translateY(-1px); }
-  #lai-open:active { transform: translateY(0); }
+  #ai-error a:hover { background: #1a1a1a; }
 
-  #lai-hint {
-    color: #6a6a72;
-    font-size: 12px;
-  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 
-<div id="lai-splash">
-  <h1>Chat</h1>
-  <p>Sign in with your email to start chatting. You'll receive a one-time code.</p>
-  <a id="lai-open" href="https://chat.mylensandi.com" rel="noopener">Open Chat &rarr;</a>
-  <div id="lai-hint">Works on any device, on any network.</div>
+<div id="ai-container">
+  <iframe
+    id="ai-frame"
+    src="__CLOUDFLARE_HOSTNAME__"
+    allow="microphone; camera; clipboard-write"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+  ></iframe>
+
+  <div id="ai-loading">
+    <div class="spinner"></div>
+    <span>Connecting to AI...</span>
+  </div>
+
+  <div id="ai-error">
+    <h3>Can't reach AI</h3>
+    <p>The AI stack is offline or your network is blocking it. Try again in a moment.</p>
+    <a href="#" onclick="location.reload()">Retry</a>
+  </div>
 </div>
+
+<script>
+  const frame   = document.getElementById('ai-frame');
+  const loading = document.getElementById('ai-loading');
+  const error   = document.getElementById('ai-error');
+
+  // Show iframe once loaded, show error on timeout
+  frame.addEventListener('load', () => {
+    loading.style.display = 'none';
+    error.style.display   = 'none';
+    frame.style.display   = 'block';
+  });
+
+  // If not loaded in 12s, show error
+  const timeout = setTimeout(() => {
+    if (frame.style.display !== 'block') {
+      loading.style.display = 'none';
+      error.style.display   = 'flex';
+    }
+  }, 12000);
+
+  frame.addEventListener('load', () => clearTimeout(timeout));
+</script>

@@ -1,59 +1,121 @@
 services:
-  # ── Custom chat UI ───────────────────────────────────────────────────────────
-  web:
-    build: ./web
-    container_name: web
-    depends_on:
-      - api
-    environment:
-      - API_URL=http://api:8787
+  # ── FastAPI backend — tier router, VRAM scheduler, multi-agent, auth ─────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: lai-backend
     expose:
-      - "3001"
+      - "8000"
     ports:
-      - "3001:3001"
-    restart: always
-
-  # ── Chat API: routes chats, stores sqlite, streams telemetry ────────────────
-  api:
-    build: ./api
-    container_name: api
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "8000:8000"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - LLAMACPP_URL=http://llama-server:8001/v1
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3000}
+      # ── Auth secrets — set via .env.local (see .env.example) ──────────────────
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY}
+      - AUTH_EMAIL_FROM=${AUTH_EMAIL_FROM:-noreply@localaistack.local}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
     volumes:
-      - api-data:/app/data
       - ./config:/app/config:ro
-    environment:
-      - PORT=8787
-      - DB_PATH=/app/data/local-ai-stack.db
-      - UPLOAD_DIR=/app/data/uploads
-      - MODELS_YAML=/app/config/models.yaml
-      - LMSTUDIO_URL=http://host.docker.internal:1234/v1
-      - GPU_AGENT_URL=http://host.docker.internal:8788/
-      - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
-      - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
-      - DEV_TRUSTED_EMAIL=${DEV_TRUSTED_EMAIL:-}
-    expose:
-      - "8787"
-    ports:
-      - "8787:8787"
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
     depends_on:
-      - qdrant
-    restart: always
+      - ollama
+    restart: unless-stopped
 
-  # ── Cloudflare Tunnel: public URL with Access magic-link auth ───────────────
+  # ── Frontend (static Preact bundle served by nginx) ──────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: lai-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ── Cloudflare Tunnel — public HTTPS access without opening router ports ─────
+  # Users run `bash scripts/setup-cloudflared.sh` once to provision a tunnel.
+  # When CLOUDFLARE_TUNNEL_TOKEN is unset, docker compose skips the service so
+  # local-only users aren't forced to set up Cloudflare.
   cloudflared:
     image: cloudflare/cloudflared:latest
-    container_name: cloudflared
-    command: tunnel --config /etc/cloudflared/config.yml run
-    volumes:
-      - ./cloudflare:/etc/cloudflared:ro
-      - cloudflared-data:/home/nonroot/.cloudflared
+    container_name: lai-cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env.local or omit this service}
     depends_on:
-      - web
-      - api
+      - frontend
+    restart: unless-stopped
+    profiles:
+      - public                          # opt-in: `docker compose --profile public up`
+
+  # ── Ollama — primary inference backend ────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-3}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-3}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
     restart: always
 
-  # ── Jupyter: code execution for assistant ────────────────────────────────────
+  # ── llama.cpp server — Vision tier (Qwen3.6 35B + mmproj) ─────────────────────
+  #
+  # Requires the vision GGUF + mmproj files in ./models/. Download via
+  # scripts/setup-models.sh. Service stays idle (failed-start) if files are
+  # missing — the backend's VRAM scheduler won't route to it in that case.
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-server
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./models:/models:ro
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8001"
+      - "-m"
+      - "/models/qwen3.6-35b-a3b-Q4_K_M.gguf"
+      - "--mmproj"
+      - "/models/mmproj-qwen3.6-35b-F16.gguf"
+      - "-c"
+      - "16384"
+      - "-ngl"
+      - "999"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ── Jupyter: code interpreter ─────────────────────────────────────────────────
   jupyter:
     image: quay.io/jupyter/scipy-notebook:latest
     container_name: jupyter
@@ -62,24 +124,11 @@ services:
       - JUPYTER_ENABLE_LAB=yes
     volumes:
       - jupyter-data:/home/jovyan/work
-    expose:
-      - "8888"
-    restart: always
-
-  # ── Pipelines: function-calling, filters, RAG pipelines ──────────────────────
-  pipelines:
-    image: ghcr.io/open-webui/pipelines:main
-    container_name: pipelines
     ports:
-      - "9099:9099"
-    volumes:
-      - pipelines-data:/app/pipelines
-      - ./pipelines:/app/pipelines/custom:ro
-    environment:
-      - PIPELINES_API_KEY=0p3n-w3bu!
+      - "8888:8888"
     restart: always
 
-  # ── Qdrant: vector database for RAG ──────────────────────────────────────────
+  # ── Qdrant: vector database ──────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -90,7 +139,7 @@ services:
       - qdrant-data:/qdrant/storage
     restart: always
 
-  # ── SearXNG: self-hosted meta-search (web search for the assistant) ─────────
+  # ── SearXNG: meta-search engine for web search tools ──────────────────────────
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
@@ -108,17 +157,7 @@ services:
       - SETUID
     restart: always
 
-  # ── Ollama: fallback local model hub ─────────────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    restart: always
-
-  # ── n8n: low-code workflow automation ────────────────────────────────────────
+  # ── n8n: optional workflow automation ────────────────────────────────────────
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
@@ -136,10 +175,7 @@ services:
     restart: always
 
 volumes:
-  api-data:
   jupyter-data:
-  pipelines-data:
   qdrant-data:
   ollama-data:
   n8n-data:
-  cloudflared-data:

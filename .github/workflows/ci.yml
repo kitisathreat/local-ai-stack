@@ -4,7 +4,11 @@ on:
   pull_request:
     branches: [main, master]
   push:
-    branches: [main, master]
+    branches: [main, master, claude-code-integration]
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   # ── Python static analysis: syntax, metadata, config consistency ─────────────
@@ -20,13 +24,43 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: pip install pytest pyyaml
+        run: pip install pytest pytest-asyncio pyyaml pydantic httpx aiosqlite aiosmtplib 'python-jose[cryptography]' fastapi
 
-      - name: Run tool & pipeline tests
-        run: python3 -m pytest tests/test_tools.py -v --tb=short
+      - name: Run all Python tests
+        run: |
+          set -o pipefail
+          python3 -m pytest \
+            tests/test_tools.py \
+            tests/test_config.py \
+            tests/test_router.py \
+            tests/test_vram_scheduler.py \
+            tests/test_db.py \
+            tests/test_auth.py \
+            tests/test_tools_registry.py \
+            tests/test_rag.py \
+            tests/test_memory.py \
+            -v --tb=short 2>&1 | tee /tmp/pytest.log
 
-      - name: Run config & compose tests
-        run: python3 -m pytest tests/test_config.py -v --tb=short
+      - name: Post failing Python tests as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ ! -f /tmp/pytest.log ]; then
+            echo "No pytest log"; exit 0
+          fi
+          {
+            echo "### Python CI test failures (run $RUN_ID)"
+            echo ""
+            echo '```text'
+            tail -120 /tmp/pytest.log
+            echo '```'
+          } > py_fail.md
+          gh pr comment "$PR_NUMBER" --body-file py_fail.md || echo "gh failed"
 
   # ── PowerShell script syntax ──────────────────────────────────────────────────
   powershell-syntax:
@@ -36,24 +70,101 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check PS1 script syntax
+      - name: Check PS1 script syntax (scripts/ + launcher/)
         shell: pwsh
         run: |
           $failed = 0
-          foreach ($f in Get-ChildItem "scripts/*.ps1") {
+          $paths = @(
+            "scripts/*.ps1",
+            "launcher/*.ps1",
+            "launcher/steps/*.ps1",
+            "tests/*.ps1"
+          )
+          $files = $paths | ForEach-Object { Get-ChildItem -Path $_ -ErrorAction SilentlyContinue }
+          foreach ($f in $files) {
             $errs = $null
             [System.Management.Automation.PSParser]::Tokenize(
               (Get-Content $f.FullName -Raw), [ref]$errs
             ) | Out-Null
             if ($errs.Count -gt 0) {
-              Write-Host "FAIL: $($f.Name) — $($errs.Count) error(s)" -ForegroundColor Red
+              Write-Host "FAIL: $($f.FullName) — $($errs.Count) error(s)" -ForegroundColor Red
               $errs | ForEach-Object { Write-Host "  Line $($_.Token.StartLine): $_" }
               $failed++
             } else {
-              Write-Host "PASS: $($f.Name)" -ForegroundColor Green
+              Write-Host "PASS: $($f.FullName)" -ForegroundColor Green
             }
           }
           if ($failed -gt 0) { exit 1 }
+
+  # ── Launcher smoke tests: build script + step contract ───────────────────────
+  launcher-smoke:
+    name: Launcher — Smoke Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify launcher structure + step contract
+        shell: pwsh
+        run: |
+          $expected = @(
+            "launcher/LocalAIStack.ps1",
+            "launcher/build.ps1",
+            "launcher/gpu-agent.ps1",
+            "launcher/steps/_common.ps1",
+            "launcher/steps/ensure-docker.ps1",
+            "launcher/steps/ensure-lmstudio.ps1",
+            "launcher/steps/ensure-tunnel.ps1",
+            "launcher/steps/compose-up.ps1",
+            "launcher/steps/wait-ready.ps1",
+            "launcher/README.md"
+          )
+          $missing = @()
+          foreach ($p in $expected) {
+            if (-not (Test-Path $p)) { $missing += $p }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "FAIL: missing launcher files:" -ForegroundColor Red
+            $missing | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "All expected launcher files present."
+
+          # Each step script must source _common.ps1 (for Emit-Result) and
+          # call Emit-Result somewhere — otherwise the launcher can't parse
+          # its result.
+          $stepFiles = Get-ChildItem "launcher/steps/ensure-*.ps1","launcher/steps/compose-up.ps1","launcher/steps/wait-ready.ps1"
+          $failed = 0
+          foreach ($f in $stepFiles) {
+            $content = Get-Content $f.FullName -Raw
+            if ($content -notmatch '_common\.ps1') {
+              Write-Host "FAIL: $($f.Name) does not source _common.ps1" -ForegroundColor Red
+              $failed++
+            }
+            if ($content -notmatch 'Emit-Result') {
+              Write-Host "FAIL: $($f.Name) does not call Emit-Result" -ForegroundColor Red
+              $failed++
+            }
+          }
+          if ($failed -gt 0) { exit 1 }
+          Write-Host "All step scripts conform to the launcher contract."
+
+      - name: Verify Emit-Result produces valid JSON
+        shell: pwsh
+        run: |
+          . ./launcher/steps/_common.ps1
+          $output = Emit-Result -Ok $true -Message "ci smoke test"
+          try {
+            $parsed = $output | ConvertFrom-Json
+            if ($parsed.ok -ne $true -or $parsed.message -ne "ci smoke test") {
+              Write-Host "FAIL: parsed JSON does not round-trip: $output" -ForegroundColor Red
+              exit 1
+            }
+            Write-Host "OK: Emit-Result produces valid JSON → $output"
+          } catch {
+            Write-Host "FAIL: Emit-Result output is not valid JSON: $output" -ForegroundColor Red
+            exit 1
+          }
 
   # ── YAML lint: all config files parse cleanly ─────────────────────────────────
   yaml-lint:
@@ -77,6 +188,8 @@ jobs:
 
           files = [
             "config/models.yaml",
+            "config/router.yaml",
+            "config/vram.yaml",
             "config/tools.yaml",
             "config/ollama-models.yaml",
             "config/searxng/settings.yml",
@@ -101,3 +214,65 @@ jobs:
           if failed:
             sys.exit(1)
           EOF
+
+  # ── PowerShell integration tests (Windows runner) ────────────────────────────
+  test:
+    name: Run test suite (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install openai
+
+      - name: Run tests (CI mode)
+        shell: pwsh
+        run: .\tests\run_tests.ps1 -CI
+
+      - name: Print test log on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path tests/ci_results.txt) {
+            Write-Host "===== tests/ci_results.txt =====" -ForegroundColor Cyan
+            Get-Content tests/ci_results.txt | ForEach-Object { Write-Host $_ }
+          } else {
+            Write-Host "No ci_results.txt found." -ForegroundColor Yellow
+          }
+
+      - name: Post test results to PR comment
+        if: failure() && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set +e
+          echo "STEP STARTED: Post test results"
+          {
+            echo "### Windows CI test log (run $RUN_ID)"
+            echo ""
+            echo '```text'
+            if [ -f tests/ci_results.txt ]; then
+              # Strip any non-printable including CR; keep it bounded.
+              tr -d '\r' < tests/ci_results.txt | tail -100
+            else
+              echo "(tests/ci_results.txt not found)"
+              ls -la tests/ 2>&1 | head -30
+            fi
+            echo '```'
+          } > post_comment.md
+          echo "---- body ----"
+          cat post_comment.md
+          echo "---- gh pr comment ----"
+          gh pr comment "$PR_NUMBER" --body-file post_comment.md
+          echo "exit: $?"

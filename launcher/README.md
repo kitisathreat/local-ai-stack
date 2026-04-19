@@ -1,6 +1,6 @@
 # LocalAIStack launcher
 
-Single-click Windows launcher for the stack. Double-click `LocalAIStack.exe` and the whole stack comes up silently with a progress window.
+Single-click Windows launcher for the stack. Double-click `LocalAIStack.exe` and the whole stack comes up silently with a progress window — no visible PowerShell or Docker console windows.
 
 ## Build
 
@@ -10,46 +10,44 @@ pwsh -File launcher\build.ps1
 
 Outputs `launcher\dist\LocalAIStack.exe` and `launcher\dist\gpu-agent.exe`. Requires `ps2exe` (auto-installed on first build).
 
-## First-time setup (one-time per machine)
+## What it wraps
 
-1. Install prerequisites: Docker Desktop, LM Studio, `cloudflared`.
-2. Authorize Cloudflare tunnel:
-   ```
-   cloudflared tunnel login
-   cloudflared tunnel create local-ai-stack
-   cloudflared tunnel route dns local-ai-stack chat.mylensandi.com
-   ```
-3. Copy the generated credentials JSON into `%USERPROFILE%\.cloudflared\`.
-4. Edit `cloudflare/config.yml` — replace `TUNNEL_UUID_HERE` with your tunnel UUID.
-5. Configure Cloudflare Access for `chat.mylensandi.com`:
-   - Zero Trust dashboard → Access → Applications → Add application → Self-hosted
-   - Policy: Allow if email ∈ your allowlist
-   - Identity provider: One-time PIN (built-in)
+The launcher is a thin silent orchestrator over the existing repo scripts + docker compose. It assumes the stack architecture defined in [`docker-compose.yml`](../docker-compose.yml) and [`backend/`](../backend/):
 
-Every subsequent launch is silent.
+- **backend** (FastAPI) on `:8000` — waits for `/healthz`
+- **frontend** (Preact + nginx) on `:3000` — where the user is sent
+- **cloudflared** — only when `CLOUDFLARE_TUNNEL_TOKEN` is set in `.env.local` (started via `--profile public`)
+- **ollama** + optional **llama-server** — inference tiers (containerized; no host-side LM Studio dependency)
+
+## First-time setup
+
+1. Install Docker Desktop. (The launcher will surface a dialog with the download link if it's missing.)
+2. Copy `.env.example` → `.env.local` and set `AUTH_SECRET_KEY` (see the root README).
+3. **Optional (public access):** run `bash scripts/setup-cloudflared.sh` to provision a tunnel token, then paste it into `.env.local` as `CLOUDFLARE_TUNNEL_TOKEN`.
+4. **Optional (public URL):** set `PUBLIC_BASE_URL=https://your-tunnel-hostname` in `.env.local` so the launcher opens the public URL instead of `http://localhost:3000`.
+5. Double-click `LocalAIStack.exe`.
 
 ## What the launcher does
 
-1. Checks Docker Desktop is running; starts it if not
-2. Checks LM Studio server on :1234; starts it if not
-3. Verifies cloudflared credentials exist
-4. Runs `docker compose up -d`
-5. Waits for `api` and `web` to be healthy
-6. Starts `gpu-agent.exe` for VRAM telemetry
-7. Opens `https://chat.mylensandi.com` in the default browser
-8. Minimizes to system tray
+1. Checks Docker Desktop is running; starts it if not (90s timeout).
+2. Checks `.env.local` for `CLOUDFLARE_TUNNEL_TOKEN`; if present, enables the `public` compose profile.
+3. Runs `docker compose up -d` (+ `--profile public` when tunnel is configured).
+4. Polls `http://localhost:8000/healthz` (backend) and `http://localhost:3000/` (frontend) until both are healthy (120s max).
+5. Starts `gpu-agent.exe` in the background to expose GPU metrics on `127.0.0.1:8788` (consumed by the backend's telemetry endpoint).
+6. Opens `$PUBLIC_BASE_URL` (or `http://localhost:3000`) in the default browser.
+7. Minimizes to the system tray.
 
-All output is logged to `%APPDATA%\LocalAIStack\launcher.log` (rotated at 2 MB, keeps 5 files). Dialogs appear only when user action is required (e.g., a missing prerequisite).
+All output is logged to `%APPDATA%\LocalAIStack\launcher.log` (rotated at 2 MB, keeps 5 files). Dialogs appear **only** when user action is required (e.g., Docker Desktop is not installed).
 
 ## Tray menu
 
-- **Open Chat** — reopens `chat.mylensandi.com`
+- **Open Chat** — reopens the chat URL
 - **View Logs** — opens `launcher.log` in Notepad
 - **Restart** — relaunches the executable
-- **Stop & Exit** — runs `scripts\stop.ps1` silently and exits
+- **Stop & Exit** — runs `scripts\stop.ps1` (if present) + `docker compose down` silently and exits
 
 ## Troubleshooting
 
 - Logs: `%APPDATA%\LocalAIStack\launcher.log`
-- Manual start for debugging: `pwsh -File launcher\LocalAIStack.ps1 -DevMode`
-- Reset cloudflared auth: delete `%USERPROFILE%\.cloudflared\*.json` and re-run `cloudflared tunnel login`
+- Manual run for debugging: `pwsh -File launcher\LocalAIStack.ps1 -DevMode`
+- Skip the tunnel for a given run: unset `CLOUDFLARE_TUNNEL_TOKEN` in `.env.local` (the launcher detects the empty value and runs local-only).
