@@ -49,12 +49,16 @@ CREATE TABLE IF NOT EXISTS magic_links (
 CREATE INDEX IF NOT EXISTS idx_magic_links_email ON magic_links(email, created_at);
 
 CREATE TABLE IF NOT EXISTS conversations (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    title       TEXT NOT NULL DEFAULT 'New chat',
-    tier        TEXT,
-    created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title           TEXT NOT NULL DEFAULT 'New chat',
+    tier            TEXT,
+    -- When 0, this chat is skipped by memory distillation AND its
+    -- messages are NOT appended to the encrypted per-user history log.
+    -- Default 1: opt-out, not opt-in.
+    memory_enabled  INTEGER NOT NULL DEFAULT 1,
+    created_at      REAL NOT NULL,
+    updated_at      REAL NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id, updated_at DESC);
@@ -142,7 +146,20 @@ async def init_db() -> None:
     """Create tables if missing. Idempotent — safe to call every startup."""
     async with get_conn() as c:
         await c.executescript(SCHEMA)
+        await _migrate_add_column(
+            c, "conversations", "memory_enabled", "INTEGER NOT NULL DEFAULT 1",
+        )
         await c.commit()
+
+
+async def _migrate_add_column(
+    conn: aiosqlite.Connection, table: str, column: str, type_sql: str,
+) -> None:
+    """Add a column if it doesn't exist (SQLite has no ADD COLUMN IF NOT EXISTS)."""
+    rows = await (await conn.execute(f"PRAGMA table_info({table})")).fetchall()
+    if any(r["name"] == column for r in rows):
+        return
+    await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_sql}")
 
 
 # ── Users ────────────────────────────────────────────────────────────────
@@ -233,43 +250,61 @@ async def consume_magic_link(token: str) -> dict | None:
 async def list_conversations(user_id: int, limit: int = 100) -> list[dict]:
     async with get_conn() as c:
         rows = await (await c.execute(
-            "SELECT id, title, tier, created_at, updated_at FROM conversations "
+            "SELECT id, title, tier, memory_enabled, created_at, updated_at FROM conversations "
             "WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
             (user_id, limit),
         )).fetchall()
-        return [dict(r) for r in rows]
+        return [_conv_row(r) for r in rows]
 
 
-async def create_conversation(user_id: int, title: str = "New chat", tier: str | None = None) -> dict:
+async def create_conversation(
+    user_id: int,
+    title: str = "New chat",
+    tier: str | None = None,
+    *,
+    memory_enabled: bool = True,
+) -> dict:
     now = time.time()
     async with get_conn() as c:
         cur = await c.execute(
-            "INSERT INTO conversations (user_id, title, tier, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_id, title, tier, now, now),
+            "INSERT INTO conversations (user_id, title, tier, memory_enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, title, tier, 1 if memory_enabled else 0, now, now),
         )
         await c.commit()
-        return {"id": cur.lastrowid, "title": title, "tier": tier,
-                "created_at": now, "updated_at": now}
+        return {
+            "id": cur.lastrowid, "title": title, "tier": tier,
+            "memory_enabled": bool(memory_enabled),
+            "created_at": now, "updated_at": now,
+        }
 
 
 async def get_conversation(conv_id: int, user_id: int) -> dict | None:
     async with get_conn() as c:
         row = await (await c.execute(
-            "SELECT id, title, tier, created_at, updated_at FROM conversations "
+            "SELECT id, title, tier, memory_enabled, created_at, updated_at FROM conversations "
             "WHERE id = ? AND user_id = ?",
             (conv_id, user_id),
         )).fetchone()
-        return dict(row) if row else None
+        return _conv_row(row) if row else None
 
 
-async def update_conversation(conv_id: int, user_id: int, *, title: str | None = None, tier: str | None = None) -> bool:
+async def update_conversation(
+    conv_id: int,
+    user_id: int,
+    *,
+    title: str | None = None,
+    tier: str | None = None,
+    memory_enabled: bool | None = None,
+) -> bool:
     now = time.time()
     sets, params = [], []
     if title is not None:
         sets.append("title = ?"); params.append(title)
     if tier is not None:
         sets.append("tier = ?"); params.append(tier)
+    if memory_enabled is not None:
+        sets.append("memory_enabled = ?"); params.append(1 if memory_enabled else 0)
     sets.append("updated_at = ?"); params.append(now)
     params.extend([conv_id, user_id])
     async with get_conn() as c:
@@ -279,6 +314,14 @@ async def update_conversation(conv_id: int, user_id: int, *, title: str | None =
         )
         await c.commit()
         return cur.rowcount > 0
+
+
+def _conv_row(row: aiosqlite.Row) -> dict:
+    d = dict(row)
+    # SQLite stores booleans as 0/1 INTEGER; normalize for the API.
+    if "memory_enabled" in d:
+        d["memory_enabled"] = bool(d["memory_enabled"])
+    return d
 
 
 async def delete_conversation(conv_id: int, user_id: int) -> bool:

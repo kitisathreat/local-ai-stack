@@ -113,6 +113,25 @@ def test_conversation_crud(db):
     assert run(db.get_conversation(conv["id"], u["id"])) is None
 
 
+def test_conversation_memory_enabled_defaults_on(db):
+    u = run(db.get_or_create_user("mem-default@x.io"))
+    conv = run(db.create_conversation(u["id"], title="Default"))
+    assert conv["memory_enabled"] is True
+    fetched = run(db.get_conversation(conv["id"], u["id"]))
+    assert fetched["memory_enabled"] is True
+
+
+def test_conversation_memory_enabled_toggle(db):
+    u = run(db.get_or_create_user("mem-toggle@x.io"))
+    conv = run(db.create_conversation(u["id"], memory_enabled=True))
+    ok = run(db.update_conversation(conv["id"], u["id"], memory_enabled=False))
+    assert ok
+    assert run(db.get_conversation(conv["id"], u["id"]))["memory_enabled"] is False
+    # list_conversations exposes the flag too (for the sidebar indicator).
+    convs = run(db.list_conversations(u["id"]))
+    assert convs[0]["memory_enabled"] is False
+
+
 def test_conversation_user_isolation(db):
     a = run(db.get_or_create_user("h@x.io"))
     b = run(db.get_or_create_user("i@x.io"))
