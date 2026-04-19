@@ -225,8 +225,12 @@ async def get_config(_: dict = Depends(require_admin)):
             },
             "multi_agent": {
                 "max_workers": cfg.router.multi_agent.max_workers,
+                "min_workers": cfg.router.multi_agent.min_workers,
                 "worker_tier": cfg.router.multi_agent.worker_tier,
                 "orchestrator_tier": cfg.router.multi_agent.orchestrator_tier,
+                "reasoning_workers": cfg.router.multi_agent.reasoning_workers,
+                "interaction_mode": cfg.router.multi_agent.interaction_mode,
+                "interaction_rounds": cfg.router.multi_agent.interaction_rounds,
             },
         },
         "auth": {
@@ -330,14 +334,32 @@ def _patch_router(patch: dict, doc: dict) -> list[str]:
         changes.append("router.auto_thinking_signals.disable_when_any")
     ma = patch.get("multi_agent") or {}
     if "max_workers" in ma:
-        doc.setdefault("multi_agent", {})["max_workers"] = int(ma["max_workers"])
+        v = max(1, min(int(ma["max_workers"]), 8))
+        doc.setdefault("multi_agent", {})["max_workers"] = v
         changes.append("router.multi_agent.max_workers")
+    if "min_workers" in ma:
+        v = max(1, min(int(ma["min_workers"]), 8))
+        doc.setdefault("multi_agent", {})["min_workers"] = v
+        changes.append("router.multi_agent.min_workers")
     if "worker_tier" in ma:
         doc.setdefault("multi_agent", {})["worker_tier"] = str(ma["worker_tier"])
         changes.append("router.multi_agent.worker_tier")
     if "orchestrator_tier" in ma:
         doc.setdefault("multi_agent", {})["orchestrator_tier"] = str(ma["orchestrator_tier"])
         changes.append("router.multi_agent.orchestrator_tier")
+    if "reasoning_workers" in ma:
+        doc.setdefault("multi_agent", {})["reasoning_workers"] = bool(ma["reasoning_workers"])
+        changes.append("router.multi_agent.reasoning_workers")
+    if "interaction_mode" in ma:
+        mode = str(ma["interaction_mode"]).lower()
+        if mode not in ("independent", "collaborative"):
+            mode = "independent"
+        doc.setdefault("multi_agent", {})["interaction_mode"] = mode
+        changes.append("router.multi_agent.interaction_mode")
+    if "interaction_rounds" in ma:
+        v = max(0, min(int(ma["interaction_rounds"]), 4))
+        doc.setdefault("multi_agent", {})["interaction_rounds"] = v
+        changes.append("router.multi_agent.interaction_rounds")
     return changes
 
 

@@ -76,12 +76,23 @@ class AutoThinking(BaseModel):
 class MultiAgentConfig(BaseModel):
     trigger_when_any: list[SignalRule] = Field(default_factory=list)
     max_workers: int = 3
+    min_workers: int = 2
     worker_tier: str = "fast"
     worker_overrides: dict[str, Any] = Field(default_factory=dict)
     orchestrator_tier: str = "versatile"
     orchestrator_overrides: dict[str, Any] = Field(default_factory=dict)
     synthesis_overrides: dict[str, Any] = Field(default_factory=dict)
     specialist_routes: dict[str, str] = Field(default_factory=dict)
+    # Whether parallel workers reason (think mode) on by default. Trades VRAM
+    # and latency for output rigor; admins typically leave off and let users
+    # opt in per-chat.
+    reasoning_workers: bool = False
+    # "independent": classic decompose → parallel → synthesize.
+    # "collaborative": after the initial round, each worker sees the other
+    # workers' drafts and refines its own answer for `interaction_rounds`
+    # additional turns before synthesis. Higher rigor, higher cost.
+    interaction_mode: str = "independent"
+    interaction_rounds: int = 1
 
 
 class RouterConfig(BaseModel):

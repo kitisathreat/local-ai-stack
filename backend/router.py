@@ -216,8 +216,18 @@ def route(
         signals=signals,
     )
 
-    # Multi-agent?
-    if req.multi_agent is not None:
+    # Multi-agent? Precedence (highest first):
+    #   1. multi_agent_options.enabled (per-chat panel toggle)
+    #   2. legacy `multi_agent` flag
+    #   3. /solo, /swarm slash commands
+    #   4. signal heuristics from router.yaml
+    opt_enabled = (
+        req.multi_agent_options.enabled
+        if req.multi_agent_options is not None else None
+    )
+    if opt_enabled is not None:
+        multi_agent = opt_enabled
+    elif req.multi_agent is not None:
         multi_agent = req.multi_agent
     elif parsed.multi_agent_override is not None:
         multi_agent = parsed.multi_agent_override

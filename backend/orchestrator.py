@@ -1,6 +1,6 @@
 """Multi-agent orchestrator.
 
-Flow:
+Flow (independent mode — default):
     1. Reserve the orchestrator tier (Versatile by default).
     2. Ask it for a JSON plan: a list of decomposed subtasks.
     3. Release the orchestrator so workers can fit in VRAM.
@@ -9,6 +9,19 @@ Flow:
        requests a specialist (coding or vision).
     5. Re-reserve the orchestrator for synthesis, streaming the final
        answer back to the client.
+
+Flow (collaborative mode):
+    Same as above through step 4. After the initial parallel pass, each
+    worker is shown the other workers' drafts and asked to refine its
+    own answer. This repeats for `interaction_rounds` rounds, after
+    which the orchestrator synthesizes the final answer from the
+    last-round outputs. Trades latency + VRAM churn for rigor.
+
+Per-request overrides:
+    `MultiAgentOptions` on the chat request can override worker tier,
+    orchestrator tier, worker count cap, reasoning toggles, interaction
+    mode, and interaction rounds for one chat without persisting to the
+    YAML config. See `_resolved_settings` for the merge order.
 
 Fallback: if the orchestrator's JSON plan fails to parse, we fall through
 to a single-shot call with the orchestrator tier and return that as the
@@ -24,8 +37,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
-from .config import AppConfig
-from .schemas import ChatMessage, AgentEvent
+from .config import AppConfig, MultiAgentConfig
+from .schemas import ChatMessage, AgentEvent, MultiAgentOptions
 
 
 logger = logging.getLogger(__name__)
@@ -35,14 +48,14 @@ ORCHESTRATOR_SYSTEM_PROMPT = """You are an orchestrator agent. Decompose the use
 
 Rules:
 - Each subtask MUST be answerable without knowledge of the other subtasks.
-- Produce 2-5 subtasks. Fewer is better if the request doesn't decompose.
+- Produce {min_workers}-{max_workers} subtasks. Fewer is better if the request doesn't decompose.
 - Tag each subtask's specialist need: GENERAL, CODING, VISION, or REASONING.
 - Output ONLY a JSON array, no prose before or after.
 
 Format:
 [
-  {"id": 1, "task": "<self-contained prompt>", "specialist": "GENERAL"},
-  {"id": 2, "task": "...", "specialist": "CODING"}
+  {{"id": 1, "task": "<self-contained prompt>", "specialist": "GENERAL"}},
+  {{"id": 2, "task": "...", "specialist": "CODING"}}
 ]
 
 If the request does not genuinely decompose into independent parts, return an empty array [].
@@ -60,13 +73,81 @@ Combine them into ONE polished response. Do not mention the orchestration pipeli
 """
 
 
+COLLAB_REFINE_SYSTEM_PROMPT = """You are one of several worker agents collaborating to answer a user's question. You previously produced a draft for your subtask. Your peers worked on related subtasks and produced their own drafts.
+
+Read every peer's draft. Then revise YOUR OWN answer to your subtask, doing all of:
+- Correct any mistakes you now see in your draft (use peers' work as a sanity check).
+- Add facts, edge cases, or nuance your peers raised that your subtask should also cover.
+- Resolve contradictions between your draft and peers' work, or call them out explicitly if you can't.
+- Stay focused on YOUR subtask — do not answer your peers' subtasks for them.
+
+Output ONLY the refined answer to your subtask. No meta-commentary about the collaboration.
+"""
+
+
+@dataclass
+class _RuntimeSettings:
+    """Resolved per-call settings: per-request options layered on top of
+    the global MultiAgentConfig defaults."""
+
+    orchestrator_tier: str
+    worker_tier: str
+    max_workers: int
+    min_workers: int
+    reasoning_workers: bool
+    interaction_mode: str            # "independent" | "collaborative"
+    interaction_rounds: int
+
+
+def _resolved_settings(
+    cfg: MultiAgentConfig,
+    options: MultiAgentOptions | None,
+    available_tiers: set[str],
+) -> _RuntimeSettings:
+    o = options or MultiAgentOptions()
+
+    def _tier_or_default(name: str | None, default: str) -> str:
+        if not name:
+            return default
+        # Strip "tier." prefix the frontend may send.
+        name = name[5:] if name.startswith("tier.") else name
+        return name if name in available_tiers else default
+
+    mode = (o.interaction_mode or cfg.interaction_mode or "independent").lower()
+    if mode not in {"independent", "collaborative"}:
+        mode = "independent"
+
+    rounds = o.interaction_rounds if o.interaction_rounds is not None else cfg.interaction_rounds
+    rounds = max(0, min(int(rounds or 0), 4))   # clamp 0..4 to bound cost
+
+    max_w = o.num_workers if o.num_workers is not None else cfg.max_workers
+    max_w = max(1, min(int(max_w), 8))          # clamp 1..8
+    min_w = max(1, min(int(cfg.min_workers), max_w))
+
+    reasoning = (
+        o.reasoning_workers if o.reasoning_workers is not None
+        else bool(cfg.reasoning_workers)
+        or bool(cfg.worker_overrides.get("think", False))
+    )
+
+    return _RuntimeSettings(
+        orchestrator_tier=_tier_or_default(o.orchestrator_tier, cfg.orchestrator_tier),
+        worker_tier=_tier_or_default(o.worker_tier, cfg.worker_tier),
+        max_workers=max_w,
+        min_workers=min_w,
+        reasoning_workers=bool(reasoning),
+        interaction_mode=mode,
+        interaction_rounds=rounds,
+    )
+
+
 @dataclass
 class Subtask:
     id: int
     task: str
     specialist: str                        # GENERAL | CODING | VISION | REASONING
 
-    def resolved_tier(self, multi_agent_cfg) -> str:
+    def resolved_tier(self, multi_agent_cfg: MultiAgentConfig, default_worker: str) -> str:
         routes = multi_agent_cfg.specialist_routes
         if self.specialist == "CODING":
             return routes.get("code_block_present", "coding")
@@ -74,7 +155,7 @@ class Subtask:
             return routes.get("image_in_message", "vision")
         if self.specialist == "REASONING":
             return "highest_quality"
-        return multi_agent_cfg.worker_tier
+        return default_worker
 
 
 class Orchestrator:
@@ -95,9 +176,14 @@ class Orchestrator:
         user_message: str,
         conversation: list[ChatMessage],
         think_synthesis: bool,
+        options: MultiAgentOptions | None = None,
     ) -> AsyncIterator[AgentEvent]:
         ma_cfg = self.cfg.router.multi_agent
-        orch_tier_name = ma_cfg.orchestrator_tier
+        settings = _resolved_settings(
+            ma_cfg, options, available_tiers=set(self.cfg.models.tiers),
+        )
+
+        orch_tier_name = settings.orchestrator_tier
         orch_tier = self.cfg.models.tiers[orch_tier_name]
         orch_client = self.backends.get(orch_tier.backend)
         if orch_client is None:
@@ -105,10 +191,20 @@ class Orchestrator:
             return
 
         # ── 1. Plan ──────────────────────────────────────────────────────
-        yield AgentEvent(type="agent.plan_start", data={"tier": orch_tier_name})
+        yield AgentEvent(type="agent.plan_start", data={
+            "tier": orch_tier_name,
+            "interaction_mode": settings.interaction_mode,
+            "max_workers": settings.max_workers,
+        })
 
         planning_msgs = [
-            ChatMessage(role="system", content=ORCHESTRATOR_SYSTEM_PROMPT),
+            ChatMessage(
+                role="system",
+                content=ORCHESTRATOR_SYSTEM_PROMPT.format(
+                    min_workers=settings.min_workers,
+                    max_workers=settings.max_workers,
+                ),
+            ),
             ChatMessage(role="user", content=user_message),
         ]
         try:
@@ -122,6 +218,10 @@ class Orchestrator:
             return
 
         subtasks = _parse_plan(plan_text)
+        # Cap at the resolved max so per-request limits are honored even if
+        # the orchestrator over-decomposes.
+        if len(subtasks) > settings.max_workers:
+            subtasks = subtasks[: settings.max_workers]
         yield AgentEvent(type="agent.plan_done", data={"subtask_count": len(subtasks)})
 
         # Fallback: no decomposition → single-shot on orchestrator
@@ -137,7 +237,16 @@ class Orchestrator:
         # ── 2. Workers (parallel) ────────────────────────────────────────
         yield AgentEvent(type="agent.workers_start", data={
             "count": len(subtasks),
-            "workers": [{"id": s.id, "tier": s.resolved_tier(ma_cfg), "task": s.task[:100]} for s in subtasks],
+            "interaction_mode": settings.interaction_mode,
+            "reasoning_workers": settings.reasoning_workers,
+            "workers": [
+                {
+                    "id": s.id,
+                    "tier": s.resolved_tier(ma_cfg, settings.worker_tier),
+                    "task": s.task[:100],
+                }
+                for s in subtasks
+            ],
         })
 
         worker_tool_schemas: list[dict] | None = None
@@ -146,50 +255,48 @@ class Orchestrator:
             if enabled:
                 worker_tool_schemas = enabled
 
-        async def run_worker(s: Subtask) -> dict:
-            worker_tier_name = s.resolved_tier(ma_cfg)
-            worker_tier = self.cfg.models.tiers[worker_tier_name]
-            worker_client = self.backends[worker_tier.backend]
-            try:
-                async with self.scheduler.reserve(worker_tier_name):
-                    overrides = {"think": ma_cfg.worker_overrides.get("think", False)}
-                    # Only Ollama workers get the tool schema today (llama_cpp
-                    # vision tier bypasses tools anyway).
-                    kwargs = {}
-                    if worker_tier.backend == "ollama" and worker_tool_schemas:
-                        kwargs["extra_options"] = None
-                        # chat_once is a thin wrapper — pass tools via a
-                        # custom path: call chat_stream manually.
-                        text_chunks: list[str] = []
-                        async for chunk in worker_client.chat_stream(
-                            worker_tier,
-                            [ChatMessage(role="user", content=s.task)],
-                            think=overrides["think"],
-                            tools=worker_tool_schemas,
-                        ):
-                            msg = chunk.get("message") or {}
-                            if msg.get("content"):
-                                text_chunks.append(msg["content"])
-                            if chunk.get("done"):
-                                break
-                        output = "".join(text_chunks)
-                    else:
-                        output = await worker_client.chat_once(
-                            worker_tier,
-                            [ChatMessage(role="user", content=s.task)],
-                            think=overrides["think"],
-                        )
-                return {"id": s.id, "task": s.task, "output": output, "error": None}
-            except Exception as e:
-                return {"id": s.id, "task": s.task, "output": "", "error": str(e)}
-
-        results = await asyncio.gather(*(run_worker(s) for s in subtasks))
-
+        # Initial round (every mode runs this).
+        results = await self._run_workers(
+            subtasks=subtasks,
+            settings=settings,
+            ma_cfg=ma_cfg,
+            worker_tool_schemas=worker_tool_schemas,
+            peer_drafts=None,
+        )
         for r in results:
             yield AgentEvent(
                 type="agent.worker_done",
-                data={"id": r["id"], "chars": len(r["output"]), "error": r["error"]},
+                data={"id": r["id"], "chars": len(r["output"]), "error": r["error"], "round": 1},
             )
+
+        # ── 2b. Collaborative refinement rounds ──────────────────────────
+        if settings.interaction_mode == "collaborative" and settings.interaction_rounds > 0:
+            for round_idx in range(2, settings.interaction_rounds + 2):
+                yield AgentEvent(type="agent.refine_start", data={
+                    "round": round_idx,
+                    "total_rounds": settings.interaction_rounds + 1,
+                })
+                # Snapshot peer drafts BEFORE the round so all workers see
+                # the same prior-round state (no read-after-write races).
+                peer_drafts = [
+                    {"id": r["id"], "task": r["task"], "output": r["output"]}
+                    for r in results
+                ]
+                results = await self._run_workers(
+                    subtasks=subtasks,
+                    settings=settings,
+                    ma_cfg=ma_cfg,
+                    worker_tool_schemas=worker_tool_schemas,
+                    peer_drafts=peer_drafts,
+                )
+                for r in results:
+                    yield AgentEvent(
+                        type="agent.worker_done",
+                        data={
+                            "id": r["id"], "chars": len(r["output"]),
+                            "error": r["error"], "round": round_idx,
+                        },
+                    )
 
         # ── 3. Synthesis ─────────────────────────────────────────────────
         yield AgentEvent(type="agent.synthesis_start", data={"tier": orch_tier_name})
@@ -208,6 +315,65 @@ class Orchestrator:
                 yield chunk
 
         yield AgentEvent(type="agent.synthesis_done")
+
+    async def _run_workers(
+        self,
+        subtasks: list["Subtask"],
+        settings: _RuntimeSettings,
+        ma_cfg: MultiAgentConfig,
+        worker_tool_schemas: list[dict] | None,
+        peer_drafts: list[dict] | None,
+    ) -> list[dict]:
+        """Run one round of workers in parallel. When `peer_drafts` is set,
+        each worker is given the other workers' prior-round outputs and asked
+        to refine its own (collaborative mode)."""
+
+        async def run_worker(s: Subtask) -> dict:
+            worker_tier_name = s.resolved_tier(ma_cfg, settings.worker_tier)
+            worker_tier = self.cfg.models.tiers[worker_tier_name]
+            worker_client = self.backends[worker_tier.backend]
+
+            if peer_drafts is None:
+                # Initial round — single user message containing the subtask.
+                messages = [ChatMessage(role="user", content=s.task)]
+            else:
+                # Refinement round — feed the worker its peers' drafts and
+                # its own prior draft, ask it to revise.
+                own = next((d for d in peer_drafts if d["id"] == s.id), None)
+                messages = [
+                    ChatMessage(role="system", content=COLLAB_REFINE_SYSTEM_PROMPT),
+                    ChatMessage(
+                        role="user",
+                        content=_build_refine_prompt(s, own, peer_drafts),
+                    ),
+                ]
+
+            try:
+                async with self.scheduler.reserve(worker_tier_name):
+                    think_workers = settings.reasoning_workers
+                    if worker_tier.backend == "ollama" and worker_tool_schemas:
+                        text_chunks: list[str] = []
+                        async for chunk in worker_client.chat_stream(
+                            worker_tier,
+                            messages,
+                            think=think_workers,
+                            tools=worker_tool_schemas,
+                        ):
+                            msg = chunk.get("message") or {}
+                            if msg.get("content"):
+                                text_chunks.append(msg["content"])
+                            if chunk.get("done"):
+                                break
+                        output = "".join(text_chunks)
+                    else:
+                        output = await worker_client.chat_once(
+                            worker_tier, messages, think=think_workers,
+                        )
+                return {"id": s.id, "task": s.task, "output": output, "error": None}
+            except Exception as e:
+                return {"id": s.id, "task": s.task, "output": "", "error": str(e)}
+
+        return await asyncio.gather(*(run_worker(s) for s in subtasks))
 
 
 # ── Plan parsing ────────────────────────────────────────────────────────
@@ -260,6 +426,29 @@ def _build_synthesis_context(user_message: str, results: list[dict]) -> str:
         else:
             lines.append(r["output"])
     lines.append("\n\nSynthesize a single coherent answer to the user's question now.")
+    return "\n".join(lines)
+
+
+def _build_refine_prompt(
+    subtask: Subtask, own: dict | None, peer_drafts: list[dict],
+) -> str:
+    """Format the user-side prompt for a collaborative-refinement round."""
+    lines = [f"Your subtask:\n{subtask.task}\n"]
+    if own and own.get("output"):
+        lines.append("Your previous draft:\n")
+        lines.append(own["output"])
+    else:
+        lines.append("Your previous draft:\n(none — your prior attempt failed; produce a fresh answer)")
+    lines.append("\n\nYour peers' drafts (other subtasks):\n")
+    peers = [d for d in peer_drafts if d["id"] != subtask.id]
+    if not peers:
+        lines.append("(no peer drafts available)")
+    else:
+        for d in peers:
+            lines.append(f"\n--- Peer subtask {d['id']} ---")
+            lines.append(f"Task: {d['task']}")
+            lines.append(d["output"] or "(no output)")
+    lines.append("\n\nRevise your answer to your own subtask now.")
     return "\n".join(lines)
 
 

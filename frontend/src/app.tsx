@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 
 import {
   api, adminApi, Message, Tier, ConversationSummary, streamChat, ResponseMode,
+  MultiAgentOptions, InteractionMode,
 } from "./api";
 import { AdminDashboard } from "./admin";
 
@@ -450,6 +451,171 @@ function ToolPicker({
   );
 }
 
+/* ── Multi-agent panel (per-chat overrides for elevated users) ──────── */
+//
+// Shown only to users the backend marks as admin. State lives in the
+// parent ChatView and is intentionally NOT persisted across chats — each
+// new conversation resets to "follow server defaults" (auto). The opener
+// button shows whether overrides are currently active.
+
+const DEFAULT_MULTI_AGENT_OPTIONS: MultiAgentOptions = {
+  enabled: null,
+  num_workers: null,
+  worker_tier: null,
+  orchestrator_tier: null,
+  reasoning_workers: null,
+  interaction_mode: null,
+  interaction_rounds: null,
+};
+
+function multiAgentOverridesActive(o: MultiAgentOptions): boolean {
+  return Object.values(o).some((v) => v !== null && v !== undefined);
+}
+
+function MultiAgentPanel({
+  open, options, tiers, onChange, onClose, onReset,
+}: {
+  open: boolean;
+  options: MultiAgentOptions;
+  tiers: Tier[];
+  onChange: (next: MultiAgentOptions) => void;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  if (!open) return null;
+  const set = <K extends keyof MultiAgentOptions>(k: K, v: MultiAgentOptions[K]) =>
+    onChange({ ...options, [k]: v });
+
+  // Tristate select: "auto" (null) → use server default. "on"/"off" force.
+  const tri = (v: boolean | null | undefined): "auto" | "on" | "off" =>
+    v === null || v === undefined ? "auto" : v ? "on" : "off";
+  const fromTri = (s: string): boolean | null =>
+    s === "on" ? true : s === "off" ? false : null;
+
+  // Worker tier names accepted by the backend are bare ("fast") or "tier.fast".
+  const tierOptions = tiers.map((t) => ({
+    value: t.id.replace(/^tier\./, ""),
+    label: shortName(t.name),
+  }));
+
+  return (
+    <div class="ma-modal-backdrop" onClick={onClose}>
+      <div class="ma-modal" onClick={(e) => e.stopPropagation()}>
+        <div class="ma-modal-header">
+          <h2>Multi-agent workflow (this chat)</h2>
+          <button onClick={onClose}>✕</button>
+        </div>
+        <p class="ma-modal-hint">
+          Tweaks here apply only to this chat. Send a new message to see the
+          changes take effect — they reset when you start a new conversation.
+        </p>
+
+        <div class="ma-grid">
+          <label class="ma-field">
+            <span>Multi-agent</span>
+            <select value={tri(options.enabled)}
+                    onChange={(e) => set("enabled", fromTri((e.target as HTMLSelectElement).value))}>
+              <option value="auto">Auto (server decides)</option>
+              <option value="on">Force ON</option>
+              <option value="off">Force OFF</option>
+            </select>
+            <small>When ON, every message in this chat uses the orchestrator → workers → synthesis pipeline.</small>
+          </label>
+
+          <label class="ma-field">
+            <span>Workers</span>
+            <select value={options.num_workers ?? ""}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLSelectElement).value;
+                      set("num_workers", raw === "" ? null : Number(raw));
+                    }}>
+              <option value="">Auto</option>
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            <small>Cap on parallel subtasks the orchestrator may dispatch.</small>
+          </label>
+
+          <label class="ma-field">
+            <span>Worker tier (size & quantization)</span>
+            <select value={options.worker_tier ?? ""}
+                    onChange={(e) => set("worker_tier", (e.target as HTMLSelectElement).value || null)}>
+              <option value="">Auto (server default)</option>
+              {tierOptions.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+            <small>Each tier bundles a model size and quantization. Smaller = faster + cheaper.</small>
+          </label>
+
+          <label class="ma-field">
+            <span>Orchestrator tier</span>
+            <select value={options.orchestrator_tier ?? ""}
+                    onChange={(e) => set("orchestrator_tier", (e.target as HTMLSelectElement).value || null)}>
+              <option value="">Auto (server default)</option>
+              {tierOptions.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+            <small>Plans subtasks and synthesizes the final answer.</small>
+          </label>
+
+          <label class="ma-field">
+            <span>Worker reasoning</span>
+            <select value={tri(options.reasoning_workers)}
+                    onChange={(e) => set("reasoning_workers", fromTri((e.target as HTMLSelectElement).value))}>
+              <option value="auto">Auto</option>
+              <option value="on">Reasoning ON</option>
+              <option value="off">Reasoning OFF</option>
+            </select>
+            <small>Workers think before answering. Higher rigor, slower, more VRAM.</small>
+          </label>
+
+          <label class="ma-field">
+            <span>Interaction mode</span>
+            <select value={options.interaction_mode ?? ""}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLSelectElement).value;
+                      set("interaction_mode",
+                         raw === "" ? null : (raw as InteractionMode));
+                    }}>
+              <option value="">Auto</option>
+              <option value="independent">Independent (parallel only)</option>
+              <option value="collaborative">Collaborative (peers refine)</option>
+            </select>
+            <small>
+              Collaborative shares peer drafts between rounds so workers can
+              cross-check, fill gaps, and resolve contradictions before synthesis.
+            </small>
+          </label>
+
+          <label class="ma-field">
+            <span>Refinement rounds</span>
+            <select value={options.interaction_rounds ?? ""}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLSelectElement).value;
+                      set("interaction_rounds", raw === "" ? null : Number(raw));
+                    }}
+                    disabled={options.interaction_mode === "independent"}>
+              <option value="">Auto</option>
+              {[0, 1, 2, 3, 4].map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            <small>Extra rounds where workers see each other's drafts. Only used when collaborative.</small>
+          </label>
+        </div>
+
+        <div class="ma-modal-actions">
+          <button onClick={onReset}>Reset to defaults</button>
+          <button class="primary" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Telemetry panel ────────────────────────────────────────────────── */
 
 type TelemetryState = {
@@ -618,6 +784,12 @@ function ChatView({
   const [responseMode, setResponseMode] = useState<ResponseMode>("immediate");
   const [planText, setPlanText] = useState<string>("");
   const [showPlanEditor, setShowPlanEditor] = useState(false);
+  // Per-chat multi-agent overrides. Reset whenever the active chat changes
+  // so settings never silently carry across conversations.
+  const [maOptions, setMaOptions] = useState<MultiAgentOptions>(
+    { ...DEFAULT_MULTI_AGENT_OPTIONS },
+  );
+  const [showMultiAgent, setShowMultiAgent] = useState(false);
   const [telemetryOpen, setTelemetryOpen] = useState(false);
   const [telemetry, setTelemetry] = useState<TelemetryState>({
     ping_ms: null, tps: null,
@@ -704,6 +876,8 @@ function ChatView({
 
   async function selectChat(id: number) {
     setActiveId(id);
+    // Per-chat overrides do not persist across conversations.
+    setMaOptions({ ...DEFAULT_MULTI_AGENT_OPTIONS });
     try {
       const c = await api.getChat(id);
       setMessages(c.messages);
@@ -717,6 +891,7 @@ function ChatView({
     setChats((prev) => [c, ...prev]);
     setActiveId(c.id);
     setMessages([]);
+    setMaOptions({ ...DEFAULT_MULTI_AGENT_OPTIONS });
     setMemoryEnabled(true);
   }
 
@@ -785,6 +960,10 @@ function ChatView({
         model: tier,
         messages: newMsgs,
         think: reasoning === "auto" ? null : reasoning === "on",
+        // Only send per-chat overrides when the user is admin AND has touched
+        // the panel. Non-admin users always fall through to server defaults.
+        multi_agent_options:
+          isAdmin && multiAgentOverridesActive(maOptions) ? maOptions : null,
         tools: selectedTools.size
           ? Array.from(selectedTools).map((n) => ({
               type: "function", function: { name: n },
@@ -848,8 +1027,19 @@ function ChatView({
           set("Planning subtasks", "done"); break;
         case "agent.workers_start":
           set("Spawning parallel workers", "active"); break;
-        case "agent.worker_done":
-          set("Spawning parallel workers", "done"); break;
+        case "agent.worker_done": {
+          // Round 1 = initial workers; later rounds = collaborative refine.
+          const round = (_data as any)?.round ?? 1;
+          const label = round > 1 ? `Refining drafts (round ${round})` : "Spawning parallel workers";
+          set(label, "done");
+          break;
+        }
+        case "agent.refine_start": {
+          markPrevDone();
+          const round = (_data as any)?.round ?? 2;
+          set(`Refining drafts (round ${round})`, "active");
+          break;
+        }
         case "agent.synthesis_start":
           markPrevDone(); set("Synthesizing", "active"); break;
         case "agent.synthesis_done":
@@ -895,6 +1085,16 @@ function ChatView({
             onEditPlan={() => setShowPlanEditor(true)}
             planSet={!!planText.trim()}
           />
+          {isAdmin && (
+            <button
+              class={"ma-toggle" + (multiAgentOverridesActive(maOptions) ? " active" : "")}
+              onClick={() => setShowMultiAgent(true)}
+              title="Multi-agent workflow (this chat only)"
+            >
+              🤝 multi-agent
+              {multiAgentOverridesActive(maOptions) && <span class="ma-dot" />}
+            </button>
+          )}
           <div style="flex:1" />
           {isAdmin && (
             <button onClick={onOpenAdmin} title="Admin dashboard" style="font-size:0.85rem;">Admin</button>
@@ -958,6 +1158,16 @@ function ChatView({
             initial={planText}
             onClose={() => setShowPlanEditor(false)}
             onSave={setPlanText}
+          />
+        )}
+        {isAdmin && (
+          <MultiAgentPanel
+            open={showMultiAgent}
+            options={maOptions}
+            tiers={tiers}
+            onChange={setMaOptions}
+            onClose={() => setShowMultiAgent(false)}
+            onReset={() => setMaOptions({ ...DEFAULT_MULTI_AGENT_OPTIONS })}
           />
         )}
       </section>

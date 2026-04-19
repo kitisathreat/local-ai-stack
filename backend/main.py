@@ -400,7 +400,7 @@ async def chat_completions(
 
     if decision.multi_agent:
         return StreamingResponse(
-            _wrap(_multi_agent_sse(req, decision)),
+            _wrap(_multi_agent_sse(req, decision, options=req.multi_agent_options)),
             media_type="text/event-stream",
         )
 
@@ -613,7 +613,9 @@ async def _finalize_conversation(
         logger.exception("Post-stream finalization failed")
 
 
-async def _multi_agent_sse(req: ChatRequest, decision) -> AsyncIterator[str]:
+async def _multi_agent_sse(
+    req: ChatRequest, decision, options=None,
+) -> AsyncIterator[str]:
     model_id = f"tier.{decision.tier_name}"
 
     yield _agent_event_sse(
@@ -622,6 +624,7 @@ async def _multi_agent_sse(req: ChatRequest, decision) -> AsyncIterator[str]:
             "think": decision.think,
             "multi_agent": True,
             "slash_commands_applied": decision.slash_commands_applied,
+            "options": options.model_dump(exclude_none=True) if options else None,
         }),
         model_id,
     )
@@ -634,6 +637,7 @@ async def _multi_agent_sse(req: ChatRequest, decision) -> AsyncIterator[str]:
             user_message=user_msg,
             conversation=req.messages,
             think_synthesis=decision.think,
+            options=options,
         ):
             yield _agent_event_sse(ev, model_id)
     except VRAMExhausted as e:
