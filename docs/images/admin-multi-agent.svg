@@ -1,0 +1,184 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 760" font-family="-apple-system, Segoe UI, Roboto, sans-serif" role="img" aria-label="Animated mockup of the admin Multi-agent tab with workflow diagram, settings, and a live test runner">
+  <defs>
+    <style><![CDATA[
+      .bg { fill: #0e1114; }
+      .alt { fill: #141820; }
+      .panel { fill: #1a1f28; }
+      .border { stroke: #252a34; stroke-width: 1; fill: none; }
+      .fg { fill: #e5e7eb; }
+      .dim { fill: #8b94a6; }
+      .accent { fill: #7c9cff; }
+      .success { fill: #5fd18f; }
+      .warn { fill: #ffb860; }
+      .danger { fill: #ff6b6b; }
+      .sep { stroke: #252a34; stroke-width: 1; }
+      text { font-size: 12px; }
+      .h1 { font-size: 15px; font-weight: 600; fill: #e5e7eb; }
+      .h3 { font-size: 13px; font-weight: 600; fill: #e5e7eb; }
+      .label { font-size: 10px; fill: #8b94a6; letter-spacing: 0.05em; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    ]]></style>
+  </defs>
+
+  <rect class="bg" width="900" height="760"/>
+
+  <!-- ── Header w/ tabs ─────────────────────────────────── -->
+  <rect class="alt" width="900" height="56"/>
+  <line class="sep" x1="0" y1="56" x2="900" y2="56"/>
+  <text class="h1" x="20" y="34">Admin</text>
+
+  <text class="dim" x="83" y="32" font-size="11">Overview</text>
+  <text class="dim" x="148" y="32" font-size="11">Usage</text>
+  <text class="dim" x="194" y="32" font-size="11">Users</text>
+  <text class="dim" x="238" y="32" font-size="11">Models</text>
+  <text class="dim" x="288" y="32" font-size="11">Router</text>
+  <!-- Active tab: Multi-agent -->
+  <rect class="panel" x="328" y="14" width="92" height="28" rx="6" stroke="#7c9cff"/>
+  <text class="accent" x="338" y="32" font-size="11">Multi-agent</text>
+  <text class="dim" x="430" y="32" font-size="11">VRAM</text>
+  <text class="dim" x="472" y="32" font-size="11">Auth</text>
+  <text class="dim" x="510" y="32" font-size="11">Tools</text>
+
+  <rect class="panel" x="800" y="14" width="80" height="28" rx="6" stroke="#252a34"/>
+  <text class="fg" x="816" y="32" font-size="11">← Chat</text>
+
+  <!-- ── Section 1: Workflow diagram ──────────────────── -->
+  <text class="h3" x="20" y="84">Workflow (preview from current draft)</text>
+
+  <rect class="alt" x="20" y="96" width="860" height="190" rx="8" stroke="#252a34"/>
+
+  <!-- Orchestrator (plan) -->
+  <rect class="panel" x="380" y="110" width="140" height="50" rx="8" stroke="#7c9cff"/>
+  <text class="label" x="412" y="126">ORCHESTRATOR · PLAN</text>
+  <text class="accent mono" x="424" y="142" font-size="11">versatile</text>
+  <text class="dim" x="408" y="156" font-size="10">Versatile · 35B</text>
+
+  <!-- Arrow down -->
+  <text class="dim" x="450" y="178" text-anchor="middle" font-size="11">↓ decompose into ≤ 3 subtasks</text>
+
+  <!-- 3 Worker boxes -->
+  <g id="workers-row">
+    <!-- Worker 1 -->
+    <rect class="panel" x="200" y="190" width="140" height="50" rx="8" stroke="#5fd18f"/>
+    <text class="label" x="244" y="206">WORKER 1</text>
+    <text class="accent mono" x="252" y="222" font-size="11">fast</text>
+    <text class="dim" x="232" y="236" font-size="10">Fast · 9B</text>
+
+    <!-- Worker 2 -->
+    <rect class="panel" x="380" y="190" width="140" height="50" rx="8" stroke="#5fd18f"/>
+    <text class="label" x="424" y="206">WORKER 2</text>
+    <text class="accent mono" x="432" y="222" font-size="11">fast</text>
+    <text class="dim" x="412" y="236" font-size="10">Fast · 9B</text>
+
+    <!-- Worker 3 -->
+    <rect class="panel" x="560" y="190" width="140" height="50" rx="8" stroke="#5fd18f"/>
+    <text class="label" x="604" y="206">WORKER 3</text>
+    <text class="accent mono" x="612" y="222" font-size="11">fast</text>
+    <text class="dim" x="592" y="236" font-size="10">Fast · 9B</text>
+  </g>
+
+  <!-- Collaborative refinement banner -->
+  <rect fill="#7c9cff" fill-opacity="0.1" stroke="#7c9cff" stroke-dasharray="4 4"
+        x="280" y="252" width="340" height="26" rx="6"/>
+  <text class="accent" x="450" y="269" text-anchor="middle" font-size="11">
+    ↔ 2 refinement rounds — peers share drafts and revise
+  </text>
+
+  <!-- ── Section 2: Defaults form ─────────────────────── -->
+  <text class="h3" x="20" y="312">Defaults (router.yaml)</text>
+  <text class="dim" x="20" y="328" font-size="10">Edits here apply globally. Per-chat overrides sit on top without persisting.</text>
+
+  <!-- Form grid (left col) -->
+  <text class="dim" x="20" y="354" font-size="11">Min workers</text>
+  <rect class="panel" x="20" y="358" width="120" height="26" rx="6" stroke="#252a34"/>
+  <text class="fg" x="32" y="376">2</text>
+
+  <text class="dim" x="20" y="402" font-size="11">Worker tier (size &amp; quantization)</text>
+  <rect class="panel" x="20" y="406" width="200" height="26" rx="6" stroke="#252a34"/>
+  <text class="fg" x="32" y="424">fast ▾</text>
+
+  <text class="dim" x="20" y="450" font-size="11">Workers reason (think) by default</text>
+  <rect class="panel" x="20" y="454" width="20" height="20" rx="4" stroke="#252a34"/>
+
+  <text class="dim" x="20" y="498" font-size="11">Interaction mode</text>
+  <rect class="panel" x="20" y="502" width="220" height="26" rx="6" stroke="#7c9cff"/>
+  <text class="accent" x="32" y="520">Collaborative (peers refine) ▾</text>
+
+  <!-- Form grid (right col) -->
+  <text class="dim" x="460" y="354" font-size="11">Max workers</text>
+  <rect class="panel" x="460" y="358" width="120" height="26" rx="6" stroke="#252a34"/>
+  <text class="fg" x="472" y="376">3</text>
+
+  <text class="dim" x="460" y="402" font-size="11">Orchestrator tier</text>
+  <rect class="panel" x="460" y="406" width="200" height="26" rx="6" stroke="#252a34"/>
+  <text class="fg" x="472" y="424">versatile ▾</text>
+
+  <text class="dim" x="460" y="498" font-size="11">Refinement rounds</text>
+  <rect class="panel" x="460" y="502" width="120" height="26" rx="6" stroke="#252a34"/>
+  <text class="fg" x="472" y="520">2</text>
+
+  <!-- Save / Revert -->
+  <rect class="accent" x="20" y="544" width="60" height="28" rx="6"/>
+  <text fill="#ffffff" x="38" y="562" font-weight="600">Save</text>
+  <rect class="panel" x="86" y="544" width="68" height="28" rx="6" stroke="#252a34"/>
+  <text class="fg" x="100" y="562">Revert</text>
+  <text class="success" x="164" y="562" font-size="11">Saved 3 changes.</text>
+
+  <!-- ── Section 3: Live test ─────────────────────────── -->
+  <text class="h3" x="20" y="600">Live test</text>
+
+  <!-- Prompt textarea -->
+  <rect class="alt" x="20" y="608" width="540" height="48" rx="6" stroke="#252a34"/>
+  <text class="dim mono" x="32" y="626" font-size="11">Compare Python, Rust, and Go for a high-throughput web</text>
+  <text class="dim mono" x="32" y="642" font-size="11">service. Cover concurrency, ecosystem, and deployment.</text>
+
+  <!-- Stop button (running) -->
+  <rect class="panel" x="572" y="608" width="60" height="28" rx="6" stroke="#252a34"/>
+  <text class="fg" x="590" y="626">■ Stop</text>
+  <rect class="panel" x="638" y="608" width="60" height="28" rx="6" stroke="#252a34"/>
+  <text class="dim" x="652" y="626">Clear</text>
+  <text class="dim" x="708" y="626" font-size="11">Streaming…
+    <animate attributeName="opacity" values="0.4;1;0.4" dur="1.4s" repeatCount="indefinite"/>
+  </text>
+
+  <!-- Live worker cards (3 cards row) -->
+  <text class="label" x="20" y="680">WORKERS</text>
+
+  <!-- Worker 1 — done -->
+  <rect class="panel" x="20" y="690" width="170" height="56" rx="8" stroke="#252a34"/>
+  <rect fill="#5fd18f" x="20" y="690" width="3" height="56" rx="2"/>
+  <text class="fg" x="34" y="708" font-weight="600" font-size="11">Worker 1</text>
+  <text class="success" x="180" y="708" text-anchor="end" font-size="9">DONE</text>
+  <text class="dim mono" x="34" y="722" font-size="10">tier.fast · round 2</text>
+  <text class="fg" x="34" y="738" font-size="10">1,284 chars</text>
+
+  <!-- Worker 2 — refining (animated) -->
+  <rect class="panel" x="200" y="690" width="170" height="56" rx="8" stroke="#7c9cff">
+    <animate attributeName="stroke-opacity" values="0.4;1;0.4" dur="1.6s" repeatCount="indefinite"/>
+  </rect>
+  <rect fill="#7c9cff" x="200" y="690" width="3" height="56" rx="2">
+    <animate attributeName="opacity" values="0.5;1;0.5" dur="1.6s" repeatCount="indefinite"/>
+  </rect>
+  <text class="fg" x="214" y="708" font-weight="600" font-size="11">Worker 2</text>
+  <text class="accent" x="360" y="708" text-anchor="end" font-size="9">REFINING</text>
+  <text class="dim mono" x="214" y="722" font-size="10">tier.fast · round 2</text>
+  <text class="fg" x="214" y="738" font-size="10">streaming…</text>
+
+  <!-- Worker 3 — done -->
+  <rect class="panel" x="380" y="690" width="170" height="56" rx="8" stroke="#252a34"/>
+  <rect fill="#5fd18f" x="380" y="690" width="3" height="56" rx="2"/>
+  <text class="fg" x="394" y="708" font-weight="600" font-size="11">Worker 3</text>
+  <text class="success" x="540" y="708" text-anchor="end" font-size="9">DONE</text>
+  <text class="dim mono" x="394" y="722" font-size="10">tier.fast · round 2</text>
+  <text class="fg" x="394" y="738" font-size="10">982 chars</text>
+
+  <!-- Event log (right column) -->
+  <text class="label" x="572" y="680">EVENT TIMELINE</text>
+  <rect class="alt" x="572" y="690" width="308" height="56" rx="8" stroke="#252a34"/>
+  <text class="dim mono" x="582" y="704" font-size="9">0.21s  <tspan class="accent">plan_done</tspan>  3 subtasks</text>
+  <text class="dim mono" x="582" y="716" font-size="9">0.23s  <tspan class="accent">workers_start</tspan>  3 workers</text>
+  <text class="dim mono" x="582" y="728" font-size="9">1.84s  <tspan class="accent">worker_done</tspan>  worker 1 → 1284</text>
+  <text class="dim mono" x="582" y="740" font-size="9">2.16s  <tspan class="accent">refine_start</tspan>  round 2 of 3
+    <animate attributeName="opacity" values="1;0.4;1" dur="1.4s" repeatCount="indefinite"/>
+  </text>
+</svg>

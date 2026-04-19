@@ -6,7 +6,7 @@ Self-hosted multi-model LLM workflow. A FastAPI backend routes each chat request
 
 - **Tier routing.** Every request is classified and dispatched to a specific model tier — images go to the vision tier, code blocks to the coding tier, ambiguous questions to the Versatile MoE default. Users can override with slash commands (`/tier`, `/think`, `/solo`, `/swarm`).
 - **VRAM scheduling.** A reference-counted scheduler with LRU eviction and observed-cost tracking keeps multiple tiers co-resident on a single GPU, evicting idle models when headroom is needed.
-- **Multi-agent orchestration.** For complex prompts, the Versatile tier acts as an orchestrator, decomposing the request into 2–5 parallel subtasks run on the Fast tier, then synthesizing. Workers can call tools.
+- **Multi-agent orchestration.** For complex prompts, the Versatile tier acts as an orchestrator, decomposing the request into 2–5 parallel subtasks run on the Fast tier, then synthesizing. Workers can call tools. Two interaction modes: **independent** (classic parallel) and **collaborative** (workers see each other's drafts and refine over N rounds before synthesis). All knobs — worker count, tier, reasoning, mode, refinement rounds — are tunable globally from the admin dashboard and per-chat by elevated users without persisting.
 - **Tools + RAG + memory.** 100+ discoverable tools (web search, finance, science, data repos), per-user Qdrant RAG over uploaded documents, and memory distillation that extracts durable facts from chat history every Nth turn.
 - **Public access.** OpenAI-compatible `/v1/chat/completions` endpoint (works with Open WebUI, Cline, etc.) plus an opt-in Cloudflare Tunnel profile for HTTPS exposure without opening router ports.
 
@@ -34,21 +34,31 @@ User ──► Frontend ──► │   FastAPI         │ ──► Router + m
 
 Three GUIs ship with the stack. The chat SPA and admin dashboard are the same Preact bundle; the launcher is a separate Windows orchestrator.
 
+> The chat and admin mockups below are **animated SVGs** — GitHub renders them inline like GIFs, no binary assets required. They show the live agent step panel, worker cards transitioning through states, and the streaming event timeline as they actually appear during a multi-agent run.
+
 ### Chat (Preact SPA, `:3000`)
 
-User-facing chat at `http://localhost:3000`. The sidebar lists conversations; the header hosts the tier picker, reasoning toggle, and a **response-mode picker** (Immediate · Plan first · Clarify · Step approval · My plan). The composer has 📎 upload and 🧰 tool-picker buttons; a collapsible telemetry strip above it shows ping, tokens/sec, VRAM, RAM, and context-window fill. The "Admin" button only appears for users in `ADMIN_EMAILS`.
+User-facing chat at `http://localhost:3000`. The sidebar lists conversations; the header hosts the tier picker, reasoning toggle, **response-mode picker** (Immediate · Plan first · Clarify · Step approval · My plan), and — for users in `ADMIN_EMAILS` — a **🤝 multi-agent** pill that opens a per-chat overrides panel (workers, worker tier, orchestrator tier, reasoning, interaction mode, refinement rounds). Per-chat tweaks reset on every chat switch and never persist. The composer has 📎 upload and 🧰 tool-picker buttons; a collapsible telemetry strip above it shows ping, tokens/sec, VRAM, RAM, and context-window fill.
 
-![Chat UI mockup](docs/images/frontend-chat.svg)
+![Chat UI animated mockup](docs/images/frontend-chat.svg)
 
-Code: [`frontend/src/app.tsx`](frontend/src/app.tsx). Theme tokens in [`frontend/src/styles.css`](frontend/src/styles.css); light mode auto-engages via `prefers-color-scheme`. Response modes are steered server-side by [`backend/middleware/response_mode.py`](backend/middleware/response_mode.py).
+Code: [`frontend/src/app.tsx`](frontend/src/app.tsx). Theme tokens in [`frontend/src/styles.css`](frontend/src/styles.css); light mode auto-engages via `prefers-color-scheme`. Response modes are steered server-side by [`backend/middleware/response_mode.py`](backend/middleware/response_mode.py); the multi-agent panel posts `multi_agent_options` on `/v1/chat/completions` (handled in [`backend/orchestrator.py`](backend/orchestrator.py)).
 
 ### Admin dashboard (`#/admin`)
 
-Same bundle, gated by the `ADMIN_EMAILS` env var. Tabs for live usage (requests, tokens, latency, error sparklines), by-tier and by-user breakdowns, users, VRAM residency, and editable config (models · router · VRAM · auth · tools). Saves write back to `config/*.yaml` atomically and hot-reload without a restart.
+Same bundle, gated by the `ADMIN_EMAILS` env var. Tabs for live usage (requests, tokens, latency, error sparklines), by-tier and by-user breakdowns, users, VRAM residency, and editable config (models · router · **multi-agent** · VRAM · auth · tools). Saves write back to `config/*.yaml` atomically and hot-reload without a restart.
 
 ![Admin dashboard mockup](docs/images/admin-dashboard.svg)
 
 Code: [`frontend/src/admin.tsx`](frontend/src/admin.tsx) · [`backend/admin.py`](backend/admin.py) · [`backend/metrics.py`](backend/metrics.py).
+
+#### Multi-agent tab
+
+Dedicated tab for visualizing and tuning the orchestrator → workers → synthesis pipeline. Three sections: a **workflow diagram** rendered live from the unsaved draft (so admins can preview a tweak before saving), the **defaults form** (min/max workers, worker + orchestrator tier dropdowns, reasoning, interaction mode, refinement rounds), and a **live test runner** that submits a prompt with the draft settings and animates one card per worker as it runs — pending → running → done/error, with `round N` tags during collaborative refinement. A relative-timestamped event log streams every plan / workers_start / refine_start / worker_done / synthesis SSE event side-by-side. Doesn't pollute any conversation.
+
+![Admin Multi-agent tab animated mockup](docs/images/admin-multi-agent.svg)
+
+Code: `MultiAgentTab` in [`frontend/src/admin.tsx`](frontend/src/admin.tsx); orchestrator collaborative mode in [`backend/orchestrator.py`](backend/orchestrator.py); per-request schema in [`backend/schemas.py`](backend/schemas.py) (`MultiAgentOptions`).
 
 ### Windows launcher (`LocalAIStack.exe`)
 
