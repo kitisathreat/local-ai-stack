@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 320" font-family="Segoe UI, -apple-system, sans-serif">
+  <defs>
+    <style><![CDATA[
+      .shadow { fill: rgba(0,0,0,0.35); }
+      .chrome { fill: #1a1a1a; }
+      .body { fill: #0f0f0f; }
+      .fg { fill: #e5e7eb; }
+      .dim { fill: #8b94a6; }
+      .accent { fill: #7c9cff; }
+    ]]></style>
+  </defs>
+
+  <!-- Backdrop (to show the window sits on something) -->
+  <rect width="520" height="320" fill="#202328"/>
+
+  <!-- Drop shadow -->
+  <rect class="shadow" x="50" y="56" width="420" height="220" rx="8"/>
+
+  <!-- Window body -->
+  <rect class="body" x="46" y="50" width="420" height="220" rx="6"/>
+
+  <!-- Title bar -->
+  <rect class="chrome" x="46" y="50" width="420" height="28" rx="6"/>
+  <rect class="chrome" x="46" y="70" width="420" height="8"/>
+  <text class="dim" x="60" y="68" font-size="11">LocalAIStack</text>
+
+  <!-- Traffic-light-ish Windows controls -->
+  <text class="dim" x="436" y="68" font-size="12">—</text>
+  <text class="dim" x="450" y="68" font-size="12">✕</text>
+
+  <!-- Title -->
+  <text class="fg" x="66" y="114" font-size="15" font-weight="600">LocalAIStack</text>
+
+  <!-- Status -->
+  <text class="fg" x="66" y="146" font-size="12">Bringing up services…</text>
+
+  <!-- Progress bar track -->
+  <rect fill="#141820" x="66" y="162" width="380" height="8" rx="4" stroke="#252a34"/>
+  <!-- Progress fill (indeterminate-ish, ~65%) -->
+  <rect class="accent" x="66" y="162" width="246" height="8" rx="4"/>
+
+  <!-- Detail label -->
+  <text class="dim" x="66" y="196" font-size="11">docker compose up -d backend ollama qdrant searxng</text>
+
+  <!-- View logs link -->
+  <text class="accent" x="66" y="244" font-size="11">View logs</text>
+  <line x1="66" y1="247" x2="114" y2="247" stroke="#7c9cff" stroke-width="1"/>
+</svg>

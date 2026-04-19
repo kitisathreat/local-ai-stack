@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <style><![CDATA[
+      .bg { fill: #0e1114; }
+      .panel { fill: #1a1f28; }
+      .alt { fill: #141820; }
+      .border { stroke: #252a34; stroke-width: 1; fill: none; }
+      .fg { fill: #e5e7eb; }
+      .dim { fill: #8b94a6; }
+      .accent { fill: #7c9cff; }
+      .accent-dim { fill: #3d5bbf; }
+      .sep { stroke: #252a34; stroke-width: 1; }
+      text { font-size: 12px; }
+      .title { font-size: 13px; font-weight: 600; fill: #e5e7eb; }
+      .meta { font-size: 10px; fill: #8b94a6; }
+      .chip { fill: #1a1f28; stroke: #252a34; }
+    ]]></style>
+  </defs>
+
+  <!-- Root background -->
+  <rect class="bg" width="900" height="520"/>
+
+  <!-- ── Sidebar ──────────────────────────────────────────── -->
+  <rect class="alt" x="0" y="0" width="240" height="520"/>
+  <line class="sep" x1="240" y1="0" x2="240" y2="520"/>
+
+  <!-- Sidebar header -->
+  <text class="title" x="20" y="30">Local AI Stack</text>
+  <rect class="chip" x="180" y="16" width="20" height="20" rx="4"/>
+  <text class="dim" x="187" y="30">⚙</text>
+  <rect class="chip" x="205" y="16" width="20" height="20" rx="4"/>
+  <text class="fg" x="212" y="30">+</text>
+  <line class="sep" x1="0" y1="54" x2="240" y2="54"/>
+
+  <!-- Conversation list -->
+  <rect class="panel" x="10" y="66" width="220" height="30" rx="6"/>
+  <text class="fg" x="20" y="85">VRAM scheduler tuning</text>
+
+  <text class="dim" x="20" y="115">Rewrite middleware pipeline</text>
+  <text class="dim" x="20" y="140">Distill memory prompt</text>
+  <text class="dim" x="20" y="165">Compose tier overrides</text>
+  <text class="dim" x="20" y="190">Debug SSE backpressure</text>
+  <text class="dim" x="20" y="215">Qdrant upload flow</text>
+  <text class="dim" x="20" y="240">Roadmap triage</text>
+
+  <!-- Sidebar footer -->
+  <line class="sep" x1="0" y1="490" x2="240" y2="490"/>
+  <text class="dim" x="20" y="508">you@example.com · <tspan fill="#7c9cff">sign out</tspan></text>
+
+  <!-- ── Header ───────────────────────────────────────────── -->
+  <line class="sep" x1="240" y1="54" x2="900" y2="54"/>
+
+  <!-- Tier picker -->
+  <rect class="alt" x="260" y="16" width="340" height="28" rx="8" stroke="#252a34"/>
+  <rect class="panel" x="266" y="20" width="74" height="20" rx="5"/>
+  <text class="fg" x="278" y="34" font-size="11">Versatile</text>
+  <text class="dim" x="352" y="34" font-size="11">Fast</text>
+  <text class="dim" x="392" y="34" font-size="11">Coding</text>
+  <text class="dim" x="438" y="34" font-size="11">Vision</text>
+  <text class="dim" x="486" y="34" font-size="11">Highest</text>
+
+  <!-- Reasoning toggle -->
+  <rect class="alt" x="612" y="16" width="138" height="28" rx="6" stroke="#252a34"/>
+  <text class="dim" x="624" y="34" font-size="11">🧠 reasoning: auto ▾</text>
+
+  <!-- Admin button + email -->
+  <rect class="panel" x="760" y="16" width="50" height="28" rx="6" stroke="#252a34"/>
+  <text class="fg" x="770" y="34" font-size="11">Admin</text>
+  <text class="dim" x="820" y="34" font-size="11">you@…</text>
+
+  <!-- ── Chat body ────────────────────────────────────────── -->
+  <!-- Assistant message -->
+  <text class="meta" x="280" y="84">versatile · reasoning</text>
+  <rect class="panel" x="280" y="92" width="440" height="88" rx="10" stroke="#252a34"/>
+  <text class="fg" x="296" y="114">The scheduler evicts the LRU unpinned</text>
+  <text class="fg" x="296" y="132">tier when a reservation would exceed</text>
+  <text class="fg" x="296" y="150">total_vram_gb − headroom_gb. Pinned</text>
+  <text class="fg" x="296" y="168">models (vision) are never evicted.</text>
+
+  <!-- User message (right-aligned, blue) -->
+  <rect class="accent-dim" x="420" y="200" width="300" height="48" rx="10"/>
+  <text fill="#ffffff" x="436" y="222">How does eviction decide which tier to</text>
+  <text fill="#ffffff" x="436" y="240">drop when a new one comes in?</text>
+
+  <!-- Assistant message 2 -->
+  <text class="meta" x="280" y="278">versatile</text>
+  <rect class="panel" x="280" y="286" width="500" height="60" rx="10" stroke="#252a34"/>
+  <text class="fg" x="296" y="308">refcount 0 + past min_residency_sec +</text>
+  <text class="fg" x="296" y="326">not pinned → candidate. Ties broken LRU.</text>
+
+  <!-- Agent panel -->
+  <rect class="alt" x="280" y="362" width="500" height="70" rx="8" stroke="#252a34"/>
+  <circle class="accent" cx="296" cy="380" r="4"/>
+  <text class="fg" x="308" y="384" font-size="11">Planning subtasks</text>
+  <circle fill="#5fd18f" cx="296" cy="400" r="4"/>
+  <text class="fg" x="308" y="404" font-size="11">Spawning parallel workers (3)</text>
+  <circle class="dim" cx="296" cy="420" r="4"/>
+  <text class="dim" x="308" y="424" font-size="11">Synthesizing</text>
+
+  <!-- ── Composer ─────────────────────────────────────────── -->
+  <line class="sep" x1="240" y1="452" x2="900" y2="452"/>
+  <rect class="alt" x="260" y="466" width="540" height="40" rx="8" stroke="#252a34"/>
+  <text class="dim" x="276" y="490">Message Versatile…</text>
+  <rect class="accent" x="812" y="466" width="72" height="40" rx="8"/>
+  <text fill="#ffffff" x="834" y="490" font-weight="600">Send</text>
+</svg>
