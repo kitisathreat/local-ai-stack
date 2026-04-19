@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from pathlib import Path
 
-from . import auth, db, memory, rag
+from . import admin, auth, db, memory, metrics, rag
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
@@ -145,6 +145,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
+app.include_router(admin.router)
 
 # CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
 # Cloudflare Tunnel hostname is set via setup-cloudflared.sh. Local dev
@@ -297,14 +298,59 @@ async def chat_completions(
     tier = state.config.models.tiers[decision.tier_name]
     client = state.ollama if tier.backend == "ollama" else state.llama_cpp
 
+    started = time.time()
+
+    async def _wrap(inner: AsyncIterator[str]) -> AsyncIterator[str]:
+        """Wrap an SSE producer to record a usage event on stream completion.
+
+        Counts tokens via a whitespace-split proxy — cheap, close enough for
+        dashboard trends, and avoids a second tokenizer pass on the hot path.
+        """
+        out_text: list[str] = []
+        err: str | None = None
+        try:
+            async for chunk in inner:
+                # OpenAI-style data lines carry `"content": "..."` snippets;
+                # we only need an approximate output size, not byte-accurate.
+                if chunk.startswith("data:") and '"content"' in chunk:
+                    try:
+                        payload = json.loads(chunk[5:].strip())
+                        delta = (payload.get("choices") or [{}])[0].get("delta") or {}
+                        t = delta.get("content")
+                        if isinstance(t, str):
+                            out_text.append(t)
+                    except Exception:
+                        pass
+                yield chunk
+        except Exception as e:
+            err = str(e)
+            raise
+        finally:
+            full = "".join(out_text)
+            tokens_out = max(1, len(full.split())) if full else 0
+            prompt_words = 0
+            for m in req.messages:
+                if isinstance(m.content, str):
+                    prompt_words += len(m.content.split())
+            metrics.record_event_bg(
+                user_id=user["id"] if user else None,
+                tier=decision.tier_name,
+                think=decision.think,
+                multi_agent=decision.multi_agent,
+                tokens_in=prompt_words,
+                tokens_out=tokens_out,
+                latency_ms=int((time.time() - started) * 1000),
+                error=err,
+            )
+
     if decision.multi_agent:
         return StreamingResponse(
-            _multi_agent_sse(req, decision),
+            _wrap(_multi_agent_sse(req, decision)),
             media_type="text/event-stream",
         )
 
     return StreamingResponse(
-        _single_agent_sse(req, decision, client, tier, user=user),
+        _wrap(_single_agent_sse(req, decision, client, tier, user=user)),
         media_type="text/event-stream",
     )
 

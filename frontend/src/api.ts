@@ -113,6 +113,143 @@ export const api = {
   deleteMemory: (id: number) => j<{ ok: boolean }>(`/api/memory/${id}`, { method: "DELETE" }),
 };
 
+// ── Admin dashboard ────────────────────────────────────────────────────
+
+export interface AdminOverview {
+  window_seconds: number;
+  requests: number;
+  tokens_in: number;
+  tokens_out: number;
+  latency_ms_avg: number;
+  errors: number;
+  active_users: number;
+  total_users: number;
+  total_conversations: number;
+  total_messages: number;
+  total_rag_docs: number;
+  total_rag_bytes: number;
+  total_memories: number;
+}
+
+export interface AdminSeries {
+  start: number;
+  end: number;
+  bucket_seconds: number;
+  labels: number[];
+  requests: number[];
+  tokens_in: number[];
+  tokens_out: number[];
+  latency_ms_avg: number[];
+  errors: number[];
+}
+
+export interface AdminTierStat {
+  tier: string;
+  requests: number;
+  tokens_in: number;
+  tokens_out: number;
+  latency_ms_avg: number;
+}
+
+export interface AdminUserStat {
+  id: number;
+  email: string;
+  created_at: number;
+  last_login_at: number | null;
+  n: number;
+  tin: number;
+  tout: number;
+  convs: number;
+}
+
+export interface AdminUser {
+  id: number;
+  email: string;
+  created_at: number;
+  last_login_at: number | null;
+  conversations: number;
+  memories: number;
+  rag_docs: number;
+  is_admin: boolean;
+}
+
+export interface AdminConfigSnapshot {
+  vram: {
+    total_vram_gb: number;
+    headroom_gb: number;
+    poll_interval_sec: number;
+    eviction: {
+      policy: string;
+      min_residency_sec: number;
+      pin_orchestrator: boolean;
+      pin_vision: boolean;
+    };
+    ollama: { keep_alive_default: string; keep_alive_pinned: number };
+  };
+  router: {
+    auto_thinking_signals: {
+      enable_when_any: Array<{ regex: string }>;
+      disable_when_any: Array<{ regex: string }>;
+    };
+    multi_agent: {
+      max_workers: number;
+      worker_tier: string;
+      orchestrator_tier: string;
+    };
+  };
+  auth: {
+    magic_link_expiry_minutes: number;
+    allowed_email_domains: string[];
+    rate_limits: {
+      requests_per_hour_per_email: number;
+      requests_per_hour_per_ip: number;
+    };
+    session: { cookie_ttl_days: number };
+  };
+  tiers: Record<string, {
+    name: string;
+    description: string;
+    backend: string;
+    model_tag: string;
+    context_window: number;
+    think_default: boolean;
+    vram_estimate_gb: number;
+    params: Record<string, any>;
+  }>;
+}
+
+export const adminApi = {
+  me: () => j<{ email: string; is_admin: boolean; admin_configured: boolean }>("/api/admin/me"),
+  overview: (window = 86400) => j<AdminOverview>(`/api/admin/overview?window=${window}`),
+  usage: (window = 86400, buckets = 48) =>
+    j<AdminSeries>(`/api/admin/usage?window=${window}&buckets=${buckets}`),
+  byTier: (window = 86400) =>
+    j<{ data: AdminTierStat[] }>(`/api/admin/usage/by_tier?window=${window}`),
+  byUser: (window = 86400, limit = 50) =>
+    j<{ data: AdminUserStat[] }>(`/api/admin/usage/by_user?window=${window}&limit=${limit}`),
+  errors: (limit = 25) =>
+    j<{ data: Array<{ ts: number; tier: string; user_id: number | null; error: string }> }>(
+      `/api/admin/errors?limit=${limit}`,
+    ),
+  users: () => j<{ data: AdminUser[] }>("/api/admin/users"),
+  deleteUser: (id: number) =>
+    j<{ ok: boolean }>(`/api/admin/users/${id}`, { method: "DELETE" }),
+  vram: () => j<any>("/api/admin/vram"),
+  tools: () => j<{ data: Array<{ name: string; description: string; default_enabled: boolean; enabled: boolean; requires_service: string | null }> }>("/api/admin/tools"),
+  toggleTool: (name: string, enabled: boolean) =>
+    j<{ ok: boolean }>(`/api/admin/tools/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }),
+  getConfig: () => j<AdminConfigSnapshot>("/api/admin/config"),
+  patchConfig: (patch: Partial<AdminConfigSnapshot>) =>
+    j<{ ok: boolean; changes: string[] }>("/api/admin/config", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  reload: () => j<{ ok: boolean }>("/api/admin/reload", { method: "POST" }),
+};
+
 // ── SSE chat stream ────────────────────────────────────────────────────
 
 export async function* streamChat(params: {
