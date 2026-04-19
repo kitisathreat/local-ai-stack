@@ -141,3 +141,26 @@ jobs:
           } else {
             Write-Host "No ci_results.txt found." -ForegroundColor Yellow
           }
+
+      - name: Upload test log as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-windows
+          path: tests/ci_results.txt
+          if-no-files-found: warn
+
+      - name: Post failing tests to PR comment
+        if: failure() && github.event_name == 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (-not (Test-Path tests/ci_results.txt)) { exit 0 }
+          $fails = Select-String -Path tests/ci_results.txt -Pattern '^\s*\[FAIL\]'
+          if (-not $fails) { exit 0 }
+          $body = "### Windows CI test failures (run ${{ github.run_id }})`n`n``````text`n"
+          $body += ($fails | ForEach-Object { $_.Line }) -join "`n"
+          $body += "`n``````"
+          $body | Set-Content -Path fail_comment.md -Encoding UTF8
+          gh pr comment ${{ github.event.pull_request.number }} --body-file fail_comment.md
