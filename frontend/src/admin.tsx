@@ -430,12 +430,51 @@ function RouterConfigTab() {
       {listEditor("disable_when_any")}
 
       <h3 class="admin-h3">Multi-agent</h3>
-      <Field label="Max workers" type="number" value={draft.multi_agent.max_workers}
-             onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, max_workers: v } })} />
-      <Field label="Worker tier" value={draft.multi_agent.worker_tier}
-             onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, worker_tier: v } })} />
-      <Field label="Orchestrator tier" value={draft.multi_agent.orchestrator_tier}
-             onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, orchestrator_tier: v } })} />
+      <p class="admin-dim" style="margin-top:-0.4rem; font-size:0.85rem;">
+        Defaults that apply when a chat doesn't override them. Admins can
+        also tweak these per chat from the chat header (won't persist).
+      </p>
+      <div class="admin-form-grid">
+        <Field label="Min workers" type="number" value={draft.multi_agent.min_workers}
+               hint="Lower bound the orchestrator targets when decomposing."
+               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, min_workers: v } })} />
+        <Field label="Max workers" type="number" value={draft.multi_agent.max_workers}
+               hint="Hard cap on parallel subtasks (1..8)."
+               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, max_workers: v } })} />
+        <Field label="Worker tier (size & quantization)"
+               value={draft.multi_agent.worker_tier}
+               hint='e.g. "fast" — each tier embeds model size + quantization.'
+               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, worker_tier: v } })} />
+        <Field label="Orchestrator tier" value={draft.multi_agent.orchestrator_tier}
+               hint="Plans subtasks and synthesizes the final answer."
+               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, orchestrator_tier: v } })} />
+        <Bool label="Workers reason (think mode) by default"
+              value={!!draft.multi_agent.reasoning_workers}
+              onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, reasoning_workers: v } })} />
+        <label class="admin-field">
+          <span>Interaction mode</span>
+          <select value={draft.multi_agent.interaction_mode || "independent"}
+                  onChange={(e) => setDraft({
+                    ...draft,
+                    multi_agent: {
+                      ...draft.multi_agent,
+                      interaction_mode: (e.target as HTMLSelectElement).value,
+                    },
+                  })}>
+            <option value="independent">Independent (parallel only)</option>
+            <option value="collaborative">Collaborative (peers refine)</option>
+          </select>
+          <small class="admin-dim">
+            Collaborative mode lets workers see each other's drafts and refine
+            their own answers between rounds before synthesis. Higher rigor,
+            higher cost.
+          </small>
+        </label>
+        <Field label="Refinement rounds (collaborative only)" type="number"
+               value={draft.multi_agent.interaction_rounds}
+               hint="Extra rounds where workers cross-read drafts (0..4)."
+               onChange={(v) => setDraft({ ...draft, multi_agent: { ...draft.multi_agent, interaction_rounds: v } })} />
+      </div>
 
       <div class="admin-actions">
         <button class="primary" disabled={busy} onClick={() => save({ router: draft })}>Save</button>

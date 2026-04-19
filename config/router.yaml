@@ -30,6 +30,7 @@ multi_agent:
     - min_question_marks: 3
     - estimated_output_tokens_gt: 8000
   max_workers: 3
+  min_workers: 2
   worker_tier: fast
   worker_overrides:
     think: false
@@ -40,6 +41,16 @@ multi_agent:
   synthesis_overrides:
     think: true
     temperature: 0.6
+  # Workers reason (think mode) on by default? Off keeps Fast workers fast;
+  # admins can flip it on globally, or users can opt in per-chat from the
+  # multi-agent panel.
+  reasoning_workers: false
+  # `independent`: classic decompose → parallel → synthesize.
+  # `collaborative`: after the initial round, every worker sees its peers'
+  # drafts and revises its answer for `interaction_rounds` extra rounds.
+  # Higher rigor, higher cost.
+  interaction_mode: independent
+  interaction_rounds: 1
   # If a subtask's prompt matches one of these, route it to the specialist
   # tier instead of the default worker tier.
   specialist_routes:

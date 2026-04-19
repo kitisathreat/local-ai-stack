@@ -32,6 +32,25 @@ class ChatMessage(BaseModel):
     tool_call_id: str | None = None
 
 
+class MultiAgentOptions(BaseModel):
+    """Per-chat overrides for the multi-agent workflow. Populated by the
+    frontend when an elevated user tweaks the per-chat panel. All fields are
+    optional; unset fields fall through to the server-side defaults from
+    `router.multi_agent` in config. These overrides live only for the
+    duration of the request — they never persist to the YAML config."""
+
+    enabled: bool | None = None            # True/False to force multi-agent on or off
+    num_workers: int | None = None         # cap on parallel subtasks (1..8)
+    worker_tier: str | None = None         # tier name (e.g. "fast", "versatile")
+    orchestrator_tier: str | None = None   # tier name
+    reasoning_workers: bool | None = None  # reasoning on for workers
+    # "independent" | "collaborative". In collaborative mode, workers see each
+    # other's drafts and refine their answers for `interaction_rounds` rounds
+    # before synthesis.
+    interaction_mode: str | None = None
+    interaction_rounds: int | None = None  # 0..4
+
+
 class ChatRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
@@ -44,6 +63,7 @@ class ChatRequest(BaseModel):
     # Extensions beyond the OpenAI shape
     think: bool | None = None              # explicit user override for reasoning
     multi_agent: bool | None = None        # explicit user override for orchestration
+    multi_agent_options: MultiAgentOptions | None = None  # per-chat tweaks
     user_id: str | None = None             # injected by auth middleware
 
     # Pass-through for tool calls (Phase 5)
@@ -117,6 +137,7 @@ class AgentEvent(BaseModel):
     type: Literal[
         "agent.plan_start", "agent.plan_done",
         "agent.workers_start", "agent.worker_progress", "agent.worker_done",
+        "agent.refine_start",
         "agent.synthesis_start", "agent.synthesis_done",
         "route.decision", "vram.eviction", "token", "error",
     ]

@@ -203,8 +203,12 @@ export interface AdminConfigSnapshot {
     };
     multi_agent: {
       max_workers: number;
+      min_workers: number;
       worker_tier: string;
       orchestrator_tier: string;
+      reasoning_workers: boolean;
+      interaction_mode: "independent" | "collaborative" | string;
+      interaction_rounds: number;
     };
   };
   auth: {
@@ -264,11 +268,24 @@ export const adminApi = {
 
 export type ResponseMode = "immediate" | "plan" | "clarify" | "approval" | "manual_plan";
 
+export type InteractionMode = "independent" | "collaborative";
+
+export interface MultiAgentOptions {
+  enabled?: boolean | null;
+  num_workers?: number | null;
+  worker_tier?: string | null;
+  orchestrator_tier?: string | null;
+  reasoning_workers?: boolean | null;
+  interaction_mode?: InteractionMode | null;
+  interaction_rounds?: number | null;
+}
+
 export async function* streamChat(params: {
   model: string;
   messages: Message[];
   think?: boolean | null;
   multi_agent?: boolean | null;
+  multi_agent_options?: MultiAgentOptions | null;
   tools?: Array<Record<string, unknown>> | null;
   response_mode?: ResponseMode | null;
   plan_text?: string | null;
@@ -281,6 +298,14 @@ export async function* streamChat(params: {
     think: params.think ?? null,
     multi_agent: params.multi_agent ?? null,
   };
+  if (params.multi_agent_options) {
+    // Trim null/undefined fields so the server gets a clean partial.
+    const opt: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(params.multi_agent_options)) {
+      if (v !== null && v !== undefined) opt[k] = v;
+    }
+    if (Object.keys(opt).length) body.multi_agent_options = opt;
+  }
   if (params.tools && params.tools.length) body.tools = params.tools;
   if (params.response_mode && params.response_mode !== "immediate") {
     body.response_mode = params.response_mode;
