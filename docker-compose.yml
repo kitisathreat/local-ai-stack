@@ -17,6 +17,11 @@ services:
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3000}
       # ── Auth secrets — set via .env.local (see .env.example) ──────────────────
       - AUTH_SECRET_KEY=${AUTH_SECRET_KEY}
+      # Optional: separate KEK for the encrypted chat-history store. When
+      # unset, history_store.py falls back to AUTH_SECRET_KEY. Set this
+      # explicitly if you want to rotate session keys without invalidating
+      # existing encrypted history files.
+      - HISTORY_SECRET_KEY=${HISTORY_SECRET_KEY:-}
       - AUTH_EMAIL_FROM=${AUTH_EMAIL_FROM:-noreply@localaistack.local}
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}

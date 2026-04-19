@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from pathlib import Path
 
-from . import admin, auth, db, memory, metrics, rag
+from . import admin, auth, db, history_store, memory, metrics, rag
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
@@ -569,6 +569,35 @@ async def _finalize_conversation(
             tier=decision.tier_name, think=decision.think,
         )
 
+        # Per-chat opt-out: when `memory_enabled` is false on this conv,
+        # skip both the encrypted-history append AND distillation. SQLite
+        # persistence above still happens so the chat stays navigable —
+        # the toggle is about *contribution to long-term memory*, not
+        # about hiding the chat transcript from the user.
+        if not conv.get("memory_enabled", True):
+            return
+
+        ts = time.time()
+        records = []
+        if user_text:
+            records.append({
+                "conv_id": req.conversation_id,
+                "role": "user",
+                "content": user_text,
+                "tier": decision.tier_name,
+                "think": False,
+                "ts": ts,
+            })
+        records.append({
+            "conv_id": req.conversation_id,
+            "role": "assistant",
+            "content": assistant_text,
+            "tier": decision.tier_name,
+            "think": decision.think,
+            "ts": ts,
+        })
+        await history_store.append_many(user["id"], records)
+
         # Distill every 5th assistant turn in a conversation to avoid
         # hammering the Versatile tier.
         msgs = await db.list_messages(req.conversation_id)
@@ -705,6 +734,8 @@ async def create_chat(
         user["id"],
         title=body.title or "New chat",
         tier=body.tier,
+        # Default to enabled when the client doesn't say otherwise.
+        memory_enabled=True if body.memory_enabled is None else body.memory_enabled,
     )
     return ConversationSummary(**conv)
 
@@ -727,7 +758,11 @@ async def update_chat(
     body: ConversationUpdate,
     user: dict = Depends(auth.current_user),
 ):
-    ok = await db.update_conversation(conv_id, user["id"], title=body.title, tier=body.tier)
+    ok = await db.update_conversation(
+        conv_id, user["id"],
+        title=body.title, tier=body.tier,
+        memory_enabled=body.memory_enabled,
+    )
     if not ok:
         raise HTTPException(404, "Conversation not found")
     conv = await db.get_conversation(conv_id, user["id"])

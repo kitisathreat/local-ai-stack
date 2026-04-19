@@ -147,6 +147,10 @@ class ConversationSummary(BaseModel):
     id: int
     title: str
     tier: str | None = None
+    # Default True on the wire for backwards-compat with older clients.
+    # When False, this chat is excluded from memory distillation and the
+    # encrypted per-user history log.
+    memory_enabled: bool = True
     created_at: float
     updated_at: float
 
@@ -170,6 +174,7 @@ class ConversationWithMessages(BaseModel):
     id: int
     title: str
     tier: str | None = None
+    memory_enabled: bool = True
     created_at: float
     updated_at: float
     messages: list[MessageOut]
@@ -178,3 +183,4 @@ class ConversationWithMessages(BaseModel):
 class ConversationUpdate(BaseModel):
     title: str | None = None
     tier: str | None = None
+    memory_enabled: bool | None = None

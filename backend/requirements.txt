@@ -16,3 +16,7 @@ aiosqlite==0.20.0
 # so we don't need qdrant-client. pypdf handles PDF extraction.
 pypdf==5.1.0
 python-multipart==0.0.17   # for file upload endpoints
+
+# Per-user encrypted chat-history store (Phase 6):
+# AES-256-GCM + HKDF-SHA256 over AUTH_SECRET_KEY (or HISTORY_SECRET_KEY).
+cryptography==43.0.3
