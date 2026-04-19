@@ -123,24 +123,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Proof-of-life comment (diagnostic)
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_ID: ${{ github.run_id }}
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          echo "Testing gh pr comment from bash shell on windows-latest"
-          echo "PR=$PR_NUMBER RUN=$RUN_ID SHA=$COMMIT_SHA"
-          which gh || echo "no gh in PATH"
-          gh --version || echo "gh --version failed"
-          echo "### CI diagnostic (run $RUN_ID, commit ${COMMIT_SHA:0:7})" > diag.md
-          echo "bash shell is working on windows-latest." >> diag.md
-          gh pr comment "$PR_NUMBER" --body-file diag.md || echo "gh pr comment failed"
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -163,25 +145,6 @@ jobs:
           } else {
             Write-Host "No ci_results.txt found." -ForegroundColor Yellow
           }
-
-      - name: Proof-of-life POST-test comment (diagnostic)
-        if: always() && github.event_name == 'pull_request'
-        continue-on-error: true
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          echo "POST-TEST proof-of-life running"
-          echo "### POST-TEST diagnostic (run $RUN_ID)" > post_diag.md
-          echo "This step ran AFTER the test step failed. If this comment posts," >> post_diag.md
-          echo "bash-in-failure-context works. If ls shows ci_results.txt, file persists." >> post_diag.md
-          echo "" >> post_diag.md
-          echo "\`\`\`" >> post_diag.md
-          ls -la tests/ >> post_diag.md 2>&1 || echo "(ls failed)" >> post_diag.md
-          echo "\`\`\`" >> post_diag.md
-          gh pr comment "$PR_NUMBER" --body-file post_diag.md || echo "gh failed"
 
       - name: Post failing tests to PR comment
         if: always() && github.event_name == 'pull_request'
