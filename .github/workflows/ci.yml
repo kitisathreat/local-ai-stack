@@ -6,6 +6,10 @@ on:
   push:
     branches: [main, master, claude-code-integration]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   # ── Python static analysis: syntax, metadata, config consistency ─────────────
   python-tests:
@@ -152,15 +156,28 @@ jobs:
 
       - name: Post failing tests to PR comment
         if: failure() && github.event_name == 'pull_request'
+        continue-on-error: true
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if (-not (Test-Path tests/ci_results.txt)) { exit 0 }
+          if (-not (Test-Path tests/ci_results.txt)) {
+            Write-Host "ci_results.txt missing — nothing to post"
+            exit 0
+          }
           $fails = Select-String -Path tests/ci_results.txt -Pattern '^\s*\[FAIL\]'
+          Write-Host "Found $($fails.Count) failing tests"
           if (-not $fails) { exit 0 }
-          $body = "### Windows CI test failures (run ${{ github.run_id }})`n`n``````text`n"
-          $body += ($fails | ForEach-Object { $_.Line }) -join "`n"
-          $body += "`n``````"
-          $body | Set-Content -Path fail_comment.md -Encoding UTF8
+          $lines = @(
+            "### Windows CI test failures (run ${{ github.run_id }})",
+            "",
+            "``````text"
+          )
+          foreach ($f in $fails) { $lines += $f.Line }
+          $lines += "``````"
+          $body = $lines -join "`n"
+          Set-Content -Path fail_comment.md -Value $body -Encoding UTF8
+          Write-Host "---- comment body ----"
+          Write-Host $body
+          Write-Host "---- /comment body ----"
           gh pr comment ${{ github.event.pull_request.number }} --body-file fail_comment.md
