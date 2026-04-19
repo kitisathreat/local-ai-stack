@@ -58,6 +58,7 @@ from .schemas import (
     ModelsListResponse,
     TierInfo,
 )
+from .diagnostics import run_startup_diagnostics
 from .vram_scheduler import QueueFull, QueueTimeout, VRAMScheduler, VRAMExhausted
 
 
@@ -171,6 +172,21 @@ async def lifespan(app: FastAPI):
     state.orchestrator = Orchestrator(state.config, state.scheduler, clients, tools=state.tools)
 
     logger.info("Ready. Tiers: %s", list(state.config.models.tiers))
+
+    # Self-diagnostics — results go to the application log only (lai.diagnostics logger).
+    # OK results are DEBUG-level (silent at default INFO log level).
+    # WARN/FAIL results are WARNING/ERROR so operators see them in logs.
+    await run_startup_diagnostics(
+        db_path=str(db.DB_PATH),
+        cfg=state.config,
+        registry=state.tools,
+        ollama_url=default_ollama,
+        llamacpp_url=default_llama,
+        qdrant_url=os.getenv("QDRANT_URL", "http://qdrant:6333"),
+        redis_url=state.config.concurrency.redis_url,
+        searxng_url=os.getenv("SEARXNG_URL", "http://searxng:8080"),
+    )
+
     try:
         yield
     finally:
