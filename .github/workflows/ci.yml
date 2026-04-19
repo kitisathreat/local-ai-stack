@@ -164,6 +164,25 @@ jobs:
             Write-Host "No ci_results.txt found." -ForegroundColor Yellow
           }
 
+      - name: Proof-of-life POST-test comment (diagnostic)
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "POST-TEST proof-of-life running"
+          echo "### POST-TEST diagnostic (run $RUN_ID)" > post_diag.md
+          echo "This step ran AFTER the test step failed. If this comment posts," >> post_diag.md
+          echo "bash-in-failure-context works. If ls shows ci_results.txt, file persists." >> post_diag.md
+          echo "" >> post_diag.md
+          echo "\`\`\`" >> post_diag.md
+          ls -la tests/ >> post_diag.md 2>&1 || echo "(ls failed)" >> post_diag.md
+          echo "\`\`\`" >> post_diag.md
+          gh pr comment "$PR_NUMBER" --body-file post_diag.md || echo "gh failed"
+
       - name: Post failing tests to PR comment
         if: always() && github.event_name == 'pull_request'
         continue-on-error: true
