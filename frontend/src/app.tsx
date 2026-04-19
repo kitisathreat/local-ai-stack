@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import {
   api, Message, Tier, ConversationSummary, streamChat,
 } from "./api";
+import { AdminDashboard } from "./admin";
 
 /* ── Magic-link sign-in ─────────────────────────────────────────────── */
 
@@ -299,8 +300,8 @@ function splitThinking(content: string): { thinking: string | null; body: string
 /* ── Main chat view ─────────────────────────────────────────────────── */
 
 function ChatView({
-  me, tiers,
-}: { me: { email: string }; tiers: Tier[] }) {
+  me, tiers, onOpenAdmin,
+}: { me: { email: string }; tiers: Tier[]; onOpenAdmin: () => void }) {
   const [chats, setChats] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -461,6 +462,7 @@ function ChatView({
           <TierPicker tiers={tiers} activeId={tier} onPick={setTier} />
           <ReasoningToggle mode={reasoning} onChange={setReasoning} />
           <div style="flex:1" />
+          <button onClick={onOpenAdmin} title="Admin dashboard" style="font-size:0.85rem;">Admin</button>
           <div style="color:var(--fg-dim); font-size:0.85rem;">{me.email}</div>
         </header>
         <div class="chat-body" ref={scrollRef}>
@@ -495,10 +497,25 @@ function ChatView({
 
 /* ── Root ───────────────────────────────────────────────────────────── */
 
+function useHashRoute(): [string, (h: string) => void] {
+  const [hash, setHash] = useState<string>(location.hash || "");
+  useEffect(() => {
+    const on = () => setHash(location.hash || "");
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  const nav = (h: string) => {
+    location.hash = h;
+    setHash(h);
+  };
+  return [hash, nav];
+}
+
 function App() {
   const [me, setMe] = useState<null | { id: number; email: string }>(null);
   const [loaded, setLoaded] = useState(false);
   const [tiers, setTiers] = useState<Tier[]>([]);
+  const [hash, nav] = useHashRoute();
 
   useEffect(() => {
     (async () => {
@@ -517,7 +534,8 @@ function App() {
 
   if (!loaded) return <div style="padding:2rem; color:var(--fg-dim);">Loading…</div>;
   if (!me) return <SignIn onHint={() => {}} />;
-  return <ChatView me={me} tiers={tiers} />;
+  if (hash === "#/admin") return <AdminDashboard onExit={() => nav("")} />;
+  return <ChatView me={me} tiers={tiers} onOpenAdmin={() => nav("#/admin")} />;
 }
 
 render(<App />, document.getElementById("app")!);

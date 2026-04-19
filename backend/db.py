@@ -98,6 +98,25 @@ CREATE TABLE IF NOT EXISTS rag_docs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rag_user ON rag_docs(user_id, created_at DESC);
+
+-- Admin dashboard: per-request usage events. user_id is nullable so
+-- anonymous requests (no session cookie) still record for VRAM/tier stats.
+CREATE TABLE IF NOT EXISTS usage_events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ts               REAL NOT NULL,
+    tier             TEXT NOT NULL,
+    think            INTEGER NOT NULL DEFAULT 0,
+    multi_agent      INTEGER NOT NULL DEFAULT 0,
+    tokens_in        INTEGER NOT NULL DEFAULT 0,
+    tokens_out       INTEGER NOT NULL DEFAULT 0,
+    latency_ms       INTEGER NOT NULL DEFAULT 0,
+    error            TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_ts   ON usage_events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_events(user_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_tier ON usage_events(tier, ts DESC);
 """
 
 
