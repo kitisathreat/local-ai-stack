@@ -107,6 +107,32 @@ function ReasoningToggle({
   );
 }
 
+/* ── Memory toggle (per-chat) ──────────────────────────────────────────
+   When ON (default), the current conversation's messages are appended to
+   the user's encrypted chat-history file and are eligible for memory
+   distillation. When OFF, neither happens for this conversation — the
+   transcript still persists in SQLite so the chat stays navigable. */
+function MemoryToggle({
+  enabled, busy, onToggle,
+}: { enabled: boolean; busy: boolean; onToggle: () => void }) {
+  const label = enabled ? "memory: on" : "memory: off";
+  const title = enabled
+    ? "This chat contributes to your long-term memory and encrypted history. Click to disable for this chat."
+    : "This chat is excluded from long-term memory and the encrypted history log. Click to enable.";
+  return (
+    <button
+      class={"memory-toggle" + (enabled ? " on" : " off")}
+      onClick={onToggle}
+      disabled={busy}
+      title={title}
+      aria-pressed={enabled}
+    >
+      <span class="memory-dot" />
+      <span>💾 {label}</span>
+    </button>
+  );
+}
+
 /* ── Response-mode picker ───────────────────────────────────────────── */
 
 const RESPONSE_MODES: Array<{ id: ResponseMode; label: string; hint: string; icon: string }> = [
@@ -745,6 +771,10 @@ function ChatView({
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [tier, setTier] = useState<string>("tier.versatile");
   const [reasoning, setReasoning] = useState<"auto" | "on" | "off">("auto");
+  // Per-chat memory contribution toggle. Mirrors the active chat's
+  // server-side `memory_enabled` flag; defaults true for brand-new chats.
+  const [memoryEnabled, setMemoryEnabled] = useState<boolean>(true);
+  const [memoryBusy, setMemoryBusy] = useState<boolean>(false);
   const [draft, setDraft] = useState<string>("");
   const [sending, setSending] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -852,15 +882,45 @@ function ChatView({
       const c = await api.getChat(id);
       setMessages(c.messages);
       if (c.tier) setTier(c.tier.startsWith("tier.") ? c.tier : `tier.${c.tier}`);
+      setMemoryEnabled(c.memory_enabled !== false);
     } catch (e) { console.error(e); }
   }
 
   async function newChat() {
-    const c = await api.createChat("New chat", tier);
+    const c = await api.createChat("New chat", tier, true);
     setChats((prev) => [c, ...prev]);
     setActiveId(c.id);
     setMessages([]);
     setMaOptions({ ...DEFAULT_MULTI_AGENT_OPTIONS });
+    setMemoryEnabled(true);
+  }
+
+  async function toggleMemory() {
+    if (memoryBusy) return;
+    const next = !memoryEnabled;
+    // Optimistic flip — revert on error so the button state can't drift
+    // from the server.
+    setMemoryEnabled(next);
+    setMemoryBusy(true);
+    try {
+      let id = activeId;
+      if (id == null) {
+        // No active chat yet: create one that honors the picked setting so
+        // the toggle works before the first message.
+        const c = await api.createChat("New chat", tier, next);
+        setChats((prev) => [c, ...prev]);
+        setActiveId(c.id);
+        id = c.id;
+      } else {
+        const updated = await api.setChatMemory(id, next);
+        setChats((prev) => prev.map((c) => c.id === id ? { ...c, memory_enabled: updated.memory_enabled } : c));
+      }
+    } catch (e) {
+      console.error(e);
+      setMemoryEnabled(!next);
+    } finally {
+      setMemoryBusy(false);
+    }
   }
 
   async function delChat(id: number) {
@@ -877,7 +937,7 @@ function ChatView({
     if (!draft.trim() || sending) return;
     let convId = activeId;
     if (convId == null) {
-      const c = await api.createChat(draft.slice(0, 50), tier);
+      const c = await api.createChat(draft.slice(0, 50), tier, memoryEnabled);
       setChats((prev) => [c, ...prev]);
       setActiveId(c.id);
       convId = c.id;
@@ -1014,6 +1074,11 @@ function ChatView({
         <header class="chat-header">
           <TierPicker tiers={tiers} activeId={tier} onPick={setTier} />
           <ReasoningToggle mode={reasoning} onChange={setReasoning} />
+          <MemoryToggle
+            enabled={memoryEnabled}
+            busy={memoryBusy}
+            onToggle={toggleMemory}
+          />
           <ResponseModePicker
             mode={responseMode}
             onChange={setResponseMode}

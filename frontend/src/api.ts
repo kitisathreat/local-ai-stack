@@ -16,6 +16,9 @@ export interface ConversationSummary {
   id: number;
   title: string;
   tier: string | null;
+  // When false, messages in this chat are excluded from long-term memory
+  // distillation AND from the encrypted per-user history log on disk.
+  memory_enabled: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -70,20 +73,26 @@ export const api = {
     const r = await j<{ data: ConversationSummary[] }>("/api/chats");
     return r.data;
   },
-  createChat: (title: string, tier: string | null) =>
+  createChat: (title: string, tier: string | null, memory_enabled?: boolean) =>
     j<ConversationSummary>("/api/chats", {
       method: "POST",
-      body: JSON.stringify({ title, tier }),
+      body: JSON.stringify({ title, tier, memory_enabled }),
     }),
   getChat: (id: number) =>
     j<{
       id: number; title: string; tier: string | null;
+      memory_enabled: boolean;
       created_at: number; updated_at: number; messages: Message[];
     }>(`/api/chats/${id}`),
   renameChat: (id: number, title: string) =>
     j<ConversationSummary>(`/api/chats/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ title }),
+    }),
+  setChatMemory: (id: number, memory_enabled: boolean) =>
+    j<ConversationSummary>(`/api/chats/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ memory_enabled }),
     }),
   deleteChat: (id: number) => j<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
 

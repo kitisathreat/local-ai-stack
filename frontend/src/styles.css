@@ -178,6 +178,39 @@ pre {
 .reason-toggle input { accent-color: var(--accent); }
 .reason-toggle.auto { color: var(--fg-dim); }
 
+/* ── Per-chat memory toggle ───────────────────────────────────────────── */
+.memory-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  border-radius: var(--radius);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+}
+.memory-toggle:hover:not(:disabled) { background: var(--panel-hover); }
+.memory-toggle .memory-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  display: inline-block;
+}
+.memory-toggle.on {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--success) 50%, var(--border));
+}
+.memory-toggle.on .memory-dot { background: var(--success); }
+.memory-toggle.off {
+  color: var(--fg-dim);
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+}
+.memory-toggle.off .memory-dot { background: var(--warn); }
+.memory-toggle:disabled { opacity: 0.6; cursor: not-allowed; }
+
 /* ── Response-mode picker ──────────────────────────────────────────────── */
 .mode-picker-wrap { position: relative; }
 .mode-picker-btn {
