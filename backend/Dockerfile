@@ -12,6 +12,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY backend /app/backend
 COPY config /app/config
+# Legacy tool modules — auto-discovered at runtime by backend/tools/registry.py.
+# Tools with missing Python deps are skipped gracefully; install optional
+# extras in .env.local via pip if you want to enable specific ones.
+COPY tools /app/tools
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -24,19 +24,43 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio pyyaml pydantic httpx
+        run: pip install pytest pytest-asyncio pyyaml pydantic httpx aiosqlite aiosmtplib 'python-jose[cryptography]' fastapi
 
-      - name: Run tool & pipeline tests
-        run: python3 -m pytest tests/test_tools.py -v --tb=short
+      - name: Run all Python tests
+        run: |
+          set -o pipefail
+          python3 -m pytest \
+            tests/test_tools.py \
+            tests/test_config.py \
+            tests/test_router.py \
+            tests/test_vram_scheduler.py \
+            tests/test_db.py \
+            tests/test_auth.py \
+            tests/test_tools_registry.py \
+            tests/test_rag.py \
+            tests/test_memory.py \
+            -v --tb=short 2>&1 | tee /tmp/pytest.log
 
-      - name: Run config & compose tests
-        run: python3 -m pytest tests/test_config.py -v --tb=short
-
-      - name: Run router tests
-        run: python3 -m pytest tests/test_router.py -v --tb=short
-
-      - name: Run VRAM scheduler tests
-        run: python3 -m pytest tests/test_vram_scheduler.py -v --tb=short
+      - name: Post failing Python tests as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ ! -f /tmp/pytest.log ]; then
+            echo "No pytest log"; exit 0
+          fi
+          {
+            echo "### Python CI test failures (run $RUN_ID)"
+            echo ""
+            echo '```text'
+            tail -120 /tmp/pytest.log
+            echo '```'
+          } > py_fail.md
+          gh pr comment "$PR_NUMBER" --body-file py_fail.md || echo "gh failed"
 
   # ── PowerShell script syntax ──────────────────────────────────────────────────
   powershell-syntax:
