@@ -1,0 +1,235 @@
+name: Update Project Fields
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'claude/tag-issues-add-plans-tvYTV'
+
+permissions:
+  issues: read
+  project: write
+
+jobs:
+  update-fields:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update GitHub Projects v2 fields for all open issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 << 'PYEOF'
+          import requests, json, sys, os, time
+
+          TOKEN = os.environ["GITHUB_TOKEN"]
+          OWNER = "kitisathreat"
+          REPO  = "local-ai-stack"
+          HEADERS = {
+              "Authorization": f"Bearer {TOKEN}",
+              "Content-Type": "application/json",
+              "X-Github-Next-Global-ID": "1",
+          }
+
+          def gql(query, variables=None):
+              r = requests.post(
+                  "https://api.github.com/graphql",
+                  json={"query": query, "variables": variables or {}},
+                  headers=HEADERS,
+              )
+              r.raise_for_status()
+              data = r.json()
+              if "errors" in data:
+                  raise RuntimeError(f"GraphQL errors: {json.dumps(data['errors'], indent=2)}")
+              return data["data"]
+
+          # ── 1. Discover project ──────────────────────────────────────────────
+          FIND_PROJECT = """
+          query($owner: String!) {
+            user(login: $owner) {
+              projectsV2(first: 20) {
+                nodes {
+                  id number title
+                  fields(first: 40) {
+                    nodes {
+                      __typename
+                      ... on ProjectV2Field            { id name }
+                      ... on ProjectV2SingleSelectField {
+                        id name
+                        options { id name }
+                      }
+                      ... on ProjectV2IterationField   {
+                        id name
+                        configuration {
+                          iterations { id title startDate duration }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          """
+          data = gql(FIND_PROJECT, {"owner": OWNER})
+          projects = data["user"]["projectsV2"]["nodes"]
+          if not projects:
+              print("ERROR: No Projects v2 found for this user.")
+              sys.exit(1)
+
+          project = projects[0]
+          PROJECT_ID = project["id"]
+          print(f"Project: {project['title']}  (#{project['number']}, id={PROJECT_ID})")
+
+          # Build field lookup: name -> node
+          fields = {}
+          for f in project["fields"]["nodes"]:
+              fields[f["name"]] = f
+          print("Fields found:", list(fields.keys()))
+
+          def option_id(field_name, option_name):
+              f = fields.get(field_name, {})
+              for opt in f.get("options", []):
+                  if opt["name"].lower() == option_name.lower():
+                      return opt["id"]
+              return None
+
+          def iteration_id(field_name):
+              """Return the earliest upcoming (or first) iteration id."""
+              f = fields.get(field_name, {})
+              iters = f.get("configuration", {}).get("iterations", [])
+              return iters[0]["id"] if iters else None
+
+          # ── 2. Fetch all project items ───────────────────────────────────────
+          LIST_ITEMS = """
+          query($pid: ID!, $cursor: String) {
+            node(id: $pid) {
+              ... on ProjectV2 {
+                items(first: 100, after: $cursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    id
+                    content {
+                      ... on Issue {
+                        number
+                        labels(first: 20) { nodes { name } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          """
+          all_items = []
+          cursor = None
+          while True:
+              data = gql(LIST_ITEMS, {"pid": PROJECT_ID, "cursor": cursor})
+              page = data["node"]["items"]
+              all_items.extend(page["nodes"])
+              if not page["pageInfo"]["hasNextPage"]:
+                  break
+              cursor = page["pageInfo"]["endCursor"]
+          print(f"Items in project: {len(all_items)}")
+
+          # ── 3. Label → field value mapping ──────────────────────────────────
+          PRIORITY_MAP = {"p1": "P1", "p2": "P2", "p3": "P3"}
+          STATUS_MAP   = {
+              "status:ready":        "Backlog",
+              "status:blocked":      "Blocked",
+              "status:needs-design": "Needs Design",
+          }
+          SIZE_LABEL_MAP = {
+              "epic": "XL", "critical": "L",
+              "high": "M",  "medium": "M", "low": "S",
+          }
+          ESTIMATE_MAP = {"XL": 21, "L": 8, "M": 5, "S": 2}
+
+          def derive_size(labels):
+              for lbl in labels:
+                  if lbl in SIZE_LABEL_MAP:
+                      return SIZE_LABEL_MAP[lbl]
+              if "documentation" in labels or "tests" in labels:
+                  return "S"
+              if "refactor" in labels:
+                  return "M"
+              if "p1" in labels:
+                  return "L"
+              if "p2" in labels:
+                  return "M"
+              return "S"
+
+          # ── 4. Mutation ──────────────────────────────────────────────────────
+          UPDATE = """
+          mutation($pid: ID!, $iid: ID!, $fid: ID!, $val: ProjectV2FieldValue!) {
+            updateProjectV2ItemFieldValue(
+              input: { projectId: $pid, itemId: $iid, fieldId: $fid, value: $val }
+            ) {
+              projectV2Item { id }
+            }
+          }
+          """
+
+          def set_field(item_id, field_name, value_obj):
+              f = fields.get(field_name)
+              if not f:
+                  return
+              try:
+                  gql(UPDATE, {
+                      "pid": PROJECT_ID,
+                      "iid": item_id,
+                      "fid": f["id"],
+                      "val": value_obj,
+                  })
+              except Exception as e:
+                  print(f"    WARN {field_name}: {e}")
+
+          # ── 5. Process every issue item ──────────────────────────────────────
+          updated = 0
+          skipped = 0
+          for item in all_items:
+              content = item.get("content") or {}
+              if "number" not in content:
+                  skipped += 1
+                  continue
+
+              num    = content["number"]
+              labels = [l["name"] for l in content.get("labels", {}).get("nodes", [])]
+              iid    = item["id"]
+
+              priority_name = next((PRIORITY_MAP[l] for l in labels if l in PRIORITY_MAP), None)
+              status_name   = next((STATUS_MAP[l]   for l in labels if l in STATUS_MAP), "Backlog")
+              size_name     = derive_size(labels)
+              estimate_val  = ESTIMATE_MAP.get(size_name, 3)
+              iter_id       = iteration_id("Iteration")
+
+              ops = []
+
+              if priority_name:
+                  oid = option_id("Priority", priority_name)
+                  if oid:
+                      ops.append(("Priority", {"singleSelectOptionId": oid}))
+
+              oid = option_id("Status", status_name)
+              if oid:
+                  ops.append(("Status", {"singleSelectOptionId": oid}))
+
+              oid = option_id("Size", size_name)
+              if oid:
+                  ops.append(("Size", {"singleSelectOptionId": oid}))
+
+              if "Estimate" in fields:
+                  ops.append(("Estimate", {"number": float(estimate_val)}))
+
+              if iter_id and "Iteration" in fields:
+                  ops.append(("Iteration", {"iterationId": iter_id}))
+
+              for field_name, val in ops:
+                  set_field(iid, field_name, val)
+                  time.sleep(0.1)  # stay under rate limits
+
+              tag = f"pri={priority_name or '—'} status={status_name} size={size_name} est={estimate_val}"
+              print(f"  ✓ #{num:3d}  {tag}")
+              updated += 1
+
+          print(f"\nDone. Updated {updated} issue items, skipped {skipped} non-issue items.")
+          PYEOF
