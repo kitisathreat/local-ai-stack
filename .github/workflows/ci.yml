@@ -70,24 +70,101 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check PS1 script syntax
+      - name: Check PS1 script syntax (scripts/ + launcher/)
         shell: pwsh
         run: |
           $failed = 0
-          foreach ($f in Get-ChildItem "scripts/*.ps1") {
+          $paths = @(
+            "scripts/*.ps1",
+            "launcher/*.ps1",
+            "launcher/steps/*.ps1",
+            "tests/*.ps1"
+          )
+          $files = $paths | ForEach-Object { Get-ChildItem -Path $_ -ErrorAction SilentlyContinue }
+          foreach ($f in $files) {
             $errs = $null
             [System.Management.Automation.PSParser]::Tokenize(
               (Get-Content $f.FullName -Raw), [ref]$errs
             ) | Out-Null
             if ($errs.Count -gt 0) {
-              Write-Host "FAIL: $($f.Name) — $($errs.Count) error(s)" -ForegroundColor Red
+              Write-Host "FAIL: $($f.FullName) — $($errs.Count) error(s)" -ForegroundColor Red
               $errs | ForEach-Object { Write-Host "  Line $($_.Token.StartLine): $_" }
               $failed++
             } else {
-              Write-Host "PASS: $($f.Name)" -ForegroundColor Green
+              Write-Host "PASS: $($f.FullName)" -ForegroundColor Green
             }
           }
           if ($failed -gt 0) { exit 1 }
+
+  # ── Launcher smoke tests: build script + step contract ───────────────────────
+  launcher-smoke:
+    name: Launcher — Smoke Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify launcher structure + step contract
+        shell: pwsh
+        run: |
+          $expected = @(
+            "launcher/LocalAIStack.ps1",
+            "launcher/build.ps1",
+            "launcher/gpu-agent.ps1",
+            "launcher/steps/_common.ps1",
+            "launcher/steps/ensure-docker.ps1",
+            "launcher/steps/ensure-lmstudio.ps1",
+            "launcher/steps/ensure-tunnel.ps1",
+            "launcher/steps/compose-up.ps1",
+            "launcher/steps/wait-ready.ps1",
+            "launcher/README.md"
+          )
+          $missing = @()
+          foreach ($p in $expected) {
+            if (-not (Test-Path $p)) { $missing += $p }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "FAIL: missing launcher files:" -ForegroundColor Red
+            $missing | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          Write-Host "All expected launcher files present."
+
+          # Each step script must source _common.ps1 (for Emit-Result) and
+          # call Emit-Result somewhere — otherwise the launcher can't parse
+          # its result.
+          $stepFiles = Get-ChildItem "launcher/steps/ensure-*.ps1","launcher/steps/compose-up.ps1","launcher/steps/wait-ready.ps1"
+          $failed = 0
+          foreach ($f in $stepFiles) {
+            $content = Get-Content $f.FullName -Raw
+            if ($content -notmatch '_common\.ps1') {
+              Write-Host "FAIL: $($f.Name) does not source _common.ps1" -ForegroundColor Red
+              $failed++
+            }
+            if ($content -notmatch 'Emit-Result') {
+              Write-Host "FAIL: $($f.Name) does not call Emit-Result" -ForegroundColor Red
+              $failed++
+            }
+          }
+          if ($failed -gt 0) { exit 1 }
+          Write-Host "All step scripts conform to the launcher contract."
+
+      - name: Verify Emit-Result produces valid JSON
+        shell: pwsh
+        run: |
+          . ./launcher/steps/_common.ps1
+          $output = Emit-Result -Ok $true -Message "ci smoke test"
+          try {
+            $parsed = $output | ConvertFrom-Json
+            if ($parsed.ok -ne $true -or $parsed.message -ne "ci smoke test") {
+              Write-Host "FAIL: parsed JSON does not round-trip: $output" -ForegroundColor Red
+              exit 1
+            }
+            Write-Host "OK: Emit-Result produces valid JSON → $output"
+          } catch {
+            Write-Host "FAIL: Emit-Result output is not valid JSON: $output" -ForegroundColor Red
+            exit 1
+          }
 
   # ── YAML lint: all config files parse cleanly ─────────────────────────────────
   yaml-lint:
