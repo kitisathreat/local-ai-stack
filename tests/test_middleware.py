@@ -190,52 +190,134 @@ def test_web_search_injection_skipped_on_neutral(monkeypatch):
 
 # ── rate_limit.py ───────────────────────────────────────────────────────
 
-def test_rate_limiter_allows_below_minute_threshold():
+@pytest.mark.asyncio
+async def test_rate_limiter_allows_below_minute_threshold():
     from backend.middleware.rate_limit import RateLimiter
 
     rl = RateLimiter(per_minute=5, per_day=100)
     for _ in range(5):
-        rl.check("u1")
+        await rl.check("u1")
     # Within budget — no raise.
 
 
-def test_rate_limiter_blocks_over_minute_threshold():
+@pytest.mark.asyncio
+async def test_rate_limiter_blocks_over_minute_threshold():
     from backend.middleware.rate_limit import RateLimiter
     from fastapi import HTTPException
 
     rl = RateLimiter(per_minute=3, per_day=100)
     for _ in range(3):
-        rl.check("u1")
+        await rl.check("u1")
     with pytest.raises(HTTPException) as excinfo:
-        rl.check("u1")
+        await rl.check("u1")
     assert excinfo.value.status_code == 429
 
 
-def test_rate_limiter_isolates_per_user():
+@pytest.mark.asyncio
+async def test_rate_limiter_isolates_per_user():
     from backend.middleware.rate_limit import RateLimiter
 
     rl = RateLimiter(per_minute=2, per_day=100)
-    rl.check("u1"); rl.check("u1")
+    await rl.check("u1"); await rl.check("u1")
     # u2 has its own budget
-    rl.check("u2"); rl.check("u2")
+    await rl.check("u2"); await rl.check("u2")
 
 
-def test_rate_limiter_exempts_admin_role():
+@pytest.mark.asyncio
+async def test_rate_limiter_exempts_admin_role():
     from backend.middleware.rate_limit import RateLimiter
 
     rl = RateLimiter(per_minute=1, per_day=1)
     # admin not limited
     for _ in range(10):
-        rl.check("admin1", role="admin")
+        await rl.check("admin1", role="admin")
 
 
-def test_rate_limiter_blocks_on_day_threshold():
+@pytest.mark.asyncio
+async def test_rate_limiter_blocks_on_day_threshold():
     from backend.middleware.rate_limit import RateLimiter
     from fastapi import HTTPException
 
     rl = RateLimiter(per_minute=1000, per_day=2)
-    rl.check("u1"); rl.check("u1")
+    await rl.check("u1"); await rl.check("u1")
     with pytest.raises(HTTPException) as excinfo:
-        rl.check("u1")
+        await rl.check("u1")
     assert excinfo.value.status_code == 429
     assert "Daily" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_falls_back_when_redis_raises():
+    """If Redis.pipeline().execute() raises, the limiter silently falls
+    back to in-memory counting (fail-open for availability)."""
+    from backend.middleware.rate_limit import RateLimiter
+
+    class BrokenRedis:
+        def pipeline(self, transaction=False):
+            class P:
+                def zremrangebyscore(self, *a, **kw): return self
+                def zcard(self, *a, **kw): return self
+                def zadd(self, *a, **kw): return self
+                def expire(self, *a, **kw): return self
+                async def execute(self): raise RuntimeError("boom")
+            return P()
+
+    rl = RateLimiter(per_minute=3, per_day=100)
+    rl.configure(redis_client=BrokenRedis())
+    # First 3 calls should succeed via in-memory fallback; 4th should 429.
+    from fastapi import HTTPException
+    for _ in range(3):
+        await rl.check("u1")
+    with pytest.raises(HTTPException):
+        await rl.check("u1")
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_uses_redis_when_healthy():
+    """When Redis is attached, counts flow through Redis (verified by a
+    fake that records the writes)."""
+    from backend.middleware.rate_limit import RateLimiter
+
+    calls: list[str] = []
+
+    class FakeRedis:
+        def __init__(self):
+            self.store: dict = {}
+
+        def pipeline(self, transaction=False):
+            writes: list = []
+            outer = self
+
+            class P:
+                def zremrangebyscore(self, *a, **kw): return self
+                def zcard(self, key):
+                    writes.append(("zcard", key))
+                    return self
+                def zadd(self, key, mapping):
+                    writes.append(("zadd", key, mapping))
+                    return self
+                def expire(self, key, ttl):
+                    writes.append(("expire", key, ttl))
+                    return self
+
+                async def execute(self):
+                    # First pipeline returns counts (none so far).
+                    # Subsequent pipelines are writes; return [].
+                    reads = [op for op in writes if op[0] == "zcard"]
+                    if reads:
+                        # [zremrange, zcard_minute, zremrange, zcard_day]
+                        return [0, len([c for c in calls if c.startswith("u1")]),
+                                0, len([c for c in calls if c.startswith("u1")])]
+                    for op in writes:
+                        if op[0] == "zadd":
+                            calls.append(op[1])
+                    return [None] * len(writes)
+
+            return P()
+
+    rl = RateLimiter(per_minute=1000, per_day=1000)
+    rl.configure(redis_client=FakeRedis())
+    await rl.check("u1")
+    await rl.check("u1")
+    # Two writes to minute and day keys apiece = 4 zadd calls.
+    assert sum(1 for c in calls if c.startswith("rl:")) >= 2

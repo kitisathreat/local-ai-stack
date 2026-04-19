@@ -44,3 +44,15 @@ multi_agent:
 observed_costs:
   persist_path: /app/data/vram_observed.json
   learning_rate: 0.1                    # EMA smoothing for observed values
+
+# ── Wait queue for concurrent requests beyond slot capacity ─────────────────
+# When a tier has all `parallel_slots` taken, further requests queue on an
+# asyncio Condition. While queued, the backend streams {kind:"queued",
+# position, eta_sec} SSE events every `position_update_interval_sec`. If the
+# wait exceeds `max_wait_sec`, the request is failed with a queue_timeout
+# error. If the queue itself is full, the request is rejected immediately
+# with HTTP 503 + Retry-After.
+queue:
+  max_depth_per_tier: 10
+  max_wait_sec: 60
+  position_update_interval_sec: 2

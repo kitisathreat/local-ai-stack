@@ -1,0 +1,13 @@
+# Runtime knobs that affect process layout — consumed by ConcurrencyConfig.
+#
+# `workers_target` is the *desired* Uvicorn worker count for the next restart.
+# The actual running count comes from the BACKEND_WORKERS env var, which wins
+# over this file. Edit via the admin dashboard (Concurrency tab) and restart
+# the backend container to apply.
+#
+# `redis_url` enables cross-worker state sharing (rate limiter, VRAM
+# scheduler). Leave null/empty to run in single-worker in-memory mode. The
+# REDIS_URL env var wins over this file.
+
+workers_target: 1
+redis_url: null

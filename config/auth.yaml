@@ -28,7 +28,11 @@ session:
 # to restrict signups to a single domain.
 allowed_email_domains: []
 
-# Rate limits — magic-link requests per email per hour.
+# Rate limits — magic-link throttles and chat-endpoint throttles.
+# The chat throttles cap inference requests from a single authenticated user
+# (or a single IP for anonymous callers). 0 disables the window.
 rate_limits:
   requests_per_hour_per_email: 5
   requests_per_hour_per_ip: 30
+  requests_per_minute_per_user: 30
+  requests_per_day_per_user: 500

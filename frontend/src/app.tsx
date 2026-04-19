@@ -974,7 +974,14 @@ function ChatView({
         signal: ctrl.signal,
       })) {
         if (ev.kind === "token" && ev.text) {
-          if (!firstTokenAt) firstTokenAt = performance.now();
+          if (!firstTokenAt) {
+            firstTokenAt = performance.now();
+            // Mark any "Waiting for a free slot" step done once tokens start.
+            setAgentSteps((s) => s.map((step) =>
+              step.state === "active" && step.label.startsWith("Waiting for a free slot")
+                ? { ...step, state: "done" } : step
+            ));
+          }
           assembled += ev.text;
           tokenCount += Math.max(1, ev.text.split(/\s+/).filter(Boolean).length);
           const elapsed = (performance.now() - firstTokenAt) / 1000;
@@ -1019,8 +1026,28 @@ function ChatView({
         steps.forEach((s) => { if (s.state === "active") s.state = "done"; });
       };
 
+      // When anything other than another queue update arrives, any active
+      // "Waiting for a free slot" step has been resolved — the slot opened.
+      if (type !== "queue") {
+        steps.forEach((s) => {
+          if (s.state === "active" && s.label.startsWith("Waiting for a free slot")) {
+            s.state = "done";
+          }
+        });
+      }
+
       switch (type) {
         case "route.decision": /* route events are noisy; skip */ break;
+        case "queue": {
+          const pos = (_data as any)?.position;
+          const maxWait = (_data as any)?.max_wait_sec;
+          const waited = (_data as any)?.waited_sec ?? 0;
+          const label = pos != null
+            ? `Waiting for a free slot — position ${pos}${maxWait ? ` (timeout ${maxWait}s, waited ${waited}s)` : ""}`
+            : "Waiting for a free slot";
+          set(label, "active");
+          break;
+        }
         case "agent.plan_start":
           set("Planning subtasks", "active"); break;
         case "agent.plan_done":

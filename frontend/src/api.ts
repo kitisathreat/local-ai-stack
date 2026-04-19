@@ -110,7 +110,7 @@ export const api = {
   healthz: () => j<{ ok: boolean }>("/api/healthz"),
 
   // ── Tools ────────────────────────────────────────────────────────────
-  listTools: () => j<{ data: Array<{ name: string; description: string; default_enabled: boolean }> }>("/api/tools"),
+  listTools: () => j<{ data: Array<{ name: string; description: string; default_enabled: boolean; requires_service: string | null }> }>("/api/tools"),
 
   // ── RAG ──────────────────────────────────────────────────────────────
   uploadRAG: async (file: File) => {
@@ -204,6 +204,17 @@ export interface AdminConfigSnapshot {
       pin_vision: boolean;
     };
     ollama: { keep_alive_default: string; keep_alive_pinned: number };
+    queue: {
+      max_depth_per_tier: number;
+      max_wait_sec: number;
+      position_update_interval_sec: number;
+    };
+  };
+  concurrency: {
+    workers_target: number;
+    workers_running: number;
+    redis_url_set: boolean;
+    redis_healthy: boolean;
   };
   router: {
     auto_thinking_signals: {
@@ -226,6 +237,8 @@ export interface AdminConfigSnapshot {
     rate_limits: {
       requests_per_hour_per_email: number;
       requests_per_hour_per_ip: number;
+      requests_per_minute_per_user: number;
+      requests_per_day_per_user: number;
     };
     session: { cookie_ttl_days: number };
   };
@@ -237,6 +250,7 @@ export interface AdminConfigSnapshot {
     context_window: number;
     think_default: boolean;
     vram_estimate_gb: number;
+    parallel_slots: number;
     params: Record<string, any>;
   }>;
 }
@@ -266,7 +280,12 @@ export const adminApi = {
     }),
   getConfig: () => j<AdminConfigSnapshot>("/api/admin/config"),
   patchConfig: (patch: Partial<AdminConfigSnapshot>) =>
-    j<{ ok: boolean; changes: string[] }>("/api/admin/config", {
+    j<{
+      ok: boolean;
+      changes: string[];
+      requires_restart?: boolean;
+      dirty_tiers?: string[];
+    }>("/api/admin/config", {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
