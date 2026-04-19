@@ -108,7 +108,7 @@ function ReasoningToggle({
 /* ── History sidebar ────────────────────────────────────────────────── */
 
 function HistorySidebar({
-  me, chats, activeId, onSelect, onNew, onDelete, onLogout,
+  me, chats, activeId, onSelect, onNew, onDelete, onLogout, onSettings,
 }: {
   me: { email: string };
   chats: ConversationSummary[];
@@ -117,12 +117,16 @@ function HistorySidebar({
   onNew: () => void;
   onDelete: (id: number) => void;
   onLogout: () => void;
+  onSettings: () => void;
 }) {
   return (
     <aside class="sidebar">
       <div class="sidebar-header">
         <h1>Local AI Stack</h1>
-        <button onClick={onNew} title="New chat">+</button>
+        <div style="display:flex; gap:0.3rem;">
+          <button onClick={onSettings} title="Settings (docs + memory)">⚙︎</button>
+          <button onClick={onNew} title="New chat">+</button>
+        </div>
       </div>
       <div class="sidebar-body">
         <div class="conv-list">
@@ -151,6 +155,98 @@ function HistorySidebar({
         {me.email} · <a href="#" onClick={(e) => { e.preventDefault(); onLogout(); }}>sign out</a>
       </div>
     </aside>
+  );
+}
+
+/* ── Settings panel: RAG docs + memories ────────────────────────────── */
+
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [docs, setDocs] = useState<any[]>([]);
+  const [mems, setMems] = useState<any[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [status, setStatus] = useState<string>("");
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  async function refresh() {
+    try {
+      const [d, m] = await Promise.all([api.listRAG(), api.listMemory()]);
+      setDocs(d.data); setMems(m.data);
+    } catch (e: any) { setStatus(e?.message || "Failed to load"); }
+  }
+  useEffect(() => { refresh(); }, []);
+
+  async function onUpload(e: Event) {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    setUploading(true); setStatus("Uploading…");
+    try {
+      const r = await api.uploadRAG(f);
+      setStatus(`Uploaded ${r.filename} (${r.chunks} chunks)`);
+      await refresh();
+    } catch (e: any) {
+      setStatus(`Upload failed: ${e?.message}`);
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+
+  async function delDoc(id: number) {
+    if (!confirm("Delete this document from your knowledge base?")) return;
+    await api.deleteRAG(id);
+    await refresh();
+  }
+  async function delMem(id: number) {
+    if (!confirm("Forget this memory?")) return;
+    await api.deleteMemory(id);
+    await refresh();
+  }
+
+  return (
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:50; display:flex; align-items:flex-start; justify-content:center; padding:2rem;" onClick={onClose}>
+      <div class="signin-card" style="max-width:640px; width:100%; max-height:85vh; overflow-y:auto;"
+           onClick={(e) => e.stopPropagation()}>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0;">Settings</h2>
+          <button onClick={onClose}>✕</button>
+        </div>
+
+        <h3 style="margin-top:1.5rem; font-size:1rem;">Knowledge base</h3>
+        <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.2rem;">
+          Upload PDFs, Markdown, or text files. The assistant will retrieve
+          relevant passages when you ask related questions.
+        </p>
+        <div>
+          <input ref={fileInput} type="file" accept=".pdf,.md,.txt,.html,.htm"
+                 onChange={onUpload} disabled={uploading} />
+        </div>
+        <ul style="padding-left:0; list-style:none; margin-top:0.8rem;">
+          {docs.length === 0 && <li style="color:var(--fg-dim); font-size:0.85rem;">No documents uploaded yet.</li>}
+          {docs.map((d) => (
+            <li key={d.id} style="display:flex; justify-content:space-between; padding:0.4rem 0; font-size:0.9rem;">
+              <span>{d.filename} <span style="color:var(--fg-dim);">· {d.chunk_count} chunks</span></span>
+              <button onClick={() => delDoc(d.id)}>Delete</button>
+            </li>
+          ))}
+        </ul>
+
+        <h3 style="margin-top:1.5rem; font-size:1rem;">Memories</h3>
+        <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.2rem;">
+          Long-term facts the assistant remembers about you across conversations.
+        </p>
+        <ul style="padding-left:0; list-style:none; margin-top:0.4rem;">
+          {mems.length === 0 && <li style="color:var(--fg-dim); font-size:0.85rem;">No memories yet. They're distilled after each chat.</li>}
+          {mems.map((m) => (
+            <li key={m.id} style="display:flex; justify-content:space-between; padding:0.4rem 0; gap:0.6rem; font-size:0.9rem;">
+              <span>{m.content}</span>
+              <button onClick={() => delMem(m.id)}>Forget</button>
+            </li>
+          ))}
+        </ul>
+
+        {status && <div class="status" style="margin-top:1rem;">{status}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -214,6 +310,7 @@ function ChatView({
   const [reasoning, setReasoning] = useState<"auto" | "on" | "off">("auto");
   const [draft, setDraft] = useState<string>("");
   const [sending, setSending] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -356,7 +453,9 @@ function ChatView({
         onNew={newChat}
         onDelete={delChat}
         onLogout={async () => { await api.logout(); location.reload(); }}
+        onSettings={() => setShowSettings(true)}
       />
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
       <section class="main">
         <header class="chat-header">
           <TierPicker tiers={tiers} activeId={tier} onPick={setTier} />

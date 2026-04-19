@@ -48,19 +48,28 @@ class OllamaClient:
     async def chat_stream(
         self,
         tier: TierConfig,
-        messages: list[ChatMessage],
+        messages: list[ChatMessage] | list[dict],
         think: bool,
         keep_alive: str | int = "30m",
         extra_options: dict[str, Any] | None = None,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[dict]:
         """Yields NDJSON chunks from Ollama's /api/chat."""
-        payload = {
+        # Allow pre-serialized message dicts (used by the tool loop which
+        # needs to include role=tool messages that don't fit ChatMessage).
+        if messages and isinstance(messages[0], ChatMessage):
+            msgs_payload = _messages_to_payload(messages)  # type: ignore[arg-type]
+        else:
+            msgs_payload = messages  # type: ignore[assignment]
+        payload: dict[str, Any] = {
             "model": tier.model_tag,
-            "messages": _messages_to_payload(messages),
+            "messages": msgs_payload,
             "stream": True,
             "options": build_options(tier, think, extra_options),
             "keep_alive": keep_alive,
         }
+        if tools:
+            payload["tools"] = tools
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream("POST", f"{self.endpoint}/api/chat", json=payload) as resp:
                 resp.raise_for_status()

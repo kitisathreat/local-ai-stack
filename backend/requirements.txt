@@ -12,6 +12,7 @@ aiosmtplib==3.0.2
 # Persistence (Phase 4)
 aiosqlite==0.20.0
 
-# Phase 5 deps — added when those routes land
-# qdrant-client==1.12.0
-# pypdf==5.1.0
+# RAG + memory (Phase 5) — Qdrant HTTP API is used directly via httpx,
+# so we don't need qdrant-client. pypdf handles PDF extraction.
+pypdf==5.1.0
+python-multipart==0.0.17   # for file upload endpoints

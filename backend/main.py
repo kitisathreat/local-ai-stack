@@ -25,12 +25,17 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import auth, db
+from pathlib import Path
+
+from . import auth, db, memory, rag
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
 from .orchestrator import Orchestrator
 from .router import route
+from .schemas import ChatMessage, MessagePart
+from .tools import executor as tool_executor
+from .tools.registry import ToolRegistry, build_registry
 from .schemas import (
     AgentEvent,
     ChatRequest,
@@ -64,6 +69,7 @@ class AppState:
     llama_cpp: LlamaCppClient
     scheduler: VRAMScheduler
     orchestrator: Orchestrator
+    tools: ToolRegistry
 
 
 state = AppState()
@@ -78,6 +84,12 @@ async def lifespan(app: FastAPI):
 
     logger.info("Initialising database…")
     await db.init_db()
+
+    logger.info("Discovering tools…")
+    tools_dir = Path(os.getenv("LAI_TOOLS_DIR", "/app/tools"))
+    config_dir = Path(os.getenv("LAI_CONFIG_DIR", "/app/config"))
+    state.tools = build_registry(tools_dir=tools_dir, config_dir=config_dir)
+    logger.info("Tool registry ready: %d tools", len(state.tools.tools))
 
     # Backend clients — endpoint overridable per-tier, these are fallbacks
     default_ollama = os.getenv("OLLAMA_URL", "http://ollama:11434")
@@ -164,19 +176,74 @@ async def vram_status():
     return await state.scheduler.status()
 
 
+@app.get("/api/tools")
+async def list_tools():
+    """List discovered tools. Tool names are `<module>.<method>`."""
+    return {
+        "data": [
+            {
+                "name": t.name,
+                "description": t.schema.get("function", {}).get("description", ""),
+                "default_enabled": t.default_enabled,
+                "requires_service": t.requires_service,
+            }
+            for t in state.tools.tools.values()
+        ],
+    }
+
+
+async def _inject_user_context(req: ChatRequest, user: dict) -> None:
+    """Prepend RAG + memory context to the system message for a signed-in
+    user. Runs inline (needs embeddings before streaming starts)."""
+    from .router import last_user_text
+    last = last_user_text(req.messages)
+    if not last or not last.strip():
+        return
+    try:
+        mem_hits = await memory.retrieve_for_user(user["id"], last, k=3)
+    except Exception:
+        mem_hits = []
+    try:
+        rag_hits = await rag.retrieve(user["id"], last, k=3)
+    except Exception:
+        rag_hits = []
+    blocks = []
+    if mem_hits:
+        blocks.append(memory.format_memory_block(mem_hits))
+    if rag_hits:
+        blocks.append(rag.format_context_block(rag_hits))
+    if not blocks:
+        return
+    injection = "\n\n".join(blocks)
+    sys_msg = next((m for m in req.messages if m.role == "system"), None)
+    if sys_msg:
+        if isinstance(sys_msg.content, str):
+            sys_msg.content = f"{sys_msg.content}\n\n{injection}"
+    else:
+        req.messages.insert(0, ChatMessage(role="system", content=injection))
+
+
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatRequest, request: Request):
-    """OpenAI-compatible chat endpoint. Always streams (SSE) — Open WebUI
-    and our custom frontend both support SSE."""
+async def chat_completions(
+    req: ChatRequest,
+    request: Request,
+    user: dict | None = Depends(auth.optional_user),
+):
+    """OpenAI-compatible chat endpoint. Always streams (SSE)."""
     try:
         decision, req = route(req, state.config, state.signals)
     except KeyError as e:
         raise HTTPException(404, str(e))
 
+    # Signed-in users get per-user memory + RAG context prepended.
+    if user:
+        await _inject_user_context(req, user)
+
     logger.info(
-        "route: tier=%s think=%s multi=%s specialist=%s slash=%s",
+        "route: tier=%s think=%s multi=%s specialist=%s slash=%s user=%s",
         decision.tier_name, decision.think, decision.multi_agent,
         decision.specialist_reason, decision.slash_commands_applied,
+        user["email"] if user else "anon",
     )
 
     tier = state.config.models.tiers[decision.tier_name]
@@ -189,7 +256,7 @@ async def chat_completions(req: ChatRequest, request: Request):
         )
 
     return StreamingResponse(
-        _single_agent_sse(req, decision, client, tier),
+        _single_agent_sse(req, decision, client, tier, user=user),
         media_type="text/event-stream",
     )
 
@@ -227,6 +294,7 @@ async def _single_agent_sse(
     decision,
     client,
     tier,
+    user: dict | None = None,
 ) -> AsyncIterator[str]:
     model_id = f"tier.{decision.tier_name}"
 
@@ -241,28 +309,69 @@ async def _single_agent_sse(
         model_id,
     )
 
+    # Serialize messages for the tool loop (needs to append role=tool entries).
+    from .backends.ollama import _messages_to_payload as _ollama_msgs
+    msg_payload = _ollama_msgs(req.messages) if tier.backend == "ollama" else None
+
+    tool_schemas: list[dict] | None = None
+    if tier.backend == "ollama" and req.tools is None:
+        enabled = state.tools.all_schemas(only_enabled=True)
+        # Only pass tools when the registry isn't empty — some models
+        # degrade with an empty `tools: []` field.
+        if enabled:
+            tool_schemas = enabled
+    elif req.tools:
+        tool_schemas = req.tools
+
+    max_tool_turns = 5
     try:
-        async with state.scheduler.reserve(decision.tier_name):
-            if tier.backend == "ollama":
-                async for chunk in client.chat_stream(
-                    tier, req.messages, think=decision.think,
-                    keep_alive=state.config.vram.ollama.keep_alive_pinned,
-                ):
-                    msg = chunk.get("message") or {}
-                    text = msg.get("content")
-                    if text:
-                        yield _openai_chunk(text, model_id)
-                    if chunk.get("done"):
-                        break
-            else:  # llama_cpp
-                async for chunk in client.chat_stream(
-                    tier, req.messages, think=decision.think,
-                ):
-                    for choice in chunk.get("choices", []):
-                        delta = choice.get("delta") or {}
-                        text = delta.get("content")
+        for turn in range(max_tool_turns + 1):
+            async with state.scheduler.reserve(decision.tier_name):
+                tool_calls_accum: list[dict] = []
+                if tier.backend == "ollama":
+                    async for chunk in client.chat_stream(
+                        tier, msg_payload, think=decision.think,
+                        keep_alive=state.config.vram.ollama.keep_alive_pinned,
+                        tools=tool_schemas,
+                    ):
+                        msg = chunk.get("message") or {}
+                        text = msg.get("content")
                         if text:
                             yield _openai_chunk(text, model_id)
+                        if msg.get("tool_calls"):
+                            tool_calls_accum.extend(msg["tool_calls"])
+                        if chunk.get("done"):
+                            break
+                else:  # llama_cpp — no tool support yet
+                    async for chunk in client.chat_stream(
+                        tier, req.messages, think=decision.think,
+                    ):
+                        for choice in chunk.get("choices", []):
+                            delta = choice.get("delta") or {}
+                            text = delta.get("content")
+                            if text:
+                                yield _openai_chunk(text, model_id)
+                    break
+
+            if not tool_calls_accum or turn >= max_tool_turns:
+                break
+
+            # Dispatch tools, append results to the conversation, loop again.
+            for tc in tool_calls_accum:
+                yield _agent_event_sse(
+                    AgentEvent(type="route.decision", data={
+                        "tool_call": tc.get("function", {}).get("name", ""),
+                    }),
+                    model_id,
+                )
+            results = await tool_executor.dispatch_many(
+                tool_calls_accum, state.tools, user=user,
+            )
+            # Append the assistant message (with tool_calls) then the tool
+            # results, so the model can continue its response.
+            msg_payload = (msg_payload or []) + [
+                {"role": "assistant", "content": "", "tool_calls": tool_calls_accum}
+            ] + results
     except VRAMExhausted as e:
         yield _agent_event_sse(
             AgentEvent(type="error", data={"message": str(e), "kind": "vram_exhausted"}),
@@ -434,6 +543,102 @@ async def delete_chat(conv_id: int, user: dict = Depends(auth.current_user)):
     ok = await db.delete_conversation(conv_id, user["id"])
     if not ok:
         raise HTTPException(404, "Conversation not found")
+    return {"ok": True}
+
+
+# ── RAG ─────────────────────────────────────────────────────────────────
+
+from fastapi import UploadFile, File
+
+
+@app.post("/rag/upload")
+async def rag_upload(
+    file: UploadFile = File(...),
+    user: dict = Depends(auth.current_user),
+):
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty file")
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(413, "File too large (>20MB)")
+    try:
+        ingest = await rag.ingest_document(
+            user["id"], file.filename or "upload", content, mime=file.content_type,
+        )
+    except Exception as e:
+        logger.exception("RAG ingest failed")
+        raise HTTPException(500, f"Ingest failed: {e}")
+
+    # Persist doc metadata so the UI can list + delete.
+    now = time.time()
+    async with db.get_conn() as c:
+        import json as _json
+        await c.execute(
+            "INSERT INTO rag_docs (user_id, filename, mime_type, size_bytes, chunk_count, qdrant_ids, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                user["id"], file.filename, file.content_type, len(content),
+                ingest["chunks"], _json.dumps(ingest["qdrant_ids"]), now,
+            ),
+        )
+        await c.commit()
+    return {"ok": True, "chunks": ingest["chunks"], "filename": file.filename}
+
+
+@app.get("/rag/docs")
+async def rag_list(user: dict = Depends(auth.current_user)):
+    async with db.get_conn() as c:
+        rows = await (await c.execute(
+            "SELECT id, filename, mime_type, size_bytes, chunk_count, created_at "
+            "FROM rag_docs WHERE user_id = ? ORDER BY created_at DESC",
+            (user["id"],),
+        )).fetchall()
+        return {"data": [dict(r) for r in rows]}
+
+
+@app.delete("/rag/docs/{doc_id}")
+async def rag_delete(doc_id: int, user: dict = Depends(auth.current_user)):
+    import json as _json
+    async with db.get_conn() as c:
+        row = await (await c.execute(
+            "SELECT id, qdrant_ids FROM rag_docs WHERE id = ? AND user_id = ?",
+            (doc_id, user["id"]),
+        )).fetchone()
+        if not row:
+            raise HTTPException(404, "Document not found")
+        ids = _json.loads(row["qdrant_ids"] or "[]")
+        await c.execute("DELETE FROM rag_docs WHERE id = ?", (doc_id,))
+        await c.commit()
+    # Best-effort Qdrant cleanup (the upload persists point IDs, not doc_id).
+    if ids:
+        coll = rag.collection_name(user["id"])
+        async with httpx_async_client() as cx:
+            await cx.post(
+                f"{rag.QDRANT_URL.rstrip('/')}/collections/{coll}/points/delete",
+                json={"points": ids},
+                params={"wait": "true"},
+            )
+    return {"ok": True}
+
+
+def httpx_async_client():
+    import httpx as _httpx
+    return _httpx.AsyncClient(timeout=30.0)
+
+
+# ── Memory ──────────────────────────────────────────────────────────────
+
+@app.get("/memory")
+async def memory_list(user: dict = Depends(auth.current_user)):
+    rows = await memory.list_for_user(user["id"])
+    return {"data": rows}
+
+
+@app.delete("/memory/{memory_id}")
+async def memory_delete(memory_id: int, user: dict = Depends(auth.current_user)):
+    ok = await memory.delete(user["id"], memory_id)
+    if not ok:
+        raise HTTPException(404, "Memory not found")
     return {"ok": True}
 
 

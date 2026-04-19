@@ -89,6 +89,28 @@ export const api = {
 
   // ── VRAM (debug) ─────────────────────────────────────────────────────
   vramStatus: () => j<any>("/api/vram"),
+
+  // ── Tools ────────────────────────────────────────────────────────────
+  listTools: () => j<{ data: Array<{ name: string; description: string; default_enabled: boolean }> }>("/api/tools"),
+
+  // ── RAG ──────────────────────────────────────────────────────────────
+  uploadRAG: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch("/api/rag/upload", {
+      method: "POST",
+      body: fd,
+      credentials: "include",
+    });
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    return r.json() as Promise<{ ok: boolean; chunks: number; filename: string }>;
+  },
+  listRAG: () => j<{ data: Array<{ id: number; filename: string; chunk_count: number; size_bytes: number; created_at: number }> }>("/api/rag/docs"),
+  deleteRAG: (id: number) => j<{ ok: boolean }>(`/api/rag/docs/${id}`, { method: "DELETE" }),
+
+  // ── Memory ───────────────────────────────────────────────────────────
+  listMemory: () => j<{ data: Array<{ id: number; content: string; source_conv: number | null; created_at: number; updated_at: number }> }>("/api/memory"),
+  deleteMemory: (id: number) => j<{ ok: boolean }>(`/api/memory/${id}`, { method: "DELETE" }),
 };
 
 // ── SSE chat stream ────────────────────────────────────────────────────
