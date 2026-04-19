@@ -235,8 +235,10 @@ $form.Add_Shown({
 
         if (-not $res.ok) {
             if ($res.needsUser) {
+                $actionLabel = if ($res.actionLabel) { $res.actionLabel } else { "OK" }
+                $actionUrl   = if ($res.actionUrl)   { $res.actionUrl }   else { "" }
                 $dlgResult = Show-UserDialog -Title "LocalAIStack" -Message $res.message `
-                    -ActionLabel ($res.actionLabel ?? "OK") -ActionUrl ($res.actionUrl ?? "")
+                    -ActionLabel $actionLabel -ActionUrl $actionUrl
                 if ($dlgResult -ne "OK") {
                     Write-Log "WARN" "User cancelled at step $($step.Name)"
                     $form.Close(); return

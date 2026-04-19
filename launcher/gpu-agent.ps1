@@ -26,25 +26,23 @@ function Get-Metrics {
     $total = [int]$parts[2].Trim()
     $pct   = if ($total -gt 0) { [math]::Round(100.0 * $used / $total, 1) } else { 0 }
 
-    # CPU-offload detection via lms ps
-    $offload = $false
-    try {
-        $lms = & lms ps 2>$null
-        if ($lms -match "cpu") { $offload = $true }
-    } catch {}
-
+    # Overspill band. Ollama manages CPU offload internally and the container
+    # doesn't expose a simple CLI probe for layer placement, so the band here
+    # is driven by VRAM % alone. When ~100% VRAM is in use but GPU utilization
+    # is low, Ollama is likely paging through CPU — we flag that as red too.
+    $util = [int]$parts[3].Trim()
     $overspill = "green"
-    if ($offload -or $pct -gt 90)      { $overspill = "red" }
-    elseif ($pct -gt 70)               { $overspill = "amber" }
+    if ($pct -gt 95 -and $util -lt 40)     { $overspill = "red"   }
+    elseif ($pct -gt 90)                   { $overspill = "red"   }
+    elseif ($pct -gt 70)                   { $overspill = "amber" }
 
     return @{
         gpu           = $parts[0].Trim()
         vram_used_mb  = $used
         vram_total_mb = $total
         vram_pct      = $pct
-        gpu_util_pct  = [int]$parts[3].Trim()
+        gpu_util_pct  = $util
         temp_c        = [int]$parts[4].Trim()
-        cpu_offload   = $offload
         overspill     = $overspill
     }
 }
