@@ -146,8 +146,8 @@ jobs:
             Write-Host "No ci_results.txt found." -ForegroundColor Yellow
           }
 
-      - name: Post failing tests to PR comment
-        if: always() && github.event_name == 'pull_request'
+      - name: Post test results to PR comment
+        if: failure() && github.event_name == 'pull_request'
         continue-on-error: true
         shell: bash
         env:
@@ -155,29 +155,23 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          echo "STEP STARTED: Post failing tests"
-          echo "PWD: $(pwd)"
-          ls -la tests/ 2>&1 | head -20 || true
-          if [ ! -f tests/ci_results.txt ]; then
-            echo "ci_results.txt missing — posting placeholder comment for visibility"
-            echo "### Windows CI post-test diagnostic (run $RUN_ID)" > fail_comment.md
-            echo "" >> fail_comment.md
-            echo "The test step failed but tests/ci_results.txt was not written." >> fail_comment.md
-            gh pr comment "$PR_NUMBER" --body-file fail_comment.md || echo "gh pr comment FAILED"
-            exit 0
-          fi
-          fails=$(grep -E '^[[:space:]]*\[FAIL\]' tests/ci_results.txt || true)
-          if [ -z "$fails" ]; then
-            echo "No [FAIL] lines found in ci_results.txt"
-            exit 0
-          fi
+          set +e
+          echo "STEP STARTED: Post test results"
           {
-            echo "### Windows CI test failures (run $RUN_ID)"
+            echo "### Windows CI test log (run $RUN_ID)"
             echo ""
             echo '```text'
-            echo "$fails"
+            if [ -f tests/ci_results.txt ]; then
+              # Strip any non-printable including CR; keep it bounded.
+              tr -d '\r' < tests/ci_results.txt | tail -100
+            else
+              echo "(tests/ci_results.txt not found)"
+              ls -la tests/ 2>&1 | head -30
+            fi
             echo '```'
-          } > fail_comment.md
-          echo "Calling gh pr comment..."
-          gh pr comment "$PR_NUMBER" --body-file fail_comment.md
-          echo "gh pr comment exit: $?"
+          } > post_comment.md
+          echo "---- body ----"
+          cat post_comment.md
+          echo "---- gh pr comment ----"
+          gh pr comment "$PR_NUMBER" --body-file post_comment.md
+          echo "exit: $?"
