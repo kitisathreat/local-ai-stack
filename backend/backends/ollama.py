@@ -16,9 +16,17 @@ from ..schemas import ChatMessage
 
 
 def build_options(tier: TierConfig, think: bool, extra: dict[str, Any] | None = None) -> dict:
-    """Assemble Ollama's `options` dict from tier params + reasoning toggle."""
+    """Assemble Ollama's `options` dict from tier params + reasoning toggle.
+
+    `num_parallel` is set from `tier.parallel_slots` so Ollama allocates
+    that many KV-cache slots when first loading this model. Subsequent
+    requests share those slots. Ollama reads num_parallel on first load
+    only — changing it requires evicting and reloading the model.
+    """
     opts: dict[str, Any] = dict(tier.params or {})
     opts["num_ctx"] = tier.context_window
+    slots = max(1, int(getattr(tier, "parallel_slots", 1)))
+    opts["num_parallel"] = slots
     if tier.think_supported:
         opts["think"] = think
     if extra:

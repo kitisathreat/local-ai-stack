@@ -1,9 +1,28 @@
-"""VRAM-aware model scheduler.
+"""VRAM-aware model scheduler with per-tier slot cap + wait queue.
 
 A single asyncio coordinator that tracks which model tiers are resident in
 GPU memory, reference-counted by in-flight requests. When a new reservation
 would exceed available VRAM (minus the configured headroom), it evicts
 least-recently-used, unpinned tiers with refcount==0.
+
+Slot cap + queue:
+  Each loaded model has `slot_capacity = tier.parallel_slots`, matching the
+  num_parallel value Ollama (or llama.cpp) was asked to open KV-cache slots
+  for. Refcount is capped at slot_capacity. Requests beyond the cap enter a
+  per-tier FIFO wait queue driven by an `asyncio.Condition`. While queued,
+  `acquire()` invokes the caller's `on_event` callback every
+  `queue.position_update_interval_sec` so the SSE stream can surface
+  progress. The queue itself is bounded by `queue.max_depth_per_tier` (over
+  → QueueFull) and the total wait by `queue.max_wait_sec` (over →
+  QueueTimeout).
+
+Multi-worker note:
+  With Uvicorn `--workers N`, each worker owns its own in-process registry.
+  That's safe because Ollama is the single source of truth for what's
+  actually loaded and Ollama enforces its own num_parallel cap. Per-worker
+  scheduler state may drift briefly, but the sweeper reconciles from
+  pynvml/Ollama's /api/ps on its poll cycle. Cross-worker rate limiting is
+  handled by the Redis-backed limiter (see backend/middleware/rate_limit.py).
 
 Design notes:
   - `pynvml` is optional at import time: tests mock the NVML calls, and the
@@ -28,9 +47,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from .config import AppConfig, TierConfig
+
+
+OnEventFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +76,16 @@ class LoadedModel:
     last_used: float = field(default_factory=time.time)
     load_event: asyncio.Event = field(default_factory=asyncio.Event)
     pinned: bool = False
+    # Maximum concurrent requests this loaded model can serve. Set from
+    # TierConfig.parallel_slots at load time. Refcount is capped at this
+    # value; further requests queue on the tier's Condition.
+    slot_capacity: int = 1
+    # parallel_slots value the model was loaded with. If the tier config
+    # changes (admin edit), the scheduler triggers an eviction so the next
+    # reserve reloads with the new slot count. Tracked separately from
+    # slot_capacity so a concurrent in-flight config edit doesn't confuse
+    # in-flight acquires.
+    loaded_slots: int = 1
 
     def effective_cost(self) -> float:
         """Use max(estimate, observed) for eviction math to be safe."""
@@ -64,6 +96,21 @@ class LoadedModel:
 
 class VRAMExhausted(Exception):
     """Raised when a reservation cannot be satisfied even after eviction."""
+
+
+class QueueFull(Exception):
+    """Raised when the per-tier wait queue is already at max_depth_per_tier.
+
+    The backend surfaces this as HTTP 503 + Retry-After.
+    """
+
+
+class QueueTimeout(Exception):
+    """Raised when a queued reservation exceeds queue.max_wait_sec.
+
+    The backend surfaces this as an SSE error event (stream already open) or
+    HTTP 503 (pre-stream).
+    """
 
 
 class GPUProbe:
@@ -118,9 +165,20 @@ class VRAMScheduler:
         self.probe = probe or GPUProbe()
         self.loaded: dict[str, LoadedModel] = {}
         self._lock = asyncio.Lock()
+        # Per-tier wait queue: Condition for notifying slot availability +
+        # a waiter counter for position reporting and max_depth enforcement.
+        self._gates: dict[str, asyncio.Condition] = {}
+        self._waiters: dict[str, int] = {}
         self._sweeper_task: asyncio.Task | None = None
         self._observed_path = Path(self.vram.observed_costs.persist_path)
         self._load_observed_costs()
+
+    def _gate(self, tier_id: str) -> asyncio.Condition:
+        g = self._gates.get(tier_id)
+        if g is None:
+            g = asyncio.Condition()
+            self._gates[tier_id] = g
+        return g
 
     # ── Observed cost persistence ────────────────────────────────────────
 
@@ -167,99 +225,225 @@ class VRAMScheduler:
     # ── Core reservation API ─────────────────────────────────────────────
 
     @asynccontextmanager
-    async def reserve(self, tier_id: str) -> AsyncIterator[str]:
-        """Hold the model in VRAM for the duration of the `with` block.
-        Blocks until the model is resident. Yields the canonical tier id."""
-        await self._acquire(tier_id)
+    async def reserve(
+        self,
+        tier_id: str,
+        on_event: OnEventFn | None = None,
+    ) -> AsyncIterator[str]:
+        """Hold a slot on the tier's loaded model for the duration of the
+        `with` block. If the model is not loaded, loads it. If all slots are
+        taken, waits on the per-tier queue, emitting `{kind:"queued",...}`
+        events through `on_event` every queue.position_update_interval_sec.
+
+        Raises QueueFull if the queue is already at max_depth_per_tier and
+        QueueTimeout if the total wait exceeds queue.max_wait_sec.
+        """
+        await self.acquire(tier_id, on_event)
         try:
             yield tier_id
         finally:
-            await self._release(tier_id)
+            await self.release(tier_id)
 
-    async def _acquire(self, tier_id: str) -> None:
+    async def acquire(
+        self,
+        tier_id: str,
+        on_event: OnEventFn | None = None,
+    ) -> None:
         if tier_id not in self.tiers:
             raise KeyError(f"Unknown tier: {tier_id}")
         tier = self.tiers[tier_id]
+        slot_cap = max(1, int(getattr(tier, "parallel_slots", 1)))
+        qcfg = self.cfg.vram.queue
+        deadline = time.time() + max(1, qcfg.max_wait_sec)
+        entered_queue = False
+        last_event_pos: int | None = None
 
-        # First-pass fast path: already resident, just bump refcount
-        async with self._lock:
-            existing = self.loaded.get(tier_id)
-            if existing and existing.state == ModelState.RESIDENT:
-                existing.refcount += 1
-                existing.last_used = time.time()
-                return
-            if existing and existing.state == ModelState.LOADING:
-                ev = existing.load_event
-                # Release the lock while we wait on another coroutine's load
-            else:
-                ev = None
-
-        if ev is not None:
-            await ev.wait()
-            async with self._lock:
-                m = self.loaded.get(tier_id)
-                if m and m.state == ModelState.RESIDENT:
-                    m.refcount += 1
-                    m.last_used = time.time()
-                    return
-                # Load failed or was evicted; fall through to fresh load below
-
-        async with self._lock:
-            # Re-check under lock (another coroutine may have loaded it)
-            existing = self.loaded.get(tier_id)
-            if existing and existing.state == ModelState.RESIDENT:
-                existing.refcount += 1
-                existing.last_used = time.time()
-                return
-
-            await self._make_room_for(tier)
-            new_entry = LoadedModel(
-                tier_id=tier_id,
-                backend=tier.backend,
-                model_tag=tier.model_tag,
-                vram_estimate_gb=tier.vram_estimate_gb,
-                observed_cost_gb=self._observed.get(tier_id),
-                state=ModelState.LOADING,
-                refcount=1,
-                pinned=tier.pinned,
-            )
-            self.loaded[tier_id] = new_entry
-
-        # Do the actual load outside the lock — it can take 5-15s
-        before_free = self.probe.free_gb(self.vram.total_vram_gb)
         try:
-            loader = self.loaders.get(tier.backend)
-            if loader:
-                await loader(tier)
-        except Exception:
-            async with self._lock:
-                new_entry.state = ModelState.EVICTING
-                self.loaded.pop(tier_id, None)
-                new_entry.load_event.set()
-            raise
+            while True:
+                # Step 1: Try to grab a slot under the lock. Decide if we
+                # need to trigger a load, join the queue, or wait on an
+                # in-flight load.
+                load_needed = False
+                wait_for_load: asyncio.Event | None = None
+                async with self._lock:
+                    m = self.loaded.get(tier_id)
+                    if m and m.state == ModelState.RESIDENT:
+                        # Config changed under us? Evict so we reload with
+                        # the new slot count.
+                        if m.loaded_slots != slot_cap and m.refcount == 0:
+                            await self._unload(m)
+                            m = None
+                        elif m.refcount < m.slot_capacity:
+                            m.refcount += 1
+                            m.last_used = time.time()
+                            return
+                    if m is None or m.state == ModelState.EVICTING:
+                        # Not resident → we'll load it. Join queue so other
+                        # concurrent reservers wait behind us.
+                        if not entered_queue:
+                            if self._waiters.get(tier_id, 0) >= qcfg.max_depth_per_tier:
+                                raise QueueFull(
+                                    f"Tier {tier_id!r} queue full "
+                                    f"({qcfg.max_depth_per_tier})"
+                                )
+                            self._waiters[tier_id] = self._waiters.get(tier_id, 0) + 1
+                            entered_queue = True
+                        await self._make_room_for(tier)
+                        new_entry = LoadedModel(
+                            tier_id=tier_id,
+                            backend=tier.backend,
+                            model_tag=tier.model_tag,
+                            vram_estimate_gb=tier.vram_estimate_gb,
+                            observed_cost_gb=self._observed.get(tier_id),
+                            state=ModelState.LOADING,
+                            refcount=0,  # bumped after successful load
+                            pinned=tier.pinned,
+                            slot_capacity=slot_cap,
+                            loaded_slots=slot_cap,
+                        )
+                        self.loaded[tier_id] = new_entry
+                        load_needed = True
+                    elif m.state == ModelState.LOADING:
+                        # Someone else is loading. Wait on the event.
+                        if not entered_queue:
+                            if self._waiters.get(tier_id, 0) >= qcfg.max_depth_per_tier:
+                                raise QueueFull(
+                                    f"Tier {tier_id!r} queue full "
+                                    f"({qcfg.max_depth_per_tier})"
+                                )
+                            self._waiters[tier_id] = self._waiters.get(tier_id, 0) + 1
+                            entered_queue = True
+                        wait_for_load = m.load_event
+                    else:
+                        # Resident but full → queue and wait
+                        if not entered_queue:
+                            if self._waiters.get(tier_id, 0) >= qcfg.max_depth_per_tier:
+                                raise QueueFull(
+                                    f"Tier {tier_id!r} queue full "
+                                    f"({qcfg.max_depth_per_tier})"
+                                )
+                            self._waiters[tier_id] = self._waiters.get(tier_id, 0) + 1
+                            entered_queue = True
 
-        after_free = self.probe.free_gb(self.vram.total_vram_gb)
-        measured = max(0.0, before_free - after_free)
-        if measured > 0:
-            new_entry.observed_cost_gb = self._update_observed(tier_id, measured)
+                # Step 2: Perform load outside the lock.
+                if load_needed:
+                    before_free = self.probe.free_gb(self.vram.total_vram_gb)
+                    try:
+                        loader = self.loaders.get(tier.backend)
+                        if loader:
+                            await loader(tier)
+                    except Exception:
+                        async with self._lock:
+                            new_entry.state = ModelState.EVICTING
+                            self.loaded.pop(tier_id, None)
+                            new_entry.load_event.set()
+                        # Wake everyone so queued waiters can retry or bail
+                        gate = self._gate(tier_id)
+                        async with gate:
+                            gate.notify_all()
+                        raise
+                    after_free = self.probe.free_gb(self.vram.total_vram_gb)
+                    measured = max(0.0, before_free - after_free)
+                    if measured > 0:
+                        new_entry.observed_cost_gb = self._update_observed(
+                            tier_id, measured,
+                        )
+                    async with self._lock:
+                        new_entry.state = ModelState.RESIDENT
+                        new_entry.last_used = time.time()
+                        new_entry.load_event.set()
+                    gate = self._gate(tier_id)
+                    async with gate:
+                        gate.notify_all()
+                    # Loop back to grab a slot under the lock
+                    continue
 
-        async with self._lock:
-            new_entry.state = ModelState.RESIDENT
-            new_entry.last_used = time.time()
-            new_entry.load_event.set()
+                # Step 3: Wait for an in-flight load to finish, then retry.
+                if wait_for_load is not None:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        raise QueueTimeout(f"Queued wait exceeded max_wait_sec for {tier_id!r}")
+                    try:
+                        await asyncio.wait_for(wait_for_load.wait(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        raise QueueTimeout(
+                            f"Queued wait exceeded max_wait_sec for {tier_id!r}",
+                        )
+                    continue
 
-    async def _release(self, tier_id: str) -> None:
+                # Step 4: Queued behind a full resident model. Emit a
+                # progress event and wait on the condition.
+                if on_event and entered_queue:
+                    pos = self._waiters.get(tier_id, 0)
+                    if pos != last_event_pos:
+                        try:
+                            await on_event({
+                                "kind": "queued",
+                                "tier": tier_id,
+                                "position": pos,
+                                "waited_sec": max(
+                                    0,
+                                    int(qcfg.max_wait_sec - (deadline - time.time())),
+                                ),
+                                "max_wait_sec": qcfg.max_wait_sec,
+                            })
+                            last_event_pos = pos
+                        except Exception:
+                            logger.debug("on_event callback raised; continuing")
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise QueueTimeout(f"Queued wait exceeded max_wait_sec for {tier_id!r}")
+                wait_for = min(
+                    max(0.1, float(qcfg.position_update_interval_sec)),
+                    remaining,
+                )
+                gate = self._gate(tier_id)
+                async with gate:
+                    try:
+                        await asyncio.wait_for(gate.wait(), timeout=wait_for)
+                    except asyncio.TimeoutError:
+                        pass  # re-emit position on next loop
+        finally:
+            if entered_queue:
+                async with self._lock:
+                    self._waiters[tier_id] = max(
+                        0, self._waiters.get(tier_id, 0) - 1,
+                    )
+
+    async def release(self, tier_id: str) -> None:
         async with self._lock:
             m = self.loaded.get(tier_id)
             if not m:
                 return
             m.refcount = max(0, m.refcount - 1)
             m.last_used = time.time()
+        # Wake one waiter so it can grab the freed slot.
+        gate = self._gate(tier_id)
+        async with gate:
+            gate.notify(1)
+
+    # Backwards-compatible alias — some callers still use the underscore form.
+    async def _release(self, tier_id: str) -> None:
+        await self.release(tier_id)
 
     async def release_temporarily(self, tier_id: str) -> None:
         """Multi-agent helper: drop refcount to 0 so workers can evict this
         tier if they need the VRAM. Caller must re-acquire later."""
-        await self._release(tier_id)
+        await self.release(tier_id)
+
+    async def mark_tier_dirty(self, tier_id: str) -> None:
+        """Called by admin PATCH when a tier's parallel_slots (or other
+        load-time parameter) changes. Evicts immediately if refcount==0;
+        otherwise the next acquire will notice `loaded_slots != parallel_slots`
+        once refcount reaches 0 and reload with the new value.
+        """
+        async with self._lock:
+            m = self.loaded.get(tier_id)
+            if m and m.state == ModelState.RESIDENT and m.refcount == 0:
+                await self._unload(m)
+        gate = self._gate(tier_id)
+        async with gate:
+            gate.notify_all()
 
     # ── Eviction ─────────────────────────────────────────────────────────
 
@@ -402,6 +586,8 @@ class VRAMScheduler:
                     "backend": m.backend,
                     "state": m.state.value,
                     "refcount": m.refcount,
+                    "slot_capacity": m.slot_capacity,
+                    "waiters": self._waiters.get(m.tier_id, 0),
                     "vram_cost_gb": m.vram_estimate_gb,
                     "observed_cost_gb": m.observed_cost_gb,
                     "last_used_sec_ago": now - m.last_used,
@@ -410,6 +596,7 @@ class VRAMScheduler:
                 m.effective_cost() for m in self.loaded.values()
                 if m.state != ModelState.EVICTING
             )
+            queue_snapshot = dict(self._waiters)
         actual_free = self.probe.free_gb(self.vram.total_vram_gb)
         return {
             "total_vram_gb": self.vram.total_vram_gb,
@@ -417,4 +604,5 @@ class VRAMScheduler:
             "free_vram_gb_projected": self.vram.total_vram_gb - projected,
             "headroom_gb": self.vram.headroom_gb,
             "loaded": loaded_list,
+            "waiters_by_tier": queue_snapshot,
         }

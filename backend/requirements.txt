@@ -20,3 +20,8 @@ python-multipart==0.0.17   # for file upload endpoints
 # Per-user encrypted chat-history store (Phase 6):
 # AES-256-GCM + HKDF-SHA256 over AUTH_SECRET_KEY (or HISTORY_SECRET_KEY).
 cryptography==43.0.3
+
+# Cross-worker rate limiting + scheduler coordination (Phase 7).
+# Optional at runtime: the backend falls back to in-memory if REDIS_URL is
+# unset or connection fails.
+redis[hiredis]==5.2.0

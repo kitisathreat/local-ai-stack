@@ -196,6 +196,14 @@ async def toggle_tool(name: str, body: dict, _: dict = Depends(require_admin)):
 async def get_config(_: dict = Depends(require_admin)):
     from . import main as backend_main
     cfg: AppConfig = backend_main.state.config
+    redis_client = getattr(backend_main.state, "redis", None)
+    redis_healthy = False
+    if redis_client is not None:
+        try:
+            await redis_client.ping()
+            redis_healthy = True
+        except Exception:
+            redis_healthy = False
     return {
         "vram": {
             "total_vram_gb": cfg.vram.total_vram_gb,
@@ -211,6 +219,17 @@ async def get_config(_: dict = Depends(require_admin)):
                 "keep_alive_default": cfg.vram.ollama.keep_alive_default,
                 "keep_alive_pinned": cfg.vram.ollama.keep_alive_pinned,
             },
+            "queue": {
+                "max_depth_per_tier": cfg.vram.queue.max_depth_per_tier,
+                "max_wait_sec": cfg.vram.queue.max_wait_sec,
+                "position_update_interval_sec": cfg.vram.queue.position_update_interval_sec,
+            },
+        },
+        "concurrency": {
+            "workers_target": cfg.concurrency.workers_target,
+            "workers_running": int(os.getenv("BACKEND_WORKERS", "1")),
+            "redis_url_set": bool(cfg.concurrency.redis_url),
+            "redis_healthy": redis_healthy,
         },
         "router": {
             "auto_thinking_signals": {
@@ -239,6 +258,8 @@ async def get_config(_: dict = Depends(require_admin)):
             "rate_limits": {
                 "requests_per_hour_per_email": cfg.auth.rate_limits.requests_per_hour_per_email,
                 "requests_per_hour_per_ip": cfg.auth.rate_limits.requests_per_hour_per_ip,
+                "requests_per_minute_per_user": cfg.auth.rate_limits.requests_per_minute_per_user,
+                "requests_per_day_per_user": cfg.auth.rate_limits.requests_per_day_per_user,
             },
             "session": {
                 "cookie_ttl_days": cfg.auth.session.cookie_ttl_days,
@@ -253,6 +274,7 @@ async def get_config(_: dict = Depends(require_admin)):
                 "context_window": t.context_window,
                 "think_default": t.think_default,
                 "vram_estimate_gb": t.vram_estimate_gb,
+                "parallel_slots": getattr(t, "parallel_slots", 1),
                 "params": dict(t.params),
             }
             for name, t in cfg.models.tiers.items()
@@ -314,6 +336,19 @@ def _patch_vram(patch: dict, doc: dict) -> list[str]:
         _set_deep(doc, ["ollama", "keep_alive_default"], str(oll["keep_alive_default"])); changes.append("vram.ollama.keep_alive_default")
     if "keep_alive_pinned" in oll:
         _set_deep(doc, ["ollama", "keep_alive_pinned"], int(oll["keep_alive_pinned"])); changes.append("vram.ollama.keep_alive_pinned")
+    q = patch.get("queue") or {}
+    if "max_depth_per_tier" in q:
+        v = max(0, min(int(q["max_depth_per_tier"]), 1000))
+        _set_deep(doc, ["queue", "max_depth_per_tier"], v)
+        changes.append("vram.queue.max_depth_per_tier")
+    if "max_wait_sec" in q:
+        v = max(1, min(int(q["max_wait_sec"]), 600))
+        _set_deep(doc, ["queue", "max_wait_sec"], v)
+        changes.append("vram.queue.max_wait_sec")
+    if "position_update_interval_sec" in q:
+        v = max(1, min(int(q["position_update_interval_sec"]), 30))
+        _set_deep(doc, ["queue", "position_update_interval_sec"], v)
+        changes.append("vram.queue.position_update_interval_sec")
     return changes
 
 
@@ -381,6 +416,14 @@ def _patch_auth(patch: dict, doc: dict) -> list[str]:
     if "requests_per_hour_per_ip" in rl:
         doc.setdefault("rate_limits", {})["requests_per_hour_per_ip"] = int(rl["requests_per_hour_per_ip"])
         changes.append("auth.rate_limits.requests_per_hour_per_ip")
+    if "requests_per_minute_per_user" in rl:
+        v = max(0, min(int(rl["requests_per_minute_per_user"]), 10_000))
+        doc.setdefault("rate_limits", {})["requests_per_minute_per_user"] = v
+        changes.append("auth.rate_limits.requests_per_minute_per_user")
+    if "requests_per_day_per_user" in rl:
+        v = max(0, min(int(rl["requests_per_day_per_user"]), 1_000_000))
+        doc.setdefault("rate_limits", {})["requests_per_day_per_user"] = v
+        changes.append("auth.rate_limits.requests_per_day_per_user")
     ses = patch.get("session") or {}
     if "cookie_ttl_days" in ses:
         doc.setdefault("session", {})["cookie_ttl_days"] = int(ses["cookie_ttl_days"])
@@ -388,15 +431,21 @@ def _patch_auth(patch: dict, doc: dict) -> list[str]:
     return changes
 
 
-def _patch_tiers(patch: dict, doc: dict) -> list[str]:
+def _patch_tiers(patch: dict, doc: dict) -> tuple[list[str], set[str]]:
     """Patch a subset of fields on existing tiers in models.yaml.
 
     Only allows edits to fields the dashboard shows: context_window,
-    think_default, vram_estimate_gb, description, and a flat `params`
-    dict (temperature/top_p/top_k/num_ctx). New tiers cannot be created
-    this way.
+    think_default, vram_estimate_gb, description, parallel_slots, and a
+    flat `params` dict (temperature/top_p/top_k/num_ctx). New tiers cannot
+    be created this way.
+
+    Returns (changes, dirty_tiers). `dirty_tiers` is the set of tier names
+    whose load-time parameters (parallel_slots) changed — the caller calls
+    `scheduler.mark_tier_dirty()` on each so the scheduler reloads them on
+    next reserve.
     """
     changes: list[str] = []
+    dirty: set[str] = set()
     tiers_doc = doc.get("tiers") or {}
     for name, body in (patch or {}).items():
         if name not in tiers_doc or not isinstance(body, dict):
@@ -409,6 +458,12 @@ def _patch_tiers(patch: dict, doc: dict) -> list[str]:
             if k in body:
                 t[k] = caster(body[k])
                 changes.append(f"models.tiers.{name}.{k}")
+        if "parallel_slots" in body:
+            v = max(1, min(int(body["parallel_slots"]), 16))
+            if t.get("parallel_slots") != v:
+                t["parallel_slots"] = v
+                changes.append(f"models.tiers.{name}.parallel_slots")
+                dirty.add(name)
         if "params" in body and isinstance(body["params"], dict):
             t.setdefault("params", {})
             for pk, pv in body["params"].items():
@@ -418,7 +473,34 @@ def _patch_tiers(patch: dict, doc: dict) -> list[str]:
                 else:
                     t["params"][pk] = pv
                     changes.append(f"models.tiers.{name}.params.{pk}")
-    return changes
+    return changes, dirty
+
+
+def _patch_concurrency(patch: dict, doc: dict) -> tuple[list[str], bool]:
+    """Patch runtime.yaml (workers_target, redis_url). Returns (changes,
+    requires_restart). Workers and redis_url need a container restart to
+    take effect because Uvicorn is launched with --workers at startup."""
+    changes: list[str] = []
+    requires_restart = False
+    if "workers_target" in patch and patch["workers_target"] is not None:
+        v = max(1, min(int(patch["workers_target"]), 16))
+        if doc.get("workers_target") != v:
+            doc["workers_target"] = v
+            changes.append("concurrency.workers_target")
+            requires_restart = True
+    if "redis_url" in patch:
+        val = patch["redis_url"]
+        if val is None or (isinstance(val, str) and not val.strip()):
+            if doc.get("redis_url"):
+                requires_restart = True
+            doc["redis_url"] = None
+        else:
+            val = str(val).strip()
+            if doc.get("redis_url") != val:
+                doc["redis_url"] = val
+                requires_restart = True
+        changes.append("concurrency.redis_url")
+    return changes, requires_restart
 
 
 @router.patch("/config")
@@ -426,6 +508,8 @@ async def patch_config(body: dict, actor: dict = Depends(require_admin)):
     from . import main as backend_main
 
     all_changes: list[str] = []
+    dirty_tiers: set[str] = set()
+    requires_restart = False
     config_dir = Path(os.getenv("LAI_CONFIG_DIR", str(CONFIG_DIR)))
 
     # vram.yaml
@@ -459,10 +543,22 @@ async def patch_config(body: dict, actor: dict = Depends(require_admin)):
     if "tiers" in body and isinstance(body["tiers"], dict):
         p = config_dir / "models.yaml"
         doc = _load_yaml(p)
-        ch = _patch_tiers(body["tiers"], doc)
+        ch, dirty = _patch_tiers(body["tiers"], doc)
         if ch:
             _atomic_write_yaml(p, doc)
             all_changes.extend(ch)
+            dirty_tiers |= dirty
+
+    # runtime.yaml (workers_target, redis_url) — requires restart
+    if "concurrency" in body and isinstance(body["concurrency"], dict):
+        p = config_dir / "runtime.yaml"
+        doc = _load_yaml(p)
+        ch, rr = _patch_concurrency(body["concurrency"], doc)
+        if ch:
+            _atomic_write_yaml(p, doc)
+            all_changes.extend(ch)
+            if rr:
+                requires_restart = True
 
     if not all_changes:
         return {"ok": True, "changes": [], "message": "No changes applied."}
@@ -477,8 +573,51 @@ async def patch_config(body: dict, actor: dict = Depends(require_admin)):
         logger.exception("Config reload after PATCH failed")
         raise HTTPException(500, f"Saved files, but reload failed: {e}")
 
+    # Sanity check: multi-agent min_workers must not exceed the worker
+    # tier's parallel_slots, or all workers would queue forever.
+    ma = new_cfg.router.multi_agent
+    worker_tier = new_cfg.models.tiers.get(ma.worker_tier)
+    if worker_tier:
+        worker_slots = max(1, int(getattr(worker_tier, "parallel_slots", 1)))
+        if ma.min_workers > worker_slots:
+            raise HTTPException(
+                400,
+                f"multi_agent.min_workers={ma.min_workers} exceeds the "
+                f"worker tier's parallel_slots={worker_slots}. Raise "
+                f"tiers.{ma.worker_tier}.parallel_slots first or lower "
+                f"min_workers.",
+            )
+
+    # Hot-apply runtime settings that don't need a restart.
+    try:
+        from .middleware.rate_limit import rate_limiter
+        rate_limiter.configure(
+            per_minute=new_cfg.auth.rate_limits.requests_per_minute_per_user,
+            per_day=new_cfg.auth.rate_limits.requests_per_day_per_user,
+            redis_client=getattr(backend_main.state, "redis", None),
+        )
+    except Exception:
+        logger.exception("Rate limiter reconfigure after PATCH failed")
+
+    # Mark any tiers whose slot_capacity changed as dirty so the scheduler
+    # evicts and reloads them on the next reserve.
+    if dirty_tiers:
+        scheduler = getattr(backend_main.state, "scheduler", None)
+        if scheduler is not None:
+            for tier_id in dirty_tiers:
+                try:
+                    await scheduler.mark_tier_dirty(tier_id)
+                except Exception:
+                    logger.exception("mark_tier_dirty failed for %s", tier_id)
+
     logger.info("admin %s updated config: %s", actor["email"], ", ".join(all_changes))
-    return {"ok": True, "changes": all_changes, "ts": time.time()}
+    return {
+        "ok": True,
+        "changes": all_changes,
+        "requires_restart": requires_restart,
+        "dirty_tiers": sorted(dirty_tiers),
+        "ts": time.time(),
+    }
 
 
 @router.post("/reload")

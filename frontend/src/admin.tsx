@@ -8,7 +8,7 @@ import {
 
 type Tab =
   | "overview" | "usage" | "users" | "models" | "router" | "multi_agent"
-  | "vram" | "auth" | "tools";
+  | "vram" | "concurrency" | "auth" | "tools";
 
 const WINDOW_OPTS: Array<{ label: string; s: number }> = [
   { label: "1h", s: 3600 },
@@ -385,9 +385,89 @@ function VramConfigTab() {
              hint="-1 = forever"
              onChange={(v) => setDraft({ ...draft, ollama: { ...draft.ollama, keep_alive_pinned: v } })} />
 
+      <h3 class="admin-h3">Request queue (per tier)</h3>
+      <Field label="Max depth per tier" type="number"
+             value={draft.queue?.max_depth_per_tier ?? 10}
+             hint="Requests beyond this are rejected with 503."
+             onChange={(v) => setDraft({ ...draft, queue: { ...(draft.queue || {}), max_depth_per_tier: v } })} />
+      <Field label="Max wait (seconds)" type="number"
+             value={draft.queue?.max_wait_sec ?? 60}
+             hint="Total time a request may spend queued before it times out."
+             onChange={(v) => setDraft({ ...draft, queue: { ...(draft.queue || {}), max_wait_sec: v } })} />
+      <Field label="Position update interval (s)" type="number"
+             value={draft.queue?.position_update_interval_sec ?? 2}
+             hint="How often queue progress is streamed to the client."
+             onChange={(v) => setDraft({ ...draft, queue: { ...(draft.queue || {}), position_update_interval_sec: v } })} />
+
       <div class="admin-actions">
         <button class="primary" disabled={busy} onClick={() => save({ vram: draft })}>Save</button>
         <button disabled={busy} onClick={() => cfg && setDraft(JSON.parse(JSON.stringify(cfg.vram)))}>Revert</button>
+        {status && <span class="admin-dim">{status}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ConcurrencyTab() {
+  const { cfg, save, status, busy } = useConfig();
+  const [authDraft, setAuthDraft] = useState<any>(null);
+  const [concDraft, setConcDraft] = useState<any>(null);
+  useEffect(() => {
+    if (cfg) {
+      setAuthDraft(JSON.parse(JSON.stringify(cfg.auth)));
+      setConcDraft(JSON.parse(JSON.stringify(cfg.concurrency || {
+        workers_target: 1, workers_running: 1, redis_url_set: false, redis_healthy: false,
+      })));
+    }
+  }, [cfg]);
+  if (!cfg || !authDraft || !concDraft) return <div class="admin-dim">Loading…</div>;
+
+  const redisStatus = concDraft.redis_url_set
+    ? (concDraft.redis_healthy ? "connected" : "configured but unreachable")
+    : "disabled (single-worker in-memory mode)";
+
+  return (
+    <div class="admin-form">
+      <h3 class="admin-h3">Per-user rate limits</h3>
+      <Field label="Requests / minute / user" type="number"
+             value={authDraft.rate_limits.requests_per_minute_per_user ?? 30}
+             hint="Applies to the /v1/chat/completions endpoint. Shared across workers when Redis is connected."
+             onChange={(v) => setAuthDraft({
+               ...authDraft,
+               rate_limits: { ...authDraft.rate_limits, requests_per_minute_per_user: v },
+             })} />
+      <Field label="Requests / day / user" type="number"
+             value={authDraft.rate_limits.requests_per_day_per_user ?? 500}
+             onChange={(v) => setAuthDraft({
+               ...authDraft,
+               rate_limits: { ...authDraft.rate_limits, requests_per_day_per_user: v },
+             })} />
+
+      <h3 class="admin-h3">Workers &amp; Redis</h3>
+      <div class="admin-dim" style="margin-bottom:0.5rem;">
+        Currently running: <strong>{concDraft.workers_running} worker(s)</strong>.
+        Redis: <strong>{redisStatus}</strong>.
+      </div>
+      <Field label="Workers target (next restart)" type="number"
+             value={concDraft.workers_target ?? 1}
+             hint="Uvicorn --workers count. Requires a container restart to apply."
+             onChange={(v) => setConcDraft({ ...concDraft, workers_target: v })} />
+      <Field label="Redis URL" value={concDraft.redis_url ?? ""}
+             hint='e.g. "redis://redis:6379/0". Leave blank to run in-memory (single-worker only). Requires a restart.'
+             onChange={(v) => setConcDraft({ ...concDraft, redis_url: v })} />
+
+      <div class="admin-actions">
+        <button class="primary" disabled={busy}
+                onClick={() => save({ auth: authDraft, concurrency: concDraft })}>
+          Save
+        </button>
+        <button disabled={busy}
+                onClick={() => {
+                  setAuthDraft(JSON.parse(JSON.stringify(cfg.auth)));
+                  setConcDraft(JSON.parse(JSON.stringify(cfg.concurrency || {})));
+                }}>
+          Revert
+        </button>
         {status && <span class="admin-dim">{status}</span>}
       </div>
     </div>
@@ -893,6 +973,14 @@ function ModelsConfigTab() {
                   onChange={(v) => setTier(name, { think_default: v })} />
             <Field label="VRAM estimate (GB)" type="number" step="0.1" value={t.vram_estimate_gb}
                    onChange={(v) => setTier(name, { vram_estimate_gb: v })} />
+            <Field label="Parallel slots" type="number"
+                   value={t.parallel_slots ?? 1}
+                   hint={
+                     "Concurrent requests this loaded model can serve (num_parallel). " +
+                     "Effective per-request KV budget = context_window; total KV ≈ slots × context_window. " +
+                     "Saving a change evicts and reloads the model."
+                   }
+                   onChange={(v) => setTier(name, { parallel_slots: v })} />
             <h4 class="admin-h4">Sampling params</h4>
             <Field label="temperature" type="number" step="0.05"
                    value={t.params?.temperature ?? ""}
@@ -962,6 +1050,7 @@ export function AdminDashboard({ onExit }: { onExit: () => void }) {
     { id: "router", label: "Router" },
     { id: "multi_agent", label: "Multi-agent" },
     { id: "vram", label: "VRAM" },
+    { id: "concurrency", label: "Concurrency" },
     { id: "auth", label: "Auth" },
     { id: "tools", label: "Tools" },
   ];
@@ -998,6 +1087,7 @@ export function AdminDashboard({ onExit }: { onExit: () => void }) {
         {tab === "router" && <RouterConfigTab />}
         {tab === "multi_agent" && <MultiAgentTab />}
         {tab === "vram" && <VramConfigTab />}
+        {tab === "concurrency" && <ConcurrencyTab />}
         {tab === "auth" && <AuthConfigTab />}
         {tab === "tools" && <ToolsTab />}
       </main>

@@ -28,6 +28,13 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
+      # ── Concurrency — multi-worker + cross-worker Redis coordination ──────────
+      # BACKEND_WORKERS controls Uvicorn's --workers flag. Each worker runs its
+      # own asyncio event loop; rate limiting is shared through REDIS_URL. If
+      # REDIS_URL is unset or the redis service is unreachable, the rate
+      # limiter falls back to per-worker in-memory counters.
+      - BACKEND_WORKERS=${BACKEND_WORKERS:-1}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
@@ -38,7 +45,27 @@ services:
             - driver: nvidia
               capabilities: [gpu]
     depends_on:
-      - ollama
+      ollama:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Redis — cross-worker rate-limit counters (optional but recommended) ──────
+  # Ship as an always-on service so the default multi-worker config (set
+  # BACKEND_WORKERS > 1 in .env.local) Just Works. Disable by unsetting
+  # REDIS_URL in the backend service and removing the depends_on entry.
+  redis:
+    image: redis:7-alpine
+    container_name: lai-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   # ── Frontend (static Preact bundle served by nginx) ──────────────────────────
@@ -99,6 +126,9 @@ services:
       - "8001:8001"
     volumes:
       - ./models:/models:ro
+    # NOTE: -c is the *total* KV budget; --parallel splits it into slots, so
+    # each concurrent user gets (c / parallel) tokens. Keep --parallel in
+    # sync with tiers.vision.parallel_slots in config/models.yaml.
     command:
       - "--host"
       - "0.0.0.0"
@@ -110,6 +140,8 @@ services:
       - "/models/mmproj-qwen3.6-35b-F16.gguf"
       - "-c"
       - "16384"
+      - "--parallel"
+      - "2"
       - "-ngl"
       - "999"
     deploy:
@@ -184,3 +216,4 @@ volumes:
   qdrant-data:
   ollama-data:
   n8n-data:
+  redis-data:

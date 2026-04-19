@@ -58,7 +58,7 @@ from .schemas import (
     ModelsListResponse,
     TierInfo,
 )
-from .vram_scheduler import VRAMScheduler, VRAMExhausted
+from .vram_scheduler import QueueFull, QueueTimeout, VRAMScheduler, VRAMExhausted
 
 
 logging.basicConfig(
@@ -78,9 +78,33 @@ class AppState:
     scheduler: VRAMScheduler
     orchestrator: Orchestrator
     tools: ToolRegistry
+    # Optional Redis client — populated when REDIS_URL (env or config) is
+    # set. Used by the rate limiter (and future cross-worker scheduler
+    # coordination). None means "single-worker, in-memory only".
+    redis = None  # type: ignore[assignment]
 
 
 state = AppState()
+
+
+async def _init_redis(cfg: AppConfig):
+    """Lazy-imported so the `redis` package isn't required when unused."""
+    url = cfg.concurrency.redis_url
+    if not url:
+        return None
+    try:
+        from redis.asyncio import Redis
+        client = Redis.from_url(url, decode_responses=True)
+        # Smoke-test so we fail early rather than fail-open on first request.
+        await client.ping()
+        logger.info("Redis connected: %s", url)
+        return client
+    except Exception as e:
+        logger.warning(
+            "Redis requested at %s but connection failed (%s). "
+            "Falling back to in-memory state.", url, e,
+        )
+        return None
 
 
 @asynccontextmanager
@@ -92,6 +116,14 @@ async def lifespan(app: FastAPI):
 
     logger.info("Initialising database…")
     await db.init_db()
+
+    # Optional Redis client for cross-worker rate limiting.
+    state.redis = await _init_redis(state.config)
+    rate_limiter.configure(
+        per_minute=state.config.auth.rate_limits.requests_per_minute_per_user,
+        per_day=state.config.auth.rate_limits.requests_per_day_per_user,
+        redis_client=state.redis,
+    )
 
     logger.info("Discovering tools…")
     tools_dir = Path(os.getenv("LAI_TOOLS_DIR", "/app/tools"))
@@ -143,6 +175,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await state.scheduler.stop()
+        if state.redis is not None:
+            try:
+                await state.redis.aclose()
+            except Exception:
+                pass
 
 
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
@@ -329,7 +366,7 @@ async def chat_completions(
         request.headers.get("x-forwarded-for") or
         (request.client.host if request.client else "anon")
     )
-    rate_limiter.check(rate_key)
+    await rate_limiter.check(rate_key)
 
     # Middleware pipeline — inlet:
     #   1. Datetime/system context injection
@@ -438,6 +475,54 @@ def _agent_event_sse(ev: AgentEvent, model: str) -> str:
     return f"event: agent\ndata: {json.dumps(payload)}\n\n"
 
 
+async def _reserve_with_sse(
+    scheduler: VRAMScheduler,
+    tier_id: str,
+    model_id: str,
+) -> AsyncIterator[str]:
+    """Acquire a scheduler slot, forwarding queue-progress events as SSE.
+
+    Yields `event: agent` chunks with `type:"queue"` while the request is
+    waiting for a slot. Returns (no more yields) once the slot is held.
+    Raises `QueueFull` or `QueueTimeout` to the caller, which must convert
+    them into an SSE error event.
+    """
+    evs: asyncio.Queue = asyncio.Queue()
+
+    async def on_event(ev: dict) -> None:
+        await evs.put(ev)
+
+    acquire_task = asyncio.create_task(scheduler.acquire(tier_id, on_event))
+    try:
+        while not acquire_task.done():
+            try:
+                ev = await asyncio.wait_for(evs.get(), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
+            yield _agent_event_sse(
+                AgentEvent(type="queue", data=ev), model_id,
+            )
+        # Drain any events that arrived after acquisition.
+        while not evs.empty():
+            try:
+                ev = evs.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            yield _agent_event_sse(
+                AgentEvent(type="queue", data=ev), model_id,
+            )
+        # Propagate QueueFull/QueueTimeout/VRAMExhausted/etc.
+        await acquire_task
+    except BaseException:
+        if not acquire_task.done():
+            acquire_task.cancel()
+            try:
+                await acquire_task
+            except BaseException:
+                pass
+        raise
+
+
 async def _single_agent_sse(
     req: ChatRequest,
     decision,
@@ -476,8 +561,15 @@ async def _single_agent_sse(
     max_tool_turns = 5
     try:
         for turn in range(max_tool_turns + 1):
-            async with state.scheduler.reserve(decision.tier_name):
-                tool_calls_accum: list[dict] = []
+            # Acquire a slot on the tier's loaded model, forwarding any
+            # queue-progress events to the client while we wait.
+            async for sse in _reserve_with_sse(
+                state.scheduler, decision.tier_name, model_id,
+            ):
+                yield sse
+            tool_calls_accum: list[dict] = []
+            llama_cpp_done = False
+            try:
                 if tier.backend == "ollama":
                     async for chunk in client.chat_stream(
                         tier, msg_payload, think=decision.think,
@@ -503,8 +595,12 @@ async def _single_agent_sse(
                             if text:
                                 assembled_text.append(text)
                                 yield _openai_chunk(text, model_id)
-                    break
+                    llama_cpp_done = True
+            finally:
+                await state.scheduler.release(decision.tier_name)
 
+            if llama_cpp_done:
+                break
             if not tool_calls_accum or turn >= max_tool_turns:
                 break
 
@@ -527,6 +623,24 @@ async def _single_agent_sse(
     except VRAMExhausted as e:
         yield _agent_event_sse(
             AgentEvent(type="error", data={"message": str(e), "kind": "vram_exhausted"}),
+            model_id,
+        )
+    except QueueFull as e:
+        yield _agent_event_sse(
+            AgentEvent(type="error", data={
+                "message": str(e),
+                "kind": "queue_full",
+                "retry_after_sec": 30,
+            }),
+            model_id,
+        )
+    except QueueTimeout as e:
+        yield _agent_event_sse(
+            AgentEvent(type="error", data={
+                "message": str(e),
+                "kind": "queue_timeout",
+                "retry_after_sec": 15,
+            }),
             model_id,
         )
     except Exception as e:

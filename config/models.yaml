@@ -29,6 +29,7 @@ tiers:
       repeat_penalty: 1.0
       num_predict: 8192
     vram_estimate_gb: 24
+    parallel_slots: 1
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
@@ -50,6 +51,7 @@ tiers:
       num_predict: 4096
     vram_estimate_gb: 21
     is_orchestrator: true
+    parallel_slots: 2
 
   # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
   fast:
@@ -69,6 +71,7 @@ tiers:
       num_predict: 2048
     vram_estimate_gb: 7
     parallel_workers_max: 3
+    parallel_slots: 4
 
   # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
   coding:
@@ -90,6 +93,7 @@ tiers:
       num_predict: 8192
     vram_estimate_gb: 24
     reasoning_format: none              # strip <think> tags from API output
+    parallel_slots: 1
 
   # ── Vision — Qwen3.6 35B-A3B + mmproj via llama.cpp ─────────────────────────
   vision:
@@ -111,6 +115,7 @@ tiers:
       num_predict: 4096
     vram_estimate_gb: 21
     pinned: true                        # llama.cpp can't unload without restart
+    parallel_slots: 2
 
 # Backwards compat — map old profile names to new tiers
 aliases:
