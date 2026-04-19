@@ -164,14 +164,6 @@ jobs:
             Write-Host "No ci_results.txt found." -ForegroundColor Yellow
           }
 
-      - name: Upload test log as artifact
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-results-windows
-          path: tests/ci_results.txt
-          if-no-files-found: warn
-
       - name: Post failing tests to PR comment
         if: always() && github.event_name == 'pull_request'
         continue-on-error: true
@@ -181,22 +173,22 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          echo "PR: $PR_NUMBER, run: $RUN_ID"
+          echo "STEP STARTED: Post failing tests"
+          echo "PWD: $(pwd)"
+          ls -la tests/ 2>&1 | head -20 || true
           if [ ! -f tests/ci_results.txt ]; then
-            echo "ci_results.txt missing"
-            ls -la tests/ || true
+            echo "ci_results.txt missing — posting placeholder comment for visibility"
+            echo "### Windows CI post-test diagnostic (run $RUN_ID)" > fail_comment.md
+            echo "" >> fail_comment.md
+            echo "The test step failed but tests/ci_results.txt was not written." >> fail_comment.md
+            gh pr comment "$PR_NUMBER" --body-file fail_comment.md || echo "gh pr comment FAILED"
             exit 0
           fi
-          echo "---- FULL ci_results.txt ----"
-          cat tests/ci_results.txt
-          echo "---- end ----"
-          # Use POSIX character class so this works on Git Bash / BSD grep too.
           fails=$(grep -E '^[[:space:]]*\[FAIL\]' tests/ci_results.txt || true)
           if [ -z "$fails" ]; then
-            echo "No [FAIL] lines found; not posting comment"
+            echo "No [FAIL] lines found in ci_results.txt"
             exit 0
           fi
-          # Write body to a file in the workspace (avoid /tmp path translation on Git Bash).
           {
             echo "### Windows CI test failures (run $RUN_ID)"
             echo ""
@@ -204,8 +196,6 @@ jobs:
             echo "$fails"
             echo '```'
           } > fail_comment.md
-          echo "---- comment body ----"
-          cat fail_comment.md
-          echo "---- gh pr comment ----"
-          gh pr comment "$PR_NUMBER" --body-file fail_comment.md || \
-            echo "gh pr comment failed"
+          echo "Calling gh pr comment..."
+          gh pr comment "$PR_NUMBER" --body-file fail_comment.md
+          echo "gh pr comment exit: $?"
