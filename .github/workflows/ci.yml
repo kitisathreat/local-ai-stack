@@ -123,6 +123,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Proof-of-life comment (diagnostic)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Testing gh pr comment from bash shell on windows-latest"
+          echo "PR=$PR_NUMBER RUN=$RUN_ID SHA=$COMMIT_SHA"
+          which gh || echo "no gh in PATH"
+          gh --version || echo "gh --version failed"
+          echo "### CI diagnostic (run $RUN_ID, commit ${COMMIT_SHA:0:7})" > diag.md
+          echo "bash shell is working on windows-latest." >> diag.md
+          gh pr comment "$PR_NUMBER" --body-file diag.md || echo "gh pr comment failed"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
