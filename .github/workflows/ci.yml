@@ -24,7 +24,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio pyyaml pydantic httpx aiosqlite aiosmtplib 'python-jose[cryptography]'
+        run: pip install pytest pytest-asyncio pyyaml pydantic httpx aiosqlite aiosmtplib 'python-jose[cryptography]' fastapi
 
       - name: Run all Python tests
         run: |
