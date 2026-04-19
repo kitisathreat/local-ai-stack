@@ -58,8 +58,9 @@ Test-Case "models.yaml has all 5 tiers" {
 }
 
 Test-Case "models.yaml has backwards-compat aliases" {
+    # Use multiline regex so ^aliases: anchors to line-start, not file-start.
     $yaml = Get-Content "$root\config\models.yaml" -Raw
-    if ($yaml -notmatch "^aliases:") { throw "Missing 'aliases:' section" }
+    if ($yaml -notmatch "(?m)^aliases:") { throw "Missing 'aliases:' section" }
     foreach ($a in @("quality","large","balanced","analyst","creative","roleplay","summarizer")) {
         if ($yaml -notmatch "  ${a}:\s*\w") { throw "Missing alias entry: $a" }
     }
