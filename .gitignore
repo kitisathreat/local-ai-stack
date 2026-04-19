@@ -1,6 +1,7 @@
 .env.local
 .env
 openapi.json
+tests/ci_results.txt
 
 # Runtime state (SQLite db, Qdrant volumes, VRAM observed costs)
 data/*

@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, master]
   push:
-    branches: [main, master]
+    branches: [main, master, claude-code-integration]
 
 jobs:
   # ── Python static analysis: syntax, metadata, config consistency ─────────────
@@ -20,13 +20,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: pip install pytest pyyaml
+        run: pip install pytest pytest-asyncio pyyaml pydantic httpx
 
       - name: Run tool & pipeline tests
         run: python3 -m pytest tests/test_tools.py -v --tb=short
 
       - name: Run config & compose tests
         run: python3 -m pytest tests/test_config.py -v --tb=short
+
+      - name: Run router tests
+        run: python3 -m pytest tests/test_router.py -v --tb=short
+
+      - name: Run VRAM scheduler tests
+        run: python3 -m pytest tests/test_vram_scheduler.py -v --tb=short
 
   # ── PowerShell script syntax ──────────────────────────────────────────────────
   powershell-syntax:
@@ -77,6 +83,8 @@ jobs:
 
           files = [
             "config/models.yaml",
+            "config/router.yaml",
+            "config/vram.yaml",
             "config/tools.yaml",
             "config/ollama-models.yaml",
             "config/searxng/settings.yml",
@@ -101,3 +109,24 @@ jobs:
           if failed:
             sys.exit(1)
           EOF
+
+  # ── PowerShell integration tests (Windows runner) ────────────────────────────
+  test:
+    name: Run test suite (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install openai
+
+      - name: Run tests (CI mode)
+        shell: pwsh
+        run: .\tests\run_tests.ps1 -CI

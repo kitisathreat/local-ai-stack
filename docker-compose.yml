@@ -144,8 +144,8 @@ services:
       - JUPYTER_ENABLE_LAB=yes
     volumes:
       - jupyter-data:/home/jovyan/work
-    expose:
-      - "8888"
+    ports:
+      - "8888:8888"
     restart: always
 
   # ── Qdrant: vector database ──────────────────────────────────────────────────
