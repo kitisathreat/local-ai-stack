@@ -30,6 +30,32 @@ User ──► Frontend ──► │   FastAPI         │ ──► Router + m
                       └───────────────────┘
 ```
 
+## Interfaces
+
+Three GUIs ship with the stack. The chat SPA and admin dashboard are the same Preact bundle; the launcher is a separate Windows orchestrator.
+
+### Chat (Preact SPA, `:3000`)
+
+User-facing chat at `http://localhost:3000`. Sidebar lists conversations; the main column hosts the tier picker, reasoning toggle, streaming message bubbles, and a collapsible multi-agent step panel.
+
+![Chat UI mockup](docs/images/frontend-chat.svg)
+
+Code: [`frontend/src/app.tsx`](frontend/src/app.tsx). Theme tokens in [`frontend/src/styles.css`](frontend/src/styles.css); light mode auto-engages via `prefers-color-scheme`.
+
+### Admin dashboard (`#/admin`)
+
+Same bundle, gated by the `ADMIN_EMAILS` env var. Tabs for live usage (requests, tokens, latency, error sparklines), by-tier and by-user breakdowns, users, VRAM residency, and editable config (models · router · VRAM · auth · tools). Saves write back to `config/*.yaml` atomically and hot-reload without a restart.
+
+![Admin dashboard mockup](docs/images/admin-dashboard.svg)
+
+Code: [`frontend/src/admin.tsx`](frontend/src/admin.tsx) · [`backend/admin.py`](backend/admin.py) · [`backend/metrics.py`](backend/metrics.py).
+
+### Windows launcher (`LocalAIStack.exe`)
+
+PowerShell + WinForms one-shot orchestrator. Starts Docker Desktop, brings the compose stack up, and exposes a tray icon with *Open Chat · View Logs · Restart · Stop & Exit*. Compiled from [`launcher/LocalAIStack.ps1`](launcher/LocalAIStack.ps1) via [`launcher/build.ps1`](launcher/build.ps1).
+
+![Launcher window mockup](docs/images/launcher-window.svg)
+
 ## Tiers
 
 All five tiers are defined in [`config/models.yaml`](config/models.yaml) and addressable as `tier.<name>` virtual model ids.
