@@ -50,17 +50,18 @@ Test-Case "models.yaml has 'default' key" {
     if (-not $hit) { throw "default key not found" }
 }
 
-Test-Case "models.yaml has all original 4 profiles" {
+Test-Case "models.yaml has all 5 tiers" {
     $yaml = Get-Content "$root\config\models.yaml" -Raw
-    foreach ($p in @("fast","quality","coding","large")) {
-        if ($yaml -notmatch "  ${p}:") { throw "Missing profile: $p" }
+    foreach ($p in @("highest_quality","versatile","fast","coding","vision")) {
+        if ($yaml -notmatch "  ${p}:") { throw "Missing tier: $p" }
     }
 }
 
-Test-Case "models.yaml has new connector profiles" {
+Test-Case "models.yaml has backwards-compat aliases" {
     $yaml = Get-Content "$root\config\models.yaml" -Raw
-    foreach ($p in @("creative","analyst","balanced","roleplay","summarizer")) {
-        if ($yaml -notmatch "  ${p}:") { throw "Missing new profile: $p" }
+    if ($yaml -notmatch "^aliases:") { throw "Missing 'aliases:' section" }
+    foreach ($a in @("quality","large","balanced","analyst","creative","roleplay","summarizer")) {
+        if ($yaml -notmatch "  ${a}:\s*\w") { throw "Missing alias entry: $a" }
     }
 }
 
@@ -89,9 +90,14 @@ Test-Case "docker-compose has searxng service" {
     if ($out -notmatch "searxng") { throw "searxng service missing" }
 }
 
-Test-Case "docker-compose has pipelines service" {
+Test-Case "docker-compose has backend service" {
     $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
-    if ($out -notmatch "pipelines") { throw "pipelines service missing" }
+    if ($out -notmatch "(?m)^\s*backend:") { throw "backend service missing" }
+}
+
+Test-Case "docker-compose has llama-server service" {
+    $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
+    if ($out -notmatch "llama-server") { throw "llama-server service missing" }
 }
 
 Test-Case "docker-compose has qdrant service" {
@@ -268,25 +274,25 @@ function Get-ModelConfig($profileName, $configPath) {
     return $config
 }
 
-foreach ($profile in @("fast","quality","coding","large","creative","analyst","balanced","roleplay","summarizer")) {
-    Test-Case "Parser: '$profile' has required keys" {
-        $m = Get-ModelConfig $profile "$root\config\models.yaml"
-        foreach ($key in @("id","gpu","context","parallel","description")) {
+foreach ($tier in @("highest_quality","versatile","fast","coding","vision")) {
+    Test-Case "Parser: tier '$tier' has required keys" {
+        $m = Get-ModelConfig $tier "$root\config\models.yaml"
+        foreach ($key in @("backend","model_tag","context_window")) {
             if (-not $m.ContainsKey($key)) { throw "Missing key: $key" }
         }
     }
 }
 
-Test-Case "Parser: 'quality' is default profile" {
+Test-Case "Parser: 'versatile' is default tier" {
     $yaml = Get-Content "$root\config\models.yaml"
     $defaultLine = ($yaml | Select-String "^default:").Line
     $default = $defaultLine -replace "default:\s*",""
-    if ($default.Trim() -ne "quality") { throw "Default is '$($default.Trim())' not 'quality'" }
+    if ($default.Trim() -ne "versatile") { throw "Default is '$($default.Trim())' not 'versatile'" }
 }
 
-Test-Case "Parser: unknown profile returns empty" {
-    $m = Get-ModelConfig "nonexistent" "$root\config\models.yaml"
-    if ($m.Count -ne 0) { throw "Should return empty for unknown profile" }
+Test-Case "Parser: unknown tier returns empty" {
+    $m = Get-ModelConfig "nonexistent_tier_xyz" "$root\config\models.yaml"
+    if ($m.Count -ne 0) { throw "Should return empty for unknown tier" }
 }
 
 # -- LIVE SERVICE CHECKS --
