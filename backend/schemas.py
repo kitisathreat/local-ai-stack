@@ -50,6 +50,11 @@ class ChatRequest(BaseModel):
     tools: list[dict[str, Any]] | None = None
     tool_choice: str | dict[str, Any] | None = None
 
+    # Phase 6: when set and the user is signed in, persist the user+assistant
+    # messages after the stream completes and trigger background memory
+    # distillation every N turns.
+    conversation_id: int | None = None
+
 
 class TierInfo(BaseModel):
     """Returned by GET /v1/models — one entry per tier."""
