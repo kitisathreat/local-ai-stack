@@ -1,4 +1,33 @@
 services:
+  # ── Local AI Stack backend — tier router, VRAM scheduler, multi-agent ─────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: lai-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - LLAMACPP_URL=http://llama-server:8001/v1
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      - ollama
+      # llama-server is optional; scheduler handles unavailability
+    restart: unless-stopped
+
+  # ── Open WebUI — chat UI (Phase 1: still used; replaced in Phase 4) ───────────
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
@@ -11,22 +40,22 @@ services:
     environment:
       - WEBUI_AUTH=False
 
-      # ── LM Studio + Pipelines as OpenAI-compatible backends ──────────────────
-      - OPENAI_API_BASE_URLS=http://host.docker.internal:1234/v1;http://pipelines:9099
-      - OPENAI_API_KEYS=lmstudio;0p3n-w3bu!
+      # ── Backend is the single OpenAI-compatible endpoint ──────────────────────
+      - OPENAI_API_BASE_URLS=http://backend:8000/v1
+      - OPENAI_API_KEYS=local-ai-stack
 
-      # ── Ollama integration (local model hub) ──────────────────────────────────
+      # ── Ollama listed directly so raw-tag access is available to admins ───────
       - OLLAMA_BASE_URL=http://ollama:11434
 
-      # ── Vector database: Qdrant for semantic RAG ──────────────────────────────
+      # ── Vector database ───────────────────────────────────────────────────────
       - VECTOR_DB=qdrant
       - QDRANT_URL=http://qdrant:6333
 
-      # ── Embeddings (via LM Studio OpenAI-compatible endpoint) ─────────────────
-      - RAG_EMBEDDING_ENGINE=openai
-      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5-GGUF
+      # ── Embeddings via Ollama (no longer depends on LM Studio) ────────────────
+      - RAG_EMBEDDING_ENGINE=ollama
+      - RAG_EMBEDDING_MODEL=nomic-embed-text
 
-      # ── Web search via SearXNG ────────────────────────────────────────────────
+      # ── Web search ────────────────────────────────────────────────────────────
       - ENABLE_RAG_WEB_SEARCH=True
       - RAG_WEB_SEARCH_ENGINE=searxng
       - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>&format=json
@@ -39,22 +68,74 @@ services:
       - CODE_EXECUTION_JUPYTER_AUTH=token
       - CODE_EXECUTION_JUPYTER_AUTH_TOKEN=local-ai-stack-token
 
-      # ── Image generation (point to Automatic1111 / ComfyUI if running) ────────
+      # ── Misc ──────────────────────────────────────────────────────────────────
       - ENABLE_IMAGE_GENERATION=False
-      - IMAGE_GENERATION_ENGINE=openai
-
-      # ── Miscellaneous features ────────────────────────────────────────────────
       - ENABLE_COMMUNITY_SHARING=False
       - ENABLE_MESSAGE_RATING=True
-      - DEFAULT_MODELS=quality
+      - DEFAULT_MODELS=tier.versatile
     restart: always
     depends_on:
+      - backend
       - jupyter
-      - pipelines
       - qdrant
       - searxng
-      # ollama is optional — remove from depends_on to allow starting without it
 
+  # ── Ollama — primary inference backend ────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-3}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-3}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: always
+
+  # ── llama.cpp server — Vision tier (Qwen3.6 35B + mmproj) ─────────────────────
+  #
+  # Requires the vision GGUF + mmproj files in ./models/. Download via
+  # scripts/setup-models.sh. Service stays idle (failed-start) if files are
+  # missing — the backend's VRAM scheduler won't route to it in that case.
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-server
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./models:/models:ro
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8001"
+      - "-m"
+      - "/models/qwen3.6-35b-a3b-Q4_K_M.gguf"
+      - "--mmproj"
+      - "/models/mmproj-qwen3.6-35b-F16.gguf"
+      - "-c"
+      - "16384"
+      - "-ngl"
+      - "999"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ── Jupyter: code interpreter ─────────────────────────────────────────────────
   jupyter:
     image: quay.io/jupyter/scipy-notebook:latest
     container_name: jupyter
@@ -67,20 +148,7 @@ services:
       - "8888"
     restart: always
 
-  # ── Open WebUI Pipelines: function-calling, filters, RAG pipelines ────────────
-  pipelines:
-    image: ghcr.io/open-webui/pipelines:main
-    container_name: pipelines
-    ports:
-      - "9099:9099"
-    volumes:
-      - pipelines-data:/app/pipelines
-      - ./pipelines:/app/pipelines/custom:ro
-    environment:
-      - PIPELINES_API_KEY=0p3n-w3bu!
-    restart: always
-
-  # ── Qdrant: high-performance vector database for RAG ─────────────────────────
+  # ── Qdrant: vector database ──────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -91,7 +159,7 @@ services:
       - qdrant-data:/qdrant/storage
     restart: always
 
-  # ── SearXNG: self-hosted meta-search engine (web search for models) ───────────
+  # ── SearXNG: meta-search engine for web search tools ──────────────────────────
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
@@ -109,17 +177,7 @@ services:
       - SETUID
     restart: always
 
-  # ── Ollama: local model hub (llama3, phi4, mistral, llava, etc.) ──────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    restart: always
-
-  # ── n8n: low-code workflow automation connected to AI ─────────────────────────
+  # ── n8n: optional workflow automation ────────────────────────────────────────
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
@@ -139,7 +197,6 @@ services:
 volumes:
   open-webui:
   jupyter-data:
-  pipelines-data:
   qdrant-data:
   ollama-data:
   n8n-data:

@@ -1,0 +1,46 @@
+# VRAM scheduler policy — consumed by backend/vram_scheduler.py.
+#
+# The scheduler holds a single in-process registry of which tiers are
+# resident in VRAM, reference-counted. When a new reservation would exceed
+# total_vram_gb (minus headroom_gb), it evicts LRU unpinned tiers with
+# refcount==0 to make room.
+
+# ── Hardware ────────────────────────────────────────────────────────────────
+total_vram_gb: 24                       # RTX Pro 4000 SFF (Blackwell, 24GB GDDR7)
+headroom_gb: 1.5                        # safety margin for KV cache growth
+poll_interval_sec: 5                    # background sweeper cadence
+
+# ── Eviction policy ─────────────────────────────────────────────────────────
+eviction:
+  policy: lru
+  min_residency_sec: 30                 # don't evict a model that just loaded (anti-thrash)
+  pin_orchestrator: false               # orchestrator CAN be evicted while workers run
+  pin_vision: true                      # vision tier is pinned (llama.cpp can't unload
+                                        # without container restart)
+
+# ── Ollama keep_alive control ───────────────────────────────────────────────
+# Ollama's own idle-unload timer. We set this per-request:
+#   - keep_alive_default when refcount drops to 0 (lets Ollama idle-unload
+#     after 30min even if scheduler doesn't evict)
+#   - keep_alive_pinned (-1 = forever) when a model is actively reserved
+ollama:
+  keep_alive_default: "30m"
+  keep_alive_pinned: -1
+
+# ── Multi-agent coordination ────────────────────────────────────────────────
+multi_agent:
+  release_orchestrator_during_workers: true
+  # When true, after the orchestrator emits its plan, it's released (refcount
+  # drops to 0) so the 3 parallel Fast workers (~21GB total) can fit in the
+  # same 24GB card. The orchestrator is re-acquired for synthesis at the end
+  # (may trigger a reload, adding ~5-8s of latency — considered acceptable
+  # because the wall-clock win from parallel workers is much larger).
+  synthesis_reload_timeout_sec: 60
+
+# ── Observed cost tuning ────────────────────────────────────────────────────
+# vram_estimate_gb values in models.yaml are static guesses. After each
+# successful load, the scheduler reads delta via pynvml and caches the
+# observed cost. On next start, eviction math uses max(estimate, observed).
+observed_costs:
+  persist_path: /app/data/vram_observed.json
+  learning_rate: 0.1                    # EMA smoothing for observed values

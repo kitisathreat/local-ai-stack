@@ -1,0 +1,69 @@
+# Router heuristics — hot-reloadable without touching tier definitions.
+#
+# Consumed by backend/router.py at request time. Regexes are compiled once
+# on startup; failure to compile is surfaced via tests/test_router.py.
+
+# ── Auto-thinking signals ────────────────────────────────────────────────────
+# When a user's message matches `enable_when_any`, reasoning is forced ON
+# regardless of tier default. `disable_when_any` forces it OFF.
+# Explicit slash commands (below) override both.
+auto_thinking_signals:
+  enable_when_any:
+    - regex: '\b(prove|derive|integrate|differentiate|theorem|equation|proof)\b'
+    - regex: '\b(debug|stack ?trace|why does|root cause|compile error|traceback)\b'
+    - regex: '\bstep[- ]by[- ]step\b'
+    - regex: '\b(compare|contrast|analyze|analyse|optimi[sz]e algorithm)\b'
+    - regex: '\b(math|calculus|algebra|geometry|statistics)\b'
+  disable_when_any:
+    - regex: '^/(no_?think|fast|quick)\b'
+    - regex: '\b(quick answer|tldr|summari[sz]e in one|one line|one sentence)\b'
+    - regex: '^(hi|hello|hey|thanks|thank you|ok|okay)\b'
+
+# ── Multi-agent triggers ─────────────────────────────────────────────────────
+# When any of these match AND the selected tier is not `fast`, the router
+# invokes the orchestrator/worker pipeline instead of a single-shot call.
+multi_agent:
+  trigger_when_any:
+    - regex: '\b(compare|contrast|pros and cons|in parallel)\b'
+    - regex: '\b(research|analy[sz]e|summari[sz]e) (each|all|every|three|four|five)\b'
+    - regex: '\b(for each|for every|across multiple)\b'
+    - min_question_marks: 3
+    - estimated_output_tokens_gt: 8000
+  max_workers: 3
+  worker_tier: fast
+  worker_overrides:
+    think: false
+    temperature: 0.7
+  orchestrator_tier: versatile
+  orchestrator_overrides:
+    think: true
+  synthesis_overrides:
+    think: true
+    temperature: 0.6
+  # If a subtask's prompt matches one of these, route it to the specialist
+  # tier instead of the default worker tier.
+  specialist_routes:
+    code_block_present: coding
+    image_in_message: vision
+
+# ── Slash commands — parsed from the leading portion of the user's message
+#     before forwarding. The pipe strips them and emits a status event so the
+#     user sees the toggle take effect.
+slash_commands:
+  '/think on':
+    think: true
+  '/think off':
+    think: false
+  '/no_think':
+    think: false
+  '/solo':
+    multi_agent: false
+  '/swarm':
+    multi_agent: true
+  '/tier':                              # usage: /tier coding
+    set_tier: true                      # value comes from next token
+  '/forget':
+    clear_memory: true
+  '/quick':
+    think: false
+    multi_agent: false
