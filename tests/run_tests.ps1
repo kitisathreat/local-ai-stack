@@ -92,8 +92,9 @@ Test-Case "docker-compose has searxng service" {
 }
 
 Test-Case "docker-compose has backend service" {
+    # Match simple substring style matching other service checks in this file.
     $out = (docker compose -f "$root\docker-compose.yml" config 2>&1) -join "`n"
-    if ($out -notmatch "(?m)^\s*backend:") { throw "backend service missing" }
+    if ($out -notmatch "lai-backend") { throw "backend service missing (lai-backend container not found)" }
 }
 
 Test-Case "docker-compose has llama-server service" {
