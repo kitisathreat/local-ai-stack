@@ -81,14 +81,18 @@ Test-Case "docker-compose.yml parses as YAML" {
     $yaml = Get-Content "$root\docker-compose.yml" -Raw
     # Crude check: must contain services: and each expected service name.
     if ($yaml -notmatch "(?m)^services:") { throw "services: section missing" }
-    foreach ($svc in @("backend","open-webui","ollama","llama-server","jupyter","qdrant","searxng","n8n")) {
+    foreach ($svc in @("backend","frontend","ollama","llama-server","jupyter","qdrant","searxng","n8n")) {
         if ($yaml -notmatch "(?m)^  ${svc}:") { throw "service '$svc' missing" }
     }
 }
 
-Test-Case "docker-compose WEBUI_AUTH=False set" {
-    $yaml = Get-Content "$root\docker-compose.yml" -Raw
-    if ($yaml -notmatch "WEBUI_AUTH=False") { throw "WEBUI_AUTH not set to False" }
+Test-Case "docker-compose frontend proxies backend" {
+    # Frontend container serves the Preact bundle and proxies /api/* to
+    # the FastAPI backend. Verify nginx.conf references backend:8000.
+    $nginxConf = Get-Content "$root\frontend\nginx.conf" -Raw
+    if ($nginxConf -notmatch "backend:8000") {
+        throw "frontend/nginx.conf must proxy /api/ to backend:8000"
+    }
 }
 
 Test-Case "searxng settings.yml exists" {
@@ -275,57 +279,52 @@ Test-Case "Parser: unknown tier returns empty" {
 if (-not $CI) {
     "`n[ Live Service Checks ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
 
-    Test-Case "Open WebUI responds HTTP 200" {
+    Test-Case "Frontend responds HTTP 200" {
         $r = Invoke-WebRequest http://localhost:3000 -UseBasicParsing -TimeoutSec 5
         if ($r.StatusCode -ne 200) { throw "Got $($r.StatusCode)" }
     }
 
-    Test-Case "Open WebUI auth is disabled" {
-        $cfg = Invoke-RestMethod http://localhost:3000/api/config -TimeoutSec 5
-        if ($cfg.features.auth -ne $false) { throw "Auth is not disabled" }
+    Test-Case "Backend /healthz returns ok" {
+        $r = Invoke-RestMethod http://localhost:8000/healthz -TimeoutSec 5
+        if (-not $r.ok) { throw "Backend healthz did not return ok" }
     }
 
-    Test-Case "LM Studio server responding" {
-        $r = Invoke-RestMethod http://localhost:1234/v1/models -TimeoutSec 5
-        if ($r.data.Count -eq 0) { throw "No models returned" }
-    }
-
-    # Get auth token (WEBUI_AUTH=False allows empty-credential signin)
-    $script:token = $null
-    try {
-        $authResp = Invoke-RestMethod http://localhost:3000/api/v1/auths/signin `
-            -Method Post `
-            -Body '{"email":"","password":""}' `
-            -ContentType "application/json" `
-            -TimeoutSec 5
-        $script:token = $authResp.token
-    } catch {}
-
-    Test-Case "Open WebUI sees LM Studio models" {
-        if (-not $script:token) { throw "Could not obtain auth token" }
-        $headers = @{Authorization = "Bearer $script:token"}
-        $r = Invoke-RestMethod http://localhost:3000/api/models -Headers $headers -TimeoutSec 5
-        if ($r.data.Count -eq 0) { throw "No models visible in Open WebUI" }
-    }
-
-    Test-Case "Kit's Assistant model exists" {
-        if (-not $script:token) { throw "Could not obtain auth token" }
-        $headers = @{Authorization = "Bearer $script:token"}
-        $r = Invoke-RestMethod http://localhost:3000/api/models -Headers $headers -TimeoutSec 5
-        $kit = $r.data | Where-Object { $_.id -like "*kits-assistant*" -or $_.name -like "*Kit*" }
-        if (-not $kit) {
-            $names = ($r.data | ForEach-Object { $_.id }) -join ", "
-            throw "Kit's Assistant not found. Models: $names"
+    Test-Case "Backend /v1/models exposes tiers" {
+        $r = Invoke-RestMethod http://localhost:8000/v1/models -TimeoutSec 5
+        if ($r.data.Count -lt 5) {
+            throw "Expected 5 tiers, got $($r.data.Count)"
         }
     }
 
-    Test-Case "Docker container healthy" {
-        $status = docker inspect open-webui --format "{{.State.Health.Status}}" 2>&1
-        if ($status -ne "healthy") { throw "Container status: $status" }
+    Test-Case "Backend /api/vram returns scheduler status" {
+        $r = Invoke-RestMethod http://localhost:8000/api/vram -TimeoutSec 5
+        if (-not ($r.PSObject.Properties.Name -contains "total_vram_gb")) {
+            throw "VRAM status endpoint missing total_vram_gb field"
+        }
+    }
+
+    Test-Case "Frontend proxies /api to backend" {
+        $r = Invoke-RestMethod http://localhost:3000/api/v1/models -TimeoutSec 5
+        if ($r.data.Count -lt 5) { throw "Proxy not forwarding properly" }
+    }
+
+    Test-Case "Backend /me rejects unauth'd requests" {
+        $failed = $false
+        try {
+            Invoke-RestMethod http://localhost:8000/me -TimeoutSec 5 -ErrorAction Stop
+        } catch {
+            if ($_.Exception.Response.StatusCode.value__ -eq 401) { $failed = $true }
+        }
+        if (-not $failed) { throw "Expected 401 for unauthenticated /me" }
+    }
+
+    Test-Case "Docker container lai-backend healthy" {
+        $status = docker inspect lai-backend --format "{{.State.Status}}" 2>&1
+        if ($status -ne "running") { throw "Container status: $status" }
     }
 } else {
     "`n[ Live Service Checks ]" | Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor Yellow
-    "  [SKIP] All live service checks (CI mode - Docker/LM Studio not available)" |
+    "  [SKIP] All live service checks (CI mode)" |
         Tee-Object -FilePath $log -Append | Write-Host -ForegroundColor DarkGray
 }
 
