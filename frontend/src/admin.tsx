@@ -2,13 +2,13 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import {
   adminApi, api, AdminOverview, AdminSeries, AdminTierStat, AdminUser,
-  AdminUserStat, AdminConfigSnapshot, Tier, streamChat,
+  AdminUserStat, AdminConfigSnapshot, AirgapState, Tier, streamChat,
   MultiAgentOptions, InteractionMode,
 } from "./api";
 
 type Tab =
   | "overview" | "usage" | "users" | "models" | "router" | "multi_agent"
-  | "vram" | "concurrency" | "auth" | "tools";
+  | "vram" | "concurrency" | "auth" | "tools" | "airgap";
 
 const WINDOW_OPTS: Array<{ label: string; s: number }> = [
   { label: "1h", s: 3600 },
@@ -1006,6 +1006,173 @@ function ModelsConfigTab() {
   );
 }
 
+/* ── Airgap ────────────────────────────────────────────────────────── */
+//
+// One-toggle tab. Mirrors the `memory-toggle` affordance in spirit but
+// lives on the admin dashboard because flipping airgap affects every
+// user of the instance at once. Shows:
+//   - Current state (ON / OFF) with color coding
+//   - When it was last changed and by whom
+//   - A plain-English description of what the flag does
+//   - The big toggle itself, with a confirmation step so no one flips
+//     it by accident
+
+function AirgapTab() {
+  const [state, setState] = useState<(AirgapState & { description: string }) | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function load() {
+    try {
+      setState(await adminApi.getAirgap());
+    } catch (e: any) {
+      setMsg(e?.message || "Failed to load airgap state");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function toggle() {
+    if (!state || busy) return;
+    const next = !state.enabled;
+    const verb = next ? "ENABLE" : "DISABLE";
+    const prompt = next
+      ? "Enable airgap mode?\n\n" +
+        "• Web search and external tool calls will be blocked.\n" +
+        "• New chats + memories will go to a separate encrypted store.\n" +
+        "• Existing non-airgap chats will be hidden until you turn airgap back off."
+      : "Disable airgap mode?\n\n" +
+        "• External tool calls will be allowed again.\n" +
+        "• Airgap chats and memories will be hidden; normal chats return.";
+    if (!confirm(`${verb} airgap mode?\n\n${prompt}`)) return;
+    setBusy(true); setMsg("");
+    try {
+      const r = await adminApi.setAirgap(next);
+      setState((s) => s ? { ...s, enabled: r.enabled, changed_at: r.changed_at, changed_by: r.changed_by } : s);
+      setMsg(r.unchanged
+        ? "Already in that state."
+        : `Airgap ${r.enabled ? "ENABLED" : "DISABLED"}.`);
+    } catch (e: any) {
+      setMsg("Error: " + (e?.message || "failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!state) return <div class="admin-dim">Loading…</div>;
+
+  const statusLabel = state.enabled ? "AIRGAP ON" : "AIRGAP OFF";
+  const statusColor = state.enabled ? "var(--success)" : "var(--fg-dim)";
+  const btnLabel = state.enabled ? "Disable airgap mode" : "Enable airgap mode";
+
+  return (
+    <div class="admin-form airgap-tab">
+      <div
+        class="airgap-hero"
+        style={`
+          border: 2px solid ${statusColor};
+          border-radius: 8px;
+          padding: 1.2rem;
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+        `}
+      >
+        <div
+          class="airgap-dot"
+          style={`
+            width: 16px; height: 16px; border-radius: 50%;
+            background: ${statusColor};
+            box-shadow: 0 0 10px ${statusColor};
+          `}
+        />
+        <div style="flex:1;">
+          <div style={`font-size:1.3rem; font-weight:600; color:${statusColor};`}>
+            {statusLabel}
+          </div>
+          <div class="admin-dim" style="font-size:0.9rem; margin-top:0.2rem;">
+            {state.changed_at
+              ? <>Last changed {fmtTime(state.changed_at)}
+                  {state.changed_by ? <> by <code>{state.changed_by}</code></> : null}.</>
+              : <>Never changed since this instance was deployed.</>}
+          </div>
+        </div>
+        <label class="airgap-switch" style="position:relative; display:inline-block; width:60px; height:32px;">
+          <input
+            type="checkbox"
+            checked={state.enabled}
+            onChange={toggle}
+            disabled={busy}
+            style="opacity:0; width:0; height:0;"
+          />
+          <span
+            style={`
+              position:absolute; inset:0; cursor:pointer;
+              background: ${state.enabled ? "var(--success)" : "var(--border)"};
+              border-radius: 32px;
+              transition: background 0.2s;
+            `}
+          />
+          <span
+            style={`
+              position:absolute; top:4px; left:${state.enabled ? "32px" : "4px"};
+              width:24px; height:24px; border-radius:50%;
+              background: white;
+              transition: left 0.2s;
+            `}
+          />
+        </label>
+      </div>
+
+      <p style="margin-top:1.2rem; line-height:1.5;">{state.description}</p>
+
+      <h3 class="admin-h3">What airgap mode does</h3>
+      <ul style="line-height:1.7; padding-left:1.2rem;">
+        <li><strong>Outbound web search is blocked.</strong> The SearXNG auto-injection
+          middleware short-circuits to a no-op. Models still answer, just without
+          fresh search results.</li>
+        <li><strong>Tools requiring external services are hidden</strong> from the
+          schema sent to the model and rejected at dispatch if the model calls
+          one anyway. Local-only services (ollama, qdrant, redis) stay enabled.</li>
+        <li><strong>New chats are tagged <code>airgap=1</code></strong> and their
+          message content is written AES-256-GCM encrypted into SQLite.
+          The per-chat history log goes to <code>user_&#123;id&#125;.airgap.hist</code>
+          with its own salt, so airgap and normal keys are independent.</li>
+        <li><strong>Memory distillation lands in a separate Qdrant collection</strong>
+          (<code>user_&#123;id&#125;_memory_airgap</code>) with encrypted payloads.
+          Retrieval for airgap chats only searches that collection.</li>
+        <li><strong>Chats and memories from the other mode are hidden</strong> in
+          listings until the flag is flipped back.</li>
+      </ul>
+
+      <h3 class="admin-h3">Caveats</h3>
+      <ul style="line-height:1.7; padding-left:1.2rem;">
+        <li>The toggle propagates inside this worker only. Multi-worker Uvicorn
+          deployments need a restart (or Redis pub/sub, not yet implemented) for
+          siblings to pick up the flag.</li>
+        <li>Airgap safety relies on <code>requires_service</code> being declared
+          in <code>tools.yaml</code>. Tools that hit external APIs without declaring
+          a service are still surfaced; annotate them in the yaml to have them
+          filtered.</li>
+        <li>Nothing here prevents the host OS from reaching the internet — this
+          is an application-layer gate, not a firewall. Pair with docker network
+          isolation for defence-in-depth.</li>
+      </ul>
+
+      <div class="admin-actions" style="margin-top:1.5rem;">
+        <button
+          class={state.enabled ? "" : "primary"}
+          onClick={toggle}
+          disabled={busy}
+          style={state.enabled ? "background:var(--danger); color:#fff; border-color:var(--danger);" : ""}
+        >
+          {busy ? "Applying…" : btnLabel}
+        </button>
+        {msg && <span class="admin-dim">{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ── Root ──────────────────────────────────────────────────────────── */
 
 export function AdminDashboard({ onExit }: { onExit: () => void }) {
@@ -1053,6 +1220,7 @@ export function AdminDashboard({ onExit }: { onExit: () => void }) {
     { id: "concurrency", label: "Concurrency" },
     { id: "auth", label: "Auth" },
     { id: "tools", label: "Tools" },
+    { id: "airgap", label: "Airgap" },
   ];
   const needsWindow = tab === "overview" || tab === "usage";
 
@@ -1090,6 +1258,7 @@ export function AdminDashboard({ onExit }: { onExit: () => void }) {
         {tab === "concurrency" && <ConcurrencyTab />}
         {tab === "auth" && <AuthConfigTab />}
         {tab === "tools" && <ToolsTab />}
+        {tab === "airgap" && <AirgapTab />}
       </main>
     </div>
   );

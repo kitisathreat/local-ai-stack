@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from pathlib import Path
 
-from . import admin, auth, db, history_store, memory, metrics, rag
+from . import admin, airgap, auth, db, history_store, memory, metrics, rag
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
@@ -79,6 +79,10 @@ class AppState:
     scheduler: VRAMScheduler
     orchestrator: Orchestrator
     tools: ToolRegistry
+    # Runtime airgap flag — toggled via /admin/airgap. When on, the
+    # backend refuses outbound calls and persists all new chat + memory
+    # content to separate encrypted stores.
+    airgap: airgap.AirgapState
     # Optional Redis client — populated when REDIS_URL (env or config) is
     # set. Used by the rate limiter (and future cross-worker scheduler
     # coordination). None means "single-worker, in-memory only".
@@ -117,6 +121,13 @@ async def lifespan(app: FastAPI):
 
     logger.info("Initialising database…")
     await db.init_db()
+
+    # Load persisted airgap state and publish it module-globally so
+    # middleware and tool gates can consult it without walking app.state.
+    state.airgap = airgap.AirgapState()
+    airgap.set_current(state.airgap)
+    if state.airgap.enabled:
+        logger.warning("Airgap mode is ENABLED (from persisted state)")
 
     # Optional Redis client for cross-worker rate limiting.
     state.redis = await _init_redis(state.config)
@@ -320,29 +331,52 @@ async def system_status():
 
 @app.get("/api/tools")
 async def list_tools():
-    """List discovered tools. Tool names are `<module>.<method>`."""
+    """List discovered tools. Tool names are `<module>.<method>`.
+
+    When airgap mode is on we mark tools that depend on non-local
+    services with `airgap_blocked=True` so the frontend can grey them
+    out. They remain in the list so users understand *why* an option
+    is unavailable."""
+    ag = airgap.is_enabled()
     return {
+        "airgap": ag,
         "data": [
             {
                 "name": t.name,
                 "description": t.schema.get("function", {}).get("description", ""),
                 "default_enabled": t.default_enabled,
                 "requires_service": t.requires_service,
+                "airgap_blocked": ag and not state.tools.is_airgap_safe(t.name),
             }
             for t in state.tools.tools.values()
         ],
     }
 
 
+@app.get("/api/airgap")
+async def airgap_status():
+    """Public-ish airgap state. Any signed-in user can read this so the
+    chat UI can render a banner. Writes are admin-only (see /admin/airgap)."""
+    snap = state.airgap.snapshot()
+    return snap
+
+
 async def _inject_user_context(req: ChatRequest, user: dict) -> None:
     """Prepend RAG + memory context to the system message for a signed-in
-    user. Runs inline (needs embeddings before streaming starts)."""
+    user. Runs inline (needs embeddings before streaming starts).
+
+    When airgap mode is on we pull from the airgap-scoped memory
+    collection only, so facts from normal conversations don't leak into
+    an airgap chat and vice versa."""
     from .router import last_user_text
     last = last_user_text(req.messages)
     if not last or not last.strip():
         return
+    is_airgap = airgap.is_enabled()
     try:
-        mem_hits = await memory.retrieve_for_user(user["id"], last, k=3)
+        mem_hits = await memory.retrieve_for_user(
+            user["id"], last, k=3, airgap=is_airgap,
+        )
     except Exception:
         mem_hits = []
     try:
@@ -566,7 +600,9 @@ async def _single_agent_sse(
 
     tool_schemas: list[dict] | None = None
     if tier.backend == "ollama" and req.tools is None:
-        enabled = state.tools.all_schemas(only_enabled=True)
+        enabled = state.tools.all_schemas(
+            only_enabled=True, airgap=airgap.is_enabled(),
+        )
         # Only pass tools when the registry isn't empty — some models
         # degrade with an empty `tools: []` field.
         if enabled:
@@ -707,6 +743,13 @@ async def _finalize_conversation(
         if not conv.get("memory_enabled", True):
             return
 
+        # The conversation's own airgap flag (set at creation) determines
+        # which history file and memory collection receive this turn —
+        # not the live runtime flag. A conversation that was started in
+        # airgap stays airgap-scoped even if airgap is toggled off later,
+        # so the encrypted record never bleeds into the normal stores.
+        conv_airgap = bool(conv.get("airgap"))
+
         ts = time.time()
         records = []
         if user_text:
@@ -726,18 +769,19 @@ async def _finalize_conversation(
             "think": decision.think,
             "ts": ts,
         })
-        await history_store.append_many(user["id"], records)
+        await history_store.append_many(user["id"], records, airgap=conv_airgap)
 
         # Distill every 5th assistant turn in a conversation to avoid
         # hammering the Versatile tier.
         msgs = await db.list_messages(req.conversation_id)
         asst_count = sum(1 for m in msgs if m["role"] == "assistant")
         if asst_count > 0 and asst_count % 5 == 0:
-            logger.info("Triggering memory distillation for conv %d (asst turn %d)",
-                        req.conversation_id, asst_count)
+            logger.info("Triggering memory distillation for conv %d (asst turn %d, airgap=%s)",
+                        req.conversation_id, asst_count, conv_airgap)
             versatile_tier = state.config.models.tiers["versatile"]
             await memory.distill_and_store(
                 user["id"], req.conversation_id, state.ollama, versatile_tier,
+                airgap=conv_airgap,
             )
     except Exception:
         logger.exception("Post-stream finalization failed")
@@ -855,7 +899,10 @@ async def me(user: dict = Depends(auth.current_user)):
 
 @app.get("/chats", response_model=ConversationListResponse)
 async def list_chats(user: dict = Depends(auth.current_user)):
-    rows = await db.list_conversations(user["id"])
+    """Return only conversations that match the current airgap mode so a
+    user in airgap mode never sees normal chats in the sidebar (and vice
+    versa). Switching modes reveals/hides the other set."""
+    rows = await db.list_conversations(user["id"], airgap=airgap.is_enabled())
     return ConversationListResponse(data=[ConversationSummary(**r) for r in rows])
 
 
@@ -864,12 +911,16 @@ async def create_chat(
     body: ConversationUpdate,
     user: dict = Depends(auth.current_user),
 ):
+    # New chats inherit the current mode — you can't create a "normal"
+    # chat while airgap is on, period.
+    is_airgap = airgap.is_enabled()
     conv = await db.create_conversation(
         user["id"],
         title=body.title or "New chat",
         tier=body.tier,
         # Default to enabled when the client doesn't say otherwise.
         memory_enabled=True if body.memory_enabled is None else body.memory_enabled,
+        airgap=is_airgap,
     )
     return ConversationSummary(**conv)
 
@@ -879,6 +930,13 @@ async def get_chat(conv_id: int, user: dict = Depends(auth.current_user)):
     conv = await db.get_conversation(conv_id, user["id"])
     if not conv:
         raise HTTPException(404, "Conversation not found")
+    # Hide cross-mode chats: an airgap conversation must not be openable
+    # while the server is in normal mode and vice versa.
+    if bool(conv.get("airgap")) != airgap.is_enabled():
+        raise HTTPException(
+            404,
+            "Conversation not found (owned by the other airgap mode).",
+        )
     msgs = await db.list_messages(conv_id)
     return ConversationWithMessages(
         **conv,
@@ -995,7 +1053,11 @@ def httpx_async_client():
 
 @app.get("/memory")
 async def memory_list(user: dict = Depends(auth.current_user)):
-    rows = await memory.list_for_user(user["id"])
+    """List the user's stored memories for the *current* mode only.
+    Airgap and non-airgap memories never appear together so a user in
+    airgap mode can't accidentally see distilled facts from their
+    normal conversations (or vice versa)."""
+    rows = await memory.list_for_user(user["id"], airgap=airgap.is_enabled())
     return {"data": rows}
 
 

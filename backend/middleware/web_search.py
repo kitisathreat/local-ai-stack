@@ -15,6 +15,7 @@ from typing import Iterable
 
 import httpx
 
+from .. import airgap
 from ..schemas import ChatMessage
 
 
@@ -78,7 +79,14 @@ async def inject_web_results(
     always: bool = False,
 ) -> list[ChatMessage]:
     """Mutate-and-return. Appends formatted search results to the last
-    user message if trigger patterns match."""
+    user message if trigger patterns match.
+
+    Short-circuits to a no-op when airgap mode is on — the whole point
+    of airgap is that we never reach out to SearXNG (or anywhere else
+    off the box). Logged at INFO so operators can see the gate firing."""
+    if airgap.is_enabled():
+        logger.info("Airgap mode ON — skipping SearXNG injection")
+        return messages
     last_user_idx: int | None = None
     last_user_text = ""
     for i in range(len(messages) - 1, -1, -1):

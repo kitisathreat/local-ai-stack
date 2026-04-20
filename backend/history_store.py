@@ -61,6 +61,8 @@ avoids an async-file-IO dep while keeping the event loop unblocked.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -83,6 +85,12 @@ _HEADER_LEN = 4 + 1 + 1 + 16          # magic + version + reserved + salt
 _NONCE_LEN = 12
 _TAG_LEN = 16
 
+# Marker prefix on base64-encoded ciphertext written to SQLite so readers
+# can tell an encrypted blob apart from accidental plaintext (airgap rows
+# always carry this prefix; non-airgap rows never do). The marker also
+# encodes the scope so future per-scope changes don't require a DB migration.
+_ENC_PREFIX = "laienc1:"
+
 
 def _history_dir() -> Path:
     return Path(os.getenv("LAI_HISTORY_DIR", "/app/data/history"))
@@ -101,8 +109,23 @@ def _kek() -> bytes:
     return key.encode("utf-8")
 
 
-def _derive_key(salt: bytes, user_id: int) -> bytes:
-    info = f"lai-hist-v{_VERSION}:user:{user_id}".encode("ascii")
+def _mode(airgap: bool) -> str:
+    return "airgap" if airgap else "default"
+
+
+def _derive_key(
+    salt: bytes, user_id: int, *, airgap: bool = False, scope: str = "hist",
+) -> bytes:
+    """Derive a 32-byte AES key for (user, mode, scope).
+
+    `scope` lets us mint independent keys for the append-only history file
+    ("hist"), per-message encryption ("msg"), and per-memory encryption
+    ("mem") off the same salt, so compromising one scope's key doesn't
+    leak another.
+    """
+    info = (
+        f"lai-{scope}-v{_VERSION}:user:{user_id}:mode:{_mode(airgap)}"
+    ).encode("ascii")
     return HKDF(
         algorithm=hashes.SHA256(),
         length=32,
@@ -111,8 +134,9 @@ def _derive_key(salt: bytes, user_id: int) -> bytes:
     ).derive(_kek())
 
 
-def _path(user_id: int) -> Path:
-    return _history_dir() / f"user_{user_id}.hist"
+def _path(user_id: int, *, airgap: bool = False) -> Path:
+    suffix = ".airgap.hist" if airgap else ".hist"
+    return _history_dir() / f"user_{user_id}{suffix}"
 
 
 def _read_header(path: Path) -> bytes:
@@ -127,9 +151,14 @@ def _read_header(path: Path) -> bytes:
     return hdr[6:6 + 16]
 
 
-def _open_or_create(user_id: int) -> tuple[Path, bytes]:
-    """Ensure the user's history file exists and return (path, salt)."""
-    path = _path(user_id)
+def _open_or_create(user_id: int, *, airgap: bool = False) -> tuple[Path, bytes]:
+    """Ensure the user's history file exists and return (path, salt).
+
+    The airgap file lives alongside the normal one but with its own salt,
+    so even an attacker who recovers the normal salt cannot derive the
+    airgap keys.
+    """
+    path = _path(user_id, airgap=airgap)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.stat().st_size >= _HEADER_LEN:
         salt = _read_header(path)
@@ -151,17 +180,21 @@ def _open_or_create(user_id: int) -> tuple[Path, bytes]:
     return path, salt
 
 
-def _aad(user_id: int) -> bytes:
-    return f"lai-hist-v{_VERSION}|user:{user_id}".encode("ascii")
+def _aad(user_id: int, *, airgap: bool = False, scope: str = "hist") -> bytes:
+    return (
+        f"lai-{scope}-v{_VERSION}|user:{user_id}|mode:{_mode(airgap)}"
+    ).encode("ascii")
 
 
-def _append_record_sync(user_id: int, payload: dict[str, Any]) -> None:
-    path, salt = _open_or_create(user_id)
-    key = _derive_key(salt, user_id)
+def _append_record_sync(
+    user_id: int, payload: dict[str, Any], *, airgap: bool = False,
+) -> None:
+    path, salt = _open_or_create(user_id, airgap=airgap)
+    key = _derive_key(salt, user_id, airgap=airgap)
     aead = AESGCM(key)
     plaintext = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     nonce = secrets.token_bytes(_NONCE_LEN)
-    ct = aead.encrypt(nonce, plaintext, _aad(user_id))
+    ct = aead.encrypt(nonce, plaintext, _aad(user_id, airgap=airgap))
     # Record payload bytes = nonce || ct(+tag)
     body = nonce + ct
     length = struct.pack(">I", len(body))
@@ -172,14 +205,14 @@ def _append_record_sync(user_id: int, payload: dict[str, Any]) -> None:
         os.fsync(f.fileno())
 
 
-def _load_all_sync(user_id: int) -> list[dict[str, Any]]:
-    path = _path(user_id)
+def _load_all_sync(user_id: int, *, airgap: bool = False) -> list[dict[str, Any]]:
+    path = _path(user_id, airgap=airgap)
     if not path.exists() or path.stat().st_size < _HEADER_LEN:
         return []
     salt = _read_header(path)
-    key = _derive_key(salt, user_id)
+    key = _derive_key(salt, user_id, airgap=airgap)
     aead = AESGCM(key)
-    aad = _aad(user_id)
+    aad = _aad(user_id, airgap=airgap)
     out: list[dict[str, Any]] = []
     with path.open("rb") as f:
         f.seek(_HEADER_LEN)
@@ -214,31 +247,37 @@ def _load_all_sync(user_id: int) -> list[dict[str, Any]]:
 
 # ── Async wrappers ───────────────────────────────────────────────────────
 
-async def append(user_id: int, record: dict[str, Any]) -> None:
+async def append(
+    user_id: int, record: dict[str, Any], *, airgap: bool = False,
+) -> None:
     """Encrypt + append a single record. Never raises; logs on failure."""
     try:
-        await asyncio.to_thread(_append_record_sync, user_id, record)
+        await asyncio.to_thread(_append_record_sync, user_id, record, airgap=airgap)
     except Exception:
         logger.exception("Failed to append history record for user %d", user_id)
 
 
-async def append_many(user_id: int, records: Iterable[dict[str, Any]]) -> None:
+async def append_many(
+    user_id: int, records: Iterable[dict[str, Any]], *, airgap: bool = False,
+) -> None:
     recs = list(records)
     if not recs:
         return
     try:
-        await asyncio.to_thread(_append_many_sync, user_id, recs)
+        await asyncio.to_thread(_append_many_sync, user_id, recs, airgap=airgap)
     except Exception:
         logger.exception("Failed to append history batch for user %d", user_id)
 
 
-def _append_many_sync(user_id: int, records: list[dict[str, Any]]) -> None:
+def _append_many_sync(
+    user_id: int, records: list[dict[str, Any]], *, airgap: bool = False,
+) -> None:
     # Single file-open for a batch — cheaper than N separate appends when
     # a turn persists multiple rows (user msg + assistant reply).
-    path, salt = _open_or_create(user_id)
-    key = _derive_key(salt, user_id)
+    path, salt = _open_or_create(user_id, airgap=airgap)
+    key = _derive_key(salt, user_id, airgap=airgap)
     aead = AESGCM(key)
-    aad = _aad(user_id)
+    aad = _aad(user_id, airgap=airgap)
     with path.open("ab") as f:
         for payload in records:
             plaintext = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -251,14 +290,75 @@ def _append_many_sync(user_id: int, records: list[dict[str, Any]]) -> None:
         os.fsync(f.fileno())
 
 
-async def load_all(user_id: int) -> list[dict[str, Any]]:
+async def load_all(
+    user_id: int, *, airgap: bool = False,
+) -> list[dict[str, Any]]:
     """Decrypt and return every record for a user, in append order."""
-    return await asyncio.to_thread(_load_all_sync, user_id)
+    return await asyncio.to_thread(_load_all_sync, user_id, airgap=airgap)
 
 
-async def file_size(user_id: int) -> int:
-    p = _path(user_id)
+async def file_size(user_id: int, *, airgap: bool = False) -> int:
+    p = _path(user_id, airgap=airgap)
     try:
         return p.stat().st_size
     except OSError:
         return 0
+
+
+# ── Scoped encrypt/decrypt for SQLite-stored content ─────────────────────
+#
+# Airgap conversations encrypt their `messages.content` and memories
+# encrypt their `memories.content` at rest. Both reuse the per-user
+# airgap salt established by the history file, but derive independent
+# keys (`scope="msg"` or `scope="mem"`) via HKDF so cross-scope leakage
+# is impossible. The returned token is base64 prefixed with `laienc1:`
+# so callers can detect whether a row is encrypted without a schema
+# change for every new scope.
+
+def encrypt_value(
+    user_id: int, plaintext: str, *, scope: str = "msg", airgap: bool = True,
+) -> str:
+    """Encrypt a string for a user+scope. Returns a prefixed base64 token
+    safe to store in a TEXT column. Accepts airgap=False for future
+    non-airgap use, but airgap is the only current caller."""
+    if plaintext is None:
+        plaintext = ""
+    _, salt = _open_or_create(user_id, airgap=airgap)
+    key = _derive_key(salt, user_id, airgap=airgap, scope=scope)
+    aead = AESGCM(key)
+    nonce = secrets.token_bytes(_NONCE_LEN)
+    aad = _aad(user_id, airgap=airgap, scope=scope)
+    ct = aead.encrypt(nonce, plaintext.encode("utf-8"), aad)
+    return _ENC_PREFIX + base64.b64encode(nonce + ct).decode("ascii")
+
+
+def decrypt_value(
+    user_id: int, token: str, *, scope: str = "msg", airgap: bool = True,
+) -> str:
+    """Inverse of `encrypt_value`. Returns the input unchanged if it's
+    missing our marker prefix (so callers can mix plaintext and encrypted
+    rows in the same table without branching every read)."""
+    if not token or not token.startswith(_ENC_PREFIX):
+        return token or ""
+    try:
+        raw = base64.b64decode(token[len(_ENC_PREFIX):], validate=True)
+    except (binascii.Error, ValueError):
+        logger.warning("encrypted token for user %d has bad base64", user_id)
+        return ""
+    if len(raw) < _NONCE_LEN + _TAG_LEN:
+        logger.warning("encrypted token for user %d is too short", user_id)
+        return ""
+    nonce, ct = raw[:_NONCE_LEN], raw[_NONCE_LEN:]
+    _, salt = _open_or_create(user_id, airgap=airgap)
+    key = _derive_key(salt, user_id, airgap=airgap, scope=scope)
+    aead = AESGCM(key)
+    try:
+        pt = aead.decrypt(nonce, ct, _aad(user_id, airgap=airgap, scope=scope))
+    except Exception as e:
+        logger.warning("decrypt failed for user %d scope=%s: %s", user_id, scope, e)
+        return ""
+    return pt.decode("utf-8", errors="replace")
+
+
+def is_encrypted(token: str | None) -> bool:
+    return bool(token and isinstance(token, str) and token.startswith(_ENC_PREFIX))

@@ -24,6 +24,7 @@ import json
 import logging
 from typing import Any, Callable
 
+from .. import airgap
 from .registry import ToolEntry, ToolRegistry
 
 
@@ -51,6 +52,14 @@ async def dispatch_tool_call(
     entry = registry.get(name)
     if not entry:
         return _error_message(call_id, name, f"Unknown tool: {name}")
+
+    if airgap.is_enabled() and not registry.is_airgap_safe(name):
+        return _error_message(
+            call_id, name,
+            "Airgap mode is ON — this tool requires an external service "
+            "and has been blocked. Disable airgap in the admin dashboard "
+            "to use it.",
+        )
 
     return await _invoke(entry, args, user, event_emitter, call_id)
 
