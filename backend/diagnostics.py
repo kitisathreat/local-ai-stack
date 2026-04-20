@@ -321,6 +321,50 @@ async def _http_get(url: str, timeout: float = 5.0) -> tuple[int, str]:
         return r.status_code, r.text[:300]
 
 
+async def check_host_reachable(host_name: str, host_cfg: Any) -> CheckResult:
+    """Per-host reachability probe. Picks the right path by `host_cfg.kind`:
+    `/api/tags` for ollama, `/models` for llama_cpp / openai. Honours the
+    host's bearer token and TLS verification settings.
+
+    Remote hosts (location=remote) are WARN-not-FAIL on unreachable — cloud
+    flakiness shouldn't block startup, and the TierDispatcher's circuit
+    breaker handles live retry.
+    """
+    import httpx
+    name = f"service.host.{host_name}"
+    base = (host_cfg.url or "").rstrip("/")
+    if not host_cfg.enabled:
+        return _ok(name, f"Host {host_name} disabled — skipping probe")
+    path = "/api/tags" if host_cfg.kind == "ollama" else "/models"
+    is_remote = getattr(host_cfg, "location", "local") == "remote"
+    timeout = 20.0 if is_remote else 5.0
+
+    headers: dict[str, str] = {}
+    auth_env = getattr(host_cfg, "auth_env", None)
+    if auth_env:
+        tok = os.environ.get(auth_env, "").strip()
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+    verify = getattr(host_cfg, "verify_tls", True)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify, headers=headers or None) as client:
+            r = await client.get(f"{base}{path}")
+        if r.status_code == 200:
+            return _ok(name, f"{host_cfg.kind} host {host_name} reachable at {base}")
+        return _warn(
+            name,
+            f"Host {host_name} returned HTTP {r.status_code}",
+            f"URL: {base}{path}",
+        )
+    except Exception as exc:
+        msg = f"Host {host_name} not reachable at {base}"
+        detail = str(exc)
+        if is_remote:
+            return _warn(name, msg + " (remote — dispatcher will fall back)", detail)
+        return _warn(name, msg + " — inference may fail", detail)
+
+
 async def check_ollama_reachable(url: str | None = None) -> CheckResult:
     name = "service.ollama"
     base = (url or os.environ.get("OLLAMA_URL", "http://ollama:11434")).rstrip("/")
@@ -532,9 +576,20 @@ async def run_startup_diagnostics(
         results.append(await coro)
 
     # Service connectivity checks — concurrent
+    host_checks: list[Any] = []
+    hosts_cfg = getattr(cfg, "hosts", None) if cfg is not None else None
+    if hosts_cfg is not None and getattr(hosts_cfg, "hosts", None):
+        for name, hcfg in hosts_cfg.hosts.items():
+            host_checks.append(check_host_reachable(name, hcfg))
+    else:
+        # Legacy path — no hosts.yaml in play. Keep the original two probes.
+        host_checks.extend([
+            check_ollama_reachable(ollama_url),
+            check_llamacpp_reachable(llamacpp_url),
+        ])
+
     service_results = await asyncio.gather(
-        check_ollama_reachable(ollama_url),
-        check_llamacpp_reachable(llamacpp_url),
+        *host_checks,
         check_qdrant_reachable(qdrant_url),
         check_redis_reachable(redis_url),
         check_searxng_reachable(searxng_url),

@@ -1,0 +1,84 @@
+# Backend host registry — consumed by backend/config.py (HostsConfig).
+#
+# A host describes *where* an inference backend lives. Tiers in models.yaml
+# reference hosts by name (tier.host + optional tier.host_fallbacks).
+#
+# If this file is missing, the backend synthesises two default hosts from the
+# legacy OLLAMA_URL / LLAMACPP_URL env vars, so pre-multi-host deployments
+# continue to work with zero config.
+#
+# Two always-on legacy hosts are also registered by the loader regardless of
+# this file: `__legacy_ollama__` and `__legacy_llama_cpp__`. They act as the
+# final fallback when every other host for a tier is unhealthy. Per-tier
+# opt-out via `allow_legacy_fallback: false` in models.yaml.
+
+default_local_host: local-ollama
+
+# Circuit-breaker + legacy-fallback policy (consumed by TierDispatcher).
+failover:
+  open_after: 3                        # consecutive failures before circuit opens
+  half_open_probe_sec: 30              # re-probe cadence while a host is open
+  legacy_fallback_enabled: true        # global kill-switch for legacy clients
+
+hosts:
+  # ── Local Ollama — current default for every non-vision tier ────────────────
+  local-ollama:
+    kind: ollama                       # "ollama" | "llama_cpp" | "openai"
+    url: http://ollama:11434
+    location: local
+    total_vram_gb: 24
+    headroom_gb: 1.5
+    enabled: true
+
+  # ── Local llama.cpp server — vision tier ────────────────────────────────────
+  # Shares the same physical GPU as local-ollama. The scheduler pools their
+  # eviction math so loading one can evict the other when free VRAM is tight.
+  local-llama-cpp:
+    kind: llama_cpp
+    url: http://llama-server:8001/v1
+    location: local
+    total_vram_gb: 24
+    headroom_gb: 1.5
+    shared_vram_with: [local-ollama]
+    enabled: true
+
+  # ── Google Colab (Ollama behind ngrok/cloudflared) ──────────────────────────
+  # Fill in the ngrok URL and set COLAB_OLLAMA_TOKEN in .env.local, then flip
+  # enabled: true (or toggle via /admin/hosts).
+  colab-a100:
+    kind: ollama
+    url: https://your-ngrok-subdomain.ngrok-free.app
+    location: remote
+    total_vram_gb: 40
+    headroom_gb: 2
+    auth_env: COLAB_OLLAMA_TOKEN
+    verify_tls: true
+    connect_timeout_sec: 15
+    request_timeout_sec: 600
+    enabled: false
+
+  # ── AWS EC2 (g5.xlarge or similar, Ollama server) ───────────────────────────
+  aws-g5:
+    kind: ollama
+    url: https://ai.example.com
+    location: remote
+    total_vram_gb: 24
+    headroom_gb: 1.5
+    auth_env: AWS_OLLAMA_TOKEN
+    verify_tls: true
+    connect_timeout_sec: 10
+    request_timeout_sec: 300
+    enabled: false
+
+  # ── Generic OpenAI-compatible proxy (vLLM / TGI / LiteLLM / Together) ───────
+  litellm-proxy:
+    kind: openai
+    url: https://llm-proxy.example.com/v1
+    location: remote
+    total_vram_gb: 999                 # proxy manages its own scheduling
+    headroom_gb: 0
+    auth_env: LITELLM_API_KEY
+    verify_tls: true
+    connect_timeout_sec: 10
+    request_timeout_sec: 300
+    enabled: false

@@ -10,8 +10,19 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Legacy single-host URLs — retained as always-on fallbacks for the
+      # multi-host TierDispatcher. Do NOT remove even when using cloud
+      # backends; they are the last line of defence if every registered host
+      # is unhealthy. See config/hosts.yaml for the multi-host registry.
       - OLLAMA_URL=http://ollama:11434
       - LLAMACPP_URL=http://llama-server:8001/v1
+      # Optional bearer tokens for remote backend hosts. Declared in
+      # config/hosts.yaml via `auth_env: <VAR_NAME>`. Leave unset for hosts
+      # accessed through a trusted tunnel (Cloudflare Access, ngrok IP
+      # allowlists, etc).
+      - COLAB_OLLAMA_TOKEN=${COLAB_OLLAMA_TOKEN:-}
+      - AWS_OLLAMA_TOKEN=${AWS_OLLAMA_TOKEN:-}
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3000}

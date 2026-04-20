@@ -159,17 +159,38 @@ class Subtask:
 
 
 class Orchestrator:
-    def __init__(self, config: AppConfig, scheduler, backends: dict, tools=None):
+    def __init__(
+        self,
+        config: AppConfig,
+        scheduler,
+        backends: dict,
+        tools=None,
+        dispatcher=None,
+    ):
         """
-        backends: {"ollama": OllamaClient, "llama_cpp": LlamaCppClient}
-        tools:    optional ToolRegistry. When set, Ollama workers receive the
-                  tool schemas — letting them call functions within subtasks.
-                  Phase 6: added to thread tool use into multi-agent workers.
+        backends:   legacy kind-keyed map {"ollama": OllamaClient, "llama_cpp": LlamaCppClient}.
+                    Kept for callers that haven't migrated to the dispatcher.
+        dispatcher: optional TierDispatcher. When provided, `_resolve_client(tier)`
+                    routes through it so orchestrator calls honour per-tier host +
+                    fallback configuration. When None, falls back to `backends`.
+        tools:      optional ToolRegistry. When set, Ollama workers receive the
+                    tool schemas — letting them call functions within subtasks.
         """
         self.cfg = config
         self.scheduler = scheduler
         self.backends = backends
         self.tools = tools
+        self.dispatcher = dispatcher
+
+    def _resolve_client(self, tier):
+        """Return the client to use for this tier.
+
+        Prefers the dispatcher (per-tier host + fallbacks + legacy floor);
+        falls back to the legacy kind-keyed map when no dispatcher is wired
+        (e.g. older tests that still construct Orchestrator directly)."""
+        if self.dispatcher is not None:
+            return self.dispatcher.client_for_tier(tier).client
+        return self.backends.get(tier.backend)
 
     async def run(
         self,
@@ -185,7 +206,7 @@ class Orchestrator:
 
         orch_tier_name = settings.orchestrator_tier
         orch_tier = self.cfg.models.tiers[orch_tier_name]
-        orch_client = self.backends.get(orch_tier.backend)
+        orch_client = self._resolve_client(orch_tier)
         if orch_client is None:
             yield AgentEvent(type="error", data={"message": f"No client for backend {orch_tier.backend}"})
             return
@@ -331,7 +352,7 @@ class Orchestrator:
         async def run_worker(s: Subtask) -> dict:
             worker_tier_name = s.resolved_tier(ma_cfg, settings.worker_tier)
             worker_tier = self.cfg.models.tiers[worker_tier_name]
-            worker_client = self.backends[worker_tier.backend]
+            worker_client = self._resolve_client(worker_tier)
 
             if peer_drafts is None:
                 # Initial round — single user message containing the subtask.

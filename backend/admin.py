@@ -464,6 +464,18 @@ def _patch_tiers(patch: dict, doc: dict) -> tuple[list[str], set[str]]:
                 t["parallel_slots"] = v
                 changes.append(f"models.tiers.{name}.parallel_slots")
                 dirty.add(name)
+        if "host" in body:
+            v = body["host"]
+            if v is None or (isinstance(v, str) and v.strip()):
+                t["host"] = v.strip() if isinstance(v, str) else None
+                changes.append(f"models.tiers.{name}.host")
+        if "host_fallbacks" in body and isinstance(body["host_fallbacks"], list):
+            cleaned = [s.strip() for s in body["host_fallbacks"] if isinstance(s, str) and s.strip()]
+            t["host_fallbacks"] = cleaned
+            changes.append(f"models.tiers.{name}.host_fallbacks")
+        if "allow_legacy_fallback" in body:
+            t["allow_legacy_fallback"] = bool(body["allow_legacy_fallback"])
+            changes.append(f"models.tiers.{name}.allow_legacy_fallback")
         if "params" in body and isinstance(body["params"], dict):
             t.setdefault("params", {})
             for pk, pv in body["params"].items():
@@ -573,6 +585,14 @@ async def patch_config(body: dict, actor: dict = Depends(require_admin)):
         logger.exception("Config reload after PATCH failed")
         raise HTTPException(500, f"Saved files, but reload failed: {e}")
 
+    # Rebuild the dispatcher if any tier's host assignment changed.
+    if any(c.endswith(".host") or c.endswith(".host_fallbacks")
+           or c.endswith(".allow_legacy_fallback") for c in all_changes):
+        try:
+            _rebuild_dispatcher(backend_main)
+        except Exception:
+            logger.exception("Dispatcher rebuild after PATCH failed")
+
     # Sanity check: multi-agent min_workers must not exceed the worker
     # tier's parallel_slots, or all workers would queue forever.
     ma = new_cfg.router.multi_agent
@@ -627,4 +647,169 @@ async def reload_config(_: dict = Depends(require_admin)):
     backend_main.state.config = new_cfg
     backend_main.state.signals = new_cfg.compile_signals()
     backend_main.app.state.app_config = new_cfg
+    try:
+        _rebuild_dispatcher(backend_main)
+    except Exception:
+        logger.exception("Dispatcher rebuild after /reload failed")
     return {"ok": True}
+
+
+# ── Hosts (multi-backend registry) ──────────────────────────────────────────
+
+_HOST_PATCHABLE_FIELDS = {
+    "enabled": bool,
+    "url": str,
+    "total_vram_gb": float,
+    "headroom_gb": float,
+    "verify_tls": bool,
+    "connect_timeout_sec": float,
+    "request_timeout_sec": float,
+    "auth_env": lambda v: None if v in (None, "") else str(v),
+}
+
+
+@router.get("/hosts")
+async def list_hosts(_: dict = Depends(require_admin)):
+    """Inventory of configured backend hosts + circuit-breaker state.
+
+    Returns everything the admin UI needs to render the hosts panel:
+    config snapshot, enabled/disabled state, and live breaker counters from
+    the TierDispatcher.
+    """
+    from . import main as backend_main
+    cfg = backend_main.state.config
+    dispatcher = getattr(backend_main.state, "dispatcher", None)
+    out = []
+    for name, hcfg in cfg.hosts.hosts.items():
+        health = None
+        if dispatcher is not None and name in dispatcher.health:
+            h = dispatcher.health[name]
+            health = {
+                "circuit_open": h.is_open,
+                "consecutive_failures": h.consecutive_failures,
+                "last_error": h.last_error,
+                "last_probe_ok_at": h.last_probe_ok_at,
+            }
+        # Tiers that reference this host (primary or fallback).
+        tiers_using = [
+            t_name for t_name, tier in cfg.models.tiers.items()
+            if tier.host == name or name in tier.host_fallbacks
+        ]
+        out.append({
+            "name": name,
+            "kind": hcfg.kind,
+            "url": hcfg.url,
+            "location": hcfg.location,
+            "enabled": hcfg.enabled,
+            "total_vram_gb": hcfg.total_vram_gb,
+            "headroom_gb": hcfg.headroom_gb,
+            "auth_env": hcfg.auth_env,
+            "auth_configured": bool(hcfg.auth_env and os.getenv(hcfg.auth_env)),
+            "verify_tls": hcfg.verify_tls,
+            "connect_timeout_sec": hcfg.connect_timeout_sec,
+            "request_timeout_sec": hcfg.request_timeout_sec,
+            "shared_vram_with": hcfg.shared_vram_with,
+            "tiers_using": tiers_using,
+            "health": health,
+        })
+    return {
+        "hosts": out,
+        "failover": cfg.hosts.failover.model_dump(),
+    }
+
+
+def _patch_hosts(patch: dict, doc: dict) -> list[str]:
+    """Apply a subset of field edits to existing hosts in hosts.yaml.
+
+    Only whitelisted fields per `_HOST_PATCHABLE_FIELDS` are mutable, and new
+    hosts cannot be created via the admin UI — that's a deliberate choice to
+    keep remote-host credential management auditable through the YAML file.
+    """
+    changes: list[str] = []
+    hosts_doc = doc.setdefault("hosts", {})
+    for name, body in (patch or {}).items():
+        if name not in hosts_doc or not isinstance(body, dict):
+            continue
+        h = hosts_doc[name]
+        for k, caster in _HOST_PATCHABLE_FIELDS.items():
+            if k in body:
+                try:
+                    val = caster(body[k]) if body[k] is not None else None
+                except (TypeError, ValueError):
+                    continue
+                if val is None:
+                    h.pop(k, None)
+                else:
+                    h[k] = val
+                changes.append(f"hosts.{name}.{k}")
+    return changes
+
+
+@router.patch("/hosts/{host_name}")
+async def patch_host(host_name: str, body: dict, actor: dict = Depends(require_admin)):
+    from . import main as backend_main
+    config_dir = Path(os.getenv("LAI_CONFIG_DIR", str(CONFIG_DIR)))
+    p = config_dir / "hosts.yaml"
+    doc = _load_yaml(p) if p.exists() else {"hosts": {}}
+    if host_name not in (doc.get("hosts") or {}):
+        raise HTTPException(404, f"Host {host_name!r} not in hosts.yaml")
+    changes = _patch_hosts({host_name: body}, doc)
+    if not changes:
+        return {"ok": True, "changes": [], "message": "No changes applied."}
+    _atomic_write_yaml(p, doc)
+
+    # Reload + rebuild the dispatcher so the new URL / token / enabled flag
+    # takes effect on the next request.
+    try:
+        new_cfg = AppConfig.load()
+        backend_main.state.config = new_cfg
+        backend_main.state.signals = new_cfg.compile_signals()
+        backend_main.app.state.app_config = new_cfg
+        _rebuild_dispatcher(backend_main)
+    except Exception as e:
+        logger.exception("Host reload failed")
+        raise HTTPException(500, f"Saved hosts.yaml, but reload failed: {e}")
+
+    logger.info("admin %s updated host %s: %s", actor["email"], host_name, ", ".join(changes))
+    return {"ok": True, "changes": changes, "ts": time.time()}
+
+
+@router.post("/hosts/{host_name}/reset-breaker")
+async def reset_breaker(host_name: str, _: dict = Depends(require_admin)):
+    """Force-close the circuit breaker for a host without waiting for the
+    half-open probe window. Useful when an operator has just fixed a remote
+    host and wants traffic to return immediately."""
+    from . import main as backend_main
+    dispatcher = getattr(backend_main.state, "dispatcher", None)
+    if dispatcher is None or host_name not in dispatcher.health:
+        raise HTTPException(404, f"Host {host_name!r} not known to dispatcher")
+    dispatcher.record_success(host_name)
+    return {"ok": True, "host": host_name}
+
+
+def _rebuild_dispatcher(backend_main) -> None:
+    """Rebuild the per-host client map + dispatcher after a hosts.yaml edit.
+
+    Called from PATCH /hosts and the generic /reload endpoint. Preserves the
+    always-on legacy clients (state.ollama / state.llama_cpp) — they are
+    re-linked into the new map rather than reconstructed so any in-flight
+    requests keep their existing HTTP session.
+    """
+    from .backends import client_for
+    from .dispatch import LEGACY_OLLAMA, LEGACY_LLAMA_CPP, TierDispatcher
+
+    cfg = backend_main.state.config
+    new_hosts = {}
+    for name, host_cfg in cfg.hosts.hosts.items():
+        if not host_cfg.enabled and name not in (LEGACY_OLLAMA, LEGACY_LLAMA_CPP):
+            continue
+        if name == LEGACY_OLLAMA:
+            new_hosts[name] = backend_main.state.ollama
+        elif name == LEGACY_LLAMA_CPP:
+            new_hosts[name] = backend_main.state.llama_cpp
+        else:
+            new_hosts[name] = client_for(host_cfg)
+    backend_main.state.hosts = new_hosts
+    backend_main.state.dispatcher = TierDispatcher(cfg, new_hosts)
+    if getattr(backend_main.state, "orchestrator", None) is not None:
+        backend_main.state.orchestrator.dispatcher = backend_main.state.dispatcher
