@@ -106,6 +106,8 @@ services:
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
       - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-3}
       - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-3}
+      # Flash Attention 2: faster prefill + reduced KV-cache VRAM on Ampere+.
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-1}
     deploy:
       resources:
         reservations:
@@ -144,6 +146,8 @@ services:
       - "2"
       - "-ngl"
       - "999"
+      # Flash Attention 2: faster attention + lower VRAM on CUDA builds.
+      - "--flash-attn"
     deploy:
       resources:
         reservations:
@@ -153,16 +157,28 @@ services:
     restart: unless-stopped
 
   # ── Jupyter: code interpreter ─────────────────────────────────────────────────
+  # pytorch-notebook is a superset of scipy-notebook: it includes NumPy, SciPy,
+  # Matplotlib, etc., plus PyTorch. With the NVIDIA device reservation below,
+  # PyTorch (and any other CUDA library installed at runtime) can use the GPU
+  # directly — enabling GPU-accelerated ML/DL workloads inside notebooks.
   jupyter:
-    image: quay.io/jupyter/scipy-notebook:latest
+    image: quay.io/jupyter/pytorch-notebook:latest
     container_name: jupyter
     environment:
       - JUPYTER_TOKEN=local-ai-stack-token
       - JUPYTER_ENABLE_LAB=yes
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - jupyter-data:/home/jovyan/work
     ports:
       - "8888:8888"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
     restart: always
 
   # ── Qdrant: vector database ──────────────────────────────────────────────────
