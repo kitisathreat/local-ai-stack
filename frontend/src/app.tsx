@@ -4,9 +4,45 @@ import { useEffect, useRef, useState } from "preact/hooks";
 
 import {
   api, adminApi, Message, Tier, ConversationSummary, streamChat, ResponseMode,
-  MultiAgentOptions, InteractionMode,
+  MultiAgentOptions, InteractionMode, AirgapState,
 } from "./api";
 import { AdminDashboard } from "./admin";
+
+/* ── Airgap banner ──────────────────────────────────────────────────────
+   Shown whenever airgap mode is on so users can tell the assistant's
+   external-information path is shut off. Placed above the chat header
+   so it stays visible as the user scrolls. The chat already operates
+   against local models, so the banner is a status indicator, not an
+   error. */
+
+function AirgapBanner({ state }: { state: AirgapState | null }) {
+  if (!state || !state.enabled) return null;
+  return (
+    <div
+      role="status"
+      style={`
+        background: linear-gradient(90deg, rgba(22,163,74,0.15), rgba(22,163,74,0.05));
+        border-bottom: 1px solid var(--success);
+        color: var(--fg);
+        padding: 0.4rem 0.8rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.85rem;
+      `}
+    >
+      <span
+        style="
+          display:inline-block; width:10px; height:10px; border-radius:50%;
+          background:var(--success); box-shadow:0 0 6px var(--success);
+        "
+      />
+      <strong>Airgap mode</strong>
+      <span class="admin-dim">— outbound web search and external tools are blocked.
+        This chat is stored in the encrypted airgap log.</span>
+    </div>
+  );
+}
 
 /* ── Magic-link sign-in ─────────────────────────────────────────────── */
 
@@ -797,11 +833,38 @@ function ChatView({
     ram_used_gb: 0, ram_total_gb: 0,
     ctx_used: 0, ctx_total: 8192,
   });
+  // Airgap state — polled so a toggle from the admin dashboard reflects
+  // in the chat UI within a few seconds without needing a reload, and
+  // so the chat list can refresh when the mode changes.
+  const [airgapState, setAirgapState] = useState<AirgapState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => { refreshChats(); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let prev: boolean | null = null;
+    const tick = async () => {
+      try {
+        const s = await api.airgapStatus();
+        if (cancelled) return;
+        setAirgapState(s);
+        // Switching modes changes which chats the server exposes — drop
+        // the stale sidebar and re-fetch so the UI matches.
+        if (prev !== null && prev !== s.enabled) {
+          setActiveId(null);
+          setMessages([]);
+          refreshChats();
+        }
+        prev = s.enabled;
+      } catch { /* ignore — endpoint requires auth, we're signed in */ }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
   useEffect(() => { scrollRef.current?.scrollTo(0, 1e9); }, [messages, pendingAsst, agentSteps]);
 
   // Telemetry polling: ping + VRAM/RAM. Runs always so the indicator dot
@@ -1098,6 +1161,7 @@ function ChatView({
       />
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
       <section class="main">
+        <AirgapBanner state={airgapState} />
         <header class="chat-header">
           <TierPicker tiers={tiers} activeId={tier} onPick={setTier} />
           <ReasoningToggle mode={reasoning} onChange={setReasoning} />

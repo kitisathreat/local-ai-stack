@@ -19,8 +19,18 @@ export interface ConversationSummary {
   // When false, messages in this chat are excluded from long-term memory
   // distillation AND from the encrypted per-user history log on disk.
   memory_enabled: boolean;
+  // True when this chat was created while airgap mode was on. The server
+  // only returns chats matching the current mode, so most clients won't
+  // see a mix.
+  airgap: boolean;
   created_at: number;
   updated_at: number;
+}
+
+export interface AirgapState {
+  enabled: boolean;
+  changed_at: number;
+  changed_by: string | null;
 }
 
 export interface Message {
@@ -130,6 +140,9 @@ export const api = {
   // ── Memory ───────────────────────────────────────────────────────────
   listMemory: () => j<{ data: Array<{ id: number; content: string; source_conv: number | null; created_at: number; updated_at: number }> }>("/api/memory"),
   deleteMemory: (id: number) => j<{ ok: boolean }>(`/api/memory/${id}`, { method: "DELETE" }),
+
+  // ── Airgap status (read-only; admins toggle via adminApi.setAirgap) ──
+  airgapStatus: () => j<AirgapState>("/api/airgap"),
 };
 
 // ── Admin dashboard ────────────────────────────────────────────────────
@@ -290,6 +303,14 @@ export const adminApi = {
       body: JSON.stringify(patch),
     }),
   reload: () => j<{ ok: boolean }>("/api/admin/reload", { method: "POST" }),
+
+  // ── Airgap toggle (admin-only) ────────────────────────────────────
+  getAirgap: () => j<AirgapState & { description: string }>("/api/admin/airgap"),
+  setAirgap: (enabled: boolean) =>
+    j<{ ok: boolean; unchanged: boolean } & AirgapState>("/api/admin/airgap", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }),
 };
 
 // ── SSE chat stream ────────────────────────────────────────────────────

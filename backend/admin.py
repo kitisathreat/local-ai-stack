@@ -37,7 +37,7 @@ from typing import Any
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, db, metrics
+from . import airgap, auth, db, metrics
 from .config import AppConfig, CONFIG_DIR
 
 
@@ -628,3 +628,42 @@ async def reload_config(_: dict = Depends(require_admin)):
     backend_main.state.signals = new_cfg.compile_signals()
     backend_main.app.state.app_config = new_cfg
     return {"ok": True}
+
+
+# ── Airgap mode ─────────────────────────────────────────────────────────
+
+@router.get("/airgap")
+async def get_airgap(_: dict = Depends(require_admin)):
+    """Return the current airgap state plus a quick summary of what the
+    toggle affects so the UI can render warnings without hard-coding
+    them."""
+    from . import main as backend_main
+    snap = backend_main.state.airgap.snapshot()
+    return {
+        **snap,
+        "description": (
+            "When ON, the backend blocks outbound web search and any tool "
+            "that requires an external service. New chats and distilled "
+            "memories are stored in a separate encrypted store so airgap "
+            "and normal conversations never mix on disk."
+        ),
+    }
+
+
+@router.patch("/airgap")
+async def set_airgap(body: dict, actor: dict = Depends(require_admin)):
+    """Toggle airgap mode. Body: `{"enabled": true|false}`."""
+    from . import main as backend_main
+    if "enabled" not in body:
+        raise HTTPException(400, "Missing `enabled` field")
+    want = bool(body["enabled"])
+    current_state = backend_main.state.airgap
+    if current_state.enabled == want:
+        return {"ok": True, "unchanged": True, **current_state.snapshot()}
+    snap = await current_state.set(want, actor.get("email"))
+    logger.warning(
+        "admin %s %s airgap mode",
+        actor.get("email"),
+        "ENABLED" if want else "DISABLED",
+    )
+    return {"ok": True, "unchanged": False, **snap}

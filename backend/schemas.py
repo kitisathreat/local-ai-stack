@@ -172,6 +172,10 @@ class ConversationSummary(BaseModel):
     # When False, this chat is excluded from memory distillation and the
     # encrypted per-user history log.
     memory_enabled: bool = True
+    # True for chats created while airgap mode was on. The server only
+    # surfaces chats matching the current mode, so the client shouldn't
+    # normally see a mix, but the flag is exposed so the UI can label.
+    airgap: bool = False
     created_at: float
     updated_at: float
 
@@ -196,6 +200,7 @@ class ConversationWithMessages(BaseModel):
     title: str
     tier: str | None = None
     memory_enabled: bool = True
+    airgap: bool = False
     created_at: float
     updated_at: float
     messages: list[MessageOut]

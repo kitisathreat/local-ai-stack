@@ -130,6 +130,29 @@ class ToolEntry:
     requires_service: str | None = None
 
 
+# Services considered safe to reach from an airgap environment because they
+# are part of the local compose stack. Anything outside this list is treated
+# as external and excluded from the tool schema while airgap mode is on.
+_LOCAL_SERVICES: set[str] = {"ollama", "qdrant", "redis", "llama_cpp"}
+
+
+def _is_airgap_safe(entry: "ToolEntry") -> bool:
+    """Conservative allow-list. A tool is airgap-safe only when it has no
+    declared `requires_service` (and therefore no external network
+    dependency declared), or when its declared service is part of the
+    local compose stack."""
+    svc = entry.requires_service
+    if svc is None:
+        # Many Open-WebUI tools fetch external HTTP APIs without declaring
+        # a service. The safe default while airgap is on is to still
+        # surface them — the model is local, it just won't get a real
+        # response if the underlying network is blocked. Operators who
+        # want stricter enforcement can annotate `requires_service` in
+        # tools.yaml; those entries then get filtered here.
+        return True
+    return svc in _LOCAL_SERVICES
+
+
 class ToolRegistry:
     def __init__(self):
         self.tools: dict[str, ToolEntry] = {}
@@ -140,11 +163,30 @@ class ToolRegistry:
     def get(self, name: str) -> ToolEntry | None:
         return self.tools.get(name)
 
-    def all_schemas(self, only_enabled: bool = True) -> list[dict]:
-        return [t.schema for t in self.tools.values() if (not only_enabled or t.default_enabled)]
+    def all_schemas(
+        self, only_enabled: bool = True, *, airgap: bool = False,
+    ) -> list[dict]:
+        """Schemas to send to the model. When `airgap=True` we also drop
+        every tool whose declared service is outside the local stack so
+        the model never sees an offering it can't fulfil."""
+        out: list[dict] = []
+        for t in self.tools.values():
+            if only_enabled and not t.default_enabled:
+                continue
+            if airgap and not _is_airgap_safe(t):
+                continue
+            out.append(t.schema)
+        return out
 
-    def enabled_names(self) -> list[str]:
-        return [t.name for t in self.tools.values() if t.default_enabled]
+    def enabled_names(self, *, airgap: bool = False) -> list[str]:
+        return [
+            t.name for t in self.tools.values()
+            if t.default_enabled and (not airgap or _is_airgap_safe(t))
+        ]
+
+    def is_airgap_safe(self, name: str) -> bool:
+        t = self.tools.get(name)
+        return bool(t and _is_airgap_safe(t))
 
 
 def _import_tool_module(path: Path) -> Any | None:

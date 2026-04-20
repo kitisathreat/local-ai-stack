@@ -19,8 +19,16 @@ import time
 import uuid
 from typing import Any
 
-from . import db
+from . import db, history_store
 from .rag import embed, qdrant, memory_collection_name
+
+
+def _coll_name(user_id: int, *, airgap: bool) -> str:
+    """Airgap memories live in a dedicated Qdrant collection so they can
+    never surface in a normal retrieval pass, even if the code path
+    forgets to filter."""
+    base = memory_collection_name(user_id)
+    return f"{base}_airgap" if airgap else base
 
 
 logger = logging.getLogger(__name__)
@@ -47,8 +55,13 @@ Format: ["fact 1", "fact 2", ...]
 
 async def distill_and_store(
     user_id: int, conversation_id: int, ollama_client, versatile_tier,
+    *, airgap: bool = False,
 ) -> list[str]:
-    """Run distillation on a completed conversation. Returns stored facts."""
+    """Run distillation on a completed conversation. Returns stored facts.
+
+    Airgap conversations route to a dedicated Qdrant collection and
+    store each fact as AES-256-GCM ciphertext in `memories.content`
+    so the SQLite row is opaque at rest."""
     from .schemas import ChatMessage
 
     msgs = await db.list_messages(conversation_id)
@@ -86,7 +99,7 @@ async def distill_and_store(
     if len(vectors) != len(facts):
         return []
 
-    coll = memory_collection_name(user_id)
+    coll = _coll_name(user_id, airgap=airgap)
     await qdrant.ensure_collection(coll)
 
     now = time.time()
@@ -94,21 +107,34 @@ async def distill_and_store(
     stored: list[str] = []
     async with db.get_conn() as c:
         for fact, vec in zip(facts, vectors):
+            row_content = (
+                history_store.encrypt_value(user_id, fact, scope="mem", airgap=True)
+                if airgap else fact
+            )
             cur = await c.execute(
-                "INSERT INTO memories (user_id, content, source_conv, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (user_id, fact, conversation_id, now, now),
+                "INSERT INTO memories (user_id, content, encrypted, airgap, "
+                "source_conv, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, row_content, 1 if airgap else 0, 1 if airgap else 0,
+                 conversation_id, now, now),
             )
             mem_id = cur.lastrowid
+            # For airgap memories we still have to put _something_ next to
+            # the vector so the retrieve path can find the fact, but we
+            # must not leak the plaintext into Qdrant. Store the
+            # encrypted token there too; the retrieval step decrypts it
+            # with the same per-user key.
+            payload = {
+                "memory_id": mem_id,
+                "content": row_content,
+                "encrypted": bool(airgap),
+                "source_conv": conversation_id,
+                "created_at": now,
+            }
             points.append({
                 "id": str(uuid.uuid4()),
                 "vector": vec,
-                "payload": {
-                    "memory_id": mem_id,
-                    "content": fact,
-                    "source_conv": conversation_id,
-                    "created_at": now,
-                },
+                "payload": payload,
             })
             stored.append(fact)
         await c.commit()
@@ -116,9 +142,12 @@ async def distill_and_store(
     return stored
 
 
-async def retrieve_for_user(user_id: int, query: str, k: int = 3) -> list[dict]:
-    """Similarity-search the user's memory store. Returns payload dicts."""
-    coll = memory_collection_name(user_id)
+async def retrieve_for_user(
+    user_id: int, query: str, k: int = 3, *, airgap: bool = False,
+) -> list[dict]:
+    """Similarity-search the user's memory store. Airgap callers hit a
+    separate Qdrant collection and decrypt hit payloads in-process."""
+    coll = _coll_name(user_id, airgap=airgap)
     vectors = await embed([query])
     if not vectors:
         return []
@@ -127,14 +156,18 @@ async def retrieve_for_user(user_id: int, query: str, k: int = 3) -> list[dict]:
     except Exception as e:
         logger.debug("Memory retrieve failed (%s) — collection may not exist yet", e)
         return []
-    return [
-        {
-            "memory_id": (h.get("payload") or {}).get("memory_id"),
-            "content": (h.get("payload") or {}).get("content", ""),
+    out = []
+    for h in hits:
+        payload = h.get("payload") or {}
+        raw = payload.get("content", "") or ""
+        if payload.get("encrypted"):
+            raw = history_store.decrypt_value(user_id, raw, scope="mem", airgap=True)
+        out.append({
+            "memory_id": payload.get("memory_id"),
+            "content": raw,
             "score": h.get("score"),
-        }
-        for h in hits
-    ]
+        })
+    return out
 
 
 def format_memory_block(hits: list[dict]) -> str:
@@ -147,19 +180,37 @@ def format_memory_block(hits: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def list_for_user(user_id: int) -> list[dict]:
+async def list_for_user(user_id: int, *, airgap: bool = False) -> list[dict]:
     async with db.get_conn() as c:
         rows = await (await c.execute(
-            "SELECT id, content, source_conv, created_at, updated_at "
-            "FROM memories WHERE user_id = ? ORDER BY updated_at DESC",
-            (user_id,),
+            "SELECT id, content, encrypted, airgap, source_conv, created_at, updated_at "
+            "FROM memories WHERE user_id = ? AND airgap = ? ORDER BY updated_at DESC",
+            (user_id, 1 if airgap else 0),
         )).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d.pop("encrypted", 0):
+                d["content"] = history_store.decrypt_value(
+                    user_id, d.get("content") or "", scope="mem", airgap=True,
+                )
+            d["airgap"] = bool(d.get("airgap"))
+            out.append(d)
+        return out
 
 
 async def delete(user_id: int, memory_id: int) -> bool:
-    """Remove a memory from SQLite and Qdrant."""
+    """Remove a memory from SQLite and Qdrant. Looks up the row to
+    figure out which Qdrant collection (normal vs airgap) owns it so
+    the cleanup hits the right collection."""
     async with db.get_conn() as c:
+        row = await (await c.execute(
+            "SELECT airgap FROM memories WHERE id = ? AND user_id = ?",
+            (memory_id, user_id),
+        )).fetchone()
+        if not row:
+            return False
+        is_airgap = bool(row["airgap"])
         cur = await c.execute(
             "DELETE FROM memories WHERE id = ? AND user_id = ?",
             (memory_id, user_id),
@@ -168,7 +219,7 @@ async def delete(user_id: int, memory_id: int) -> bool:
         if cur.rowcount == 0:
             return False
     try:
-        coll = memory_collection_name(user_id)
+        coll = _coll_name(user_id, airgap=is_airgap)
         await qdrant.delete_by_filter(
             coll,
             {"must": [{"key": "memory_id", "match": {"value": memory_id}}]},

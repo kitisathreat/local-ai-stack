@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- messages are NOT appended to the encrypted per-user history log.
     -- Default 1: opt-out, not opt-in.
     memory_enabled  INTEGER NOT NULL DEFAULT 1,
+    -- When 1, this chat was created under airgap mode. Its message
+    -- content is stored encrypted, its history file is the airgap
+    -- variant, and it is hidden from conversation listings unless the
+    -- server is currently in the same airgap state.
+    airgap          INTEGER NOT NULL DEFAULT 0,
     created_at      REAL NOT NULL,
     updated_at      REAL NOT NULL
 );
@@ -67,7 +72,12 @@ CREATE TABLE IF NOT EXISTS messages (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id  INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     role             TEXT NOT NULL,
+    -- For airgap conversations this column holds a prefixed base64
+    -- AES-256-GCM ciphertext (see history_store.encrypt_value); for
+    -- normal conversations it's plaintext. The `encrypted` flag lets
+    -- readers route each row to the right decode path.
     content          TEXT NOT NULL,
+    encrypted        INTEGER NOT NULL DEFAULT 0,
     tier             TEXT,
     think            INTEGER,
     tokens_in        INTEGER,
@@ -78,10 +88,15 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, created_at);
 
 -- Phase 5: per-user memory entries (distilled from conversations).
+-- Airgap memories live in the same table but with airgap=1 and an
+-- encrypted content column, plus a separate Qdrant collection. They
+-- are not returned from non-airgap listings.
 CREATE TABLE IF NOT EXISTS memories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     content     TEXT NOT NULL,
+    encrypted   INTEGER NOT NULL DEFAULT 0,
+    airgap      INTEGER NOT NULL DEFAULT 0,
     source_conv INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
@@ -148,6 +163,18 @@ async def init_db() -> None:
         await c.executescript(SCHEMA)
         await _migrate_add_column(
             c, "conversations", "memory_enabled", "INTEGER NOT NULL DEFAULT 1",
+        )
+        await _migrate_add_column(
+            c, "conversations", "airgap", "INTEGER NOT NULL DEFAULT 0",
+        )
+        await _migrate_add_column(
+            c, "messages", "encrypted", "INTEGER NOT NULL DEFAULT 0",
+        )
+        await _migrate_add_column(
+            c, "memories", "encrypted", "INTEGER NOT NULL DEFAULT 0",
+        )
+        await _migrate_add_column(
+            c, "memories", "airgap", "INTEGER NOT NULL DEFAULT 0",
         )
         await c.commit()
 
@@ -247,13 +274,24 @@ async def consume_magic_link(token: str) -> dict | None:
 
 # ── Conversations ─────────────────────────────────────────────────────────
 
-async def list_conversations(user_id: int, limit: int = 100) -> list[dict]:
+async def list_conversations(
+    user_id: int, limit: int = 100, *, airgap: bool | None = None,
+) -> list[dict]:
+    """List a user's conversations. `airgap=True|False` filters strictly
+    by mode so the UI only ever sees chats from the mode it's currently
+    rendering; `airgap=None` returns both (admin-only use)."""
+    sql = (
+        "SELECT id, title, tier, memory_enabled, airgap, created_at, updated_at "
+        "FROM conversations WHERE user_id = ?"
+    )
+    params: list[Any] = [user_id]
+    if airgap is not None:
+        sql += " AND airgap = ?"
+        params.append(1 if airgap else 0)
+    sql += " ORDER BY updated_at DESC LIMIT ?"
+    params.append(limit)
     async with get_conn() as c:
-        rows = await (await c.execute(
-            "SELECT id, title, tier, memory_enabled, created_at, updated_at FROM conversations "
-            "WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
-            (user_id, limit),
-        )).fetchall()
+        rows = await (await c.execute(sql, params)).fetchall()
         return [_conv_row(r) for r in rows]
 
 
@@ -263,18 +301,21 @@ async def create_conversation(
     tier: str | None = None,
     *,
     memory_enabled: bool = True,
+    airgap: bool = False,
 ) -> dict:
     now = time.time()
     async with get_conn() as c:
         cur = await c.execute(
-            "INSERT INTO conversations (user_id, title, tier, memory_enabled, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, title, tier, 1 if memory_enabled else 0, now, now),
+            "INSERT INTO conversations (user_id, title, tier, memory_enabled, airgap, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, title, tier, 1 if memory_enabled else 0,
+             1 if airgap else 0, now, now),
         )
         await c.commit()
         return {
             "id": cur.lastrowid, "title": title, "tier": tier,
             "memory_enabled": bool(memory_enabled),
+            "airgap": bool(airgap),
             "created_at": now, "updated_at": now,
         }
 
@@ -282,8 +323,8 @@ async def create_conversation(
 async def get_conversation(conv_id: int, user_id: int) -> dict | None:
     async with get_conn() as c:
         row = await (await c.execute(
-            "SELECT id, title, tier, memory_enabled, created_at, updated_at FROM conversations "
-            "WHERE id = ? AND user_id = ?",
+            "SELECT id, title, tier, memory_enabled, airgap, created_at, updated_at "
+            "FROM conversations WHERE id = ? AND user_id = ?",
             (conv_id, user_id),
         )).fetchone()
         return _conv_row(row) if row else None
@@ -321,6 +362,8 @@ def _conv_row(row: aiosqlite.Row) -> dict:
     # SQLite stores booleans as 0/1 INTEGER; normalize for the API.
     if "memory_enabled" in d:
         d["memory_enabled"] = bool(d["memory_enabled"])
+    if "airgap" in d:
+        d["airgap"] = bool(d["airgap"])
     return d
 
 
@@ -337,13 +380,32 @@ async def delete_conversation(conv_id: int, user_id: int) -> bool:
 # ── Messages ──────────────────────────────────────────────────────────────
 
 async def list_messages(conv_id: int) -> list[dict]:
+    """Return messages in insertion order, decrypting any rows whose
+    `encrypted=1` marker is set. Decryption keys are derived from the
+    owning user's airgap salt — we look up the user_id once from the
+    conversation row and pass it to the decrypt helper."""
+    from . import history_store
     async with get_conn() as c:
+        owner = await (await c.execute(
+            "SELECT user_id, airgap FROM conversations WHERE id = ?", (conv_id,),
+        )).fetchone()
+        if not owner:
+            return []
+        user_id = int(owner["user_id"])
         rows = await (await c.execute(
-            "SELECT id, role, content, tier, think, tokens_in, tokens_out, created_at "
+            "SELECT id, role, content, encrypted, tier, think, tokens_in, tokens_out, created_at "
             "FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
             (conv_id,),
         )).fetchall()
-        return [dict(r) for r in rows]
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            if d.pop("encrypted", 0):
+                d["content"] = history_store.decrypt_value(
+                    user_id, d.get("content") or "", scope="msg", airgap=True,
+                )
+            out.append(d)
+        return out
 
 
 async def add_message(
@@ -351,12 +413,30 @@ async def add_message(
     *, tier: str | None = None, think: bool | None = None,
     tokens_in: int | None = None, tokens_out: int | None = None,
 ) -> dict:
+    """Insert a message. For airgap conversations the content is
+    encrypted on the way in; non-airgap conversations store plaintext."""
+    from . import history_store
     now = time.time()
     async with get_conn() as c:
+        conv = await (await c.execute(
+            "SELECT user_id, airgap FROM conversations WHERE id = ?", (conv_id,),
+        )).fetchone()
+        if not conv:
+            raise ValueError(f"Conversation {conv_id} not found")
+        is_airgap = bool(conv["airgap"])
+        stored = content
+        encrypted_flag = 0
+        if is_airgap:
+            stored = history_store.encrypt_value(
+                int(conv["user_id"]), content, scope="msg", airgap=True,
+            )
+            encrypted_flag = 1
         cur = await c.execute(
-            "INSERT INTO messages (conversation_id, role, content, tier, think, "
-            "tokens_in, tokens_out, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (conv_id, role, content, tier, 1 if think else (0 if think is False else None),
+            "INSERT INTO messages (conversation_id, role, content, encrypted, tier, "
+            "think, tokens_in, tokens_out, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (conv_id, role, stored, encrypted_flag, tier,
+             1 if think else (0 if think is False else None),
              tokens_in, tokens_out, now),
         )
         await c.execute(
