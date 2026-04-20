@@ -48,6 +48,16 @@ class TierConfig(BaseModel):
     # per-request KV budget is context_window (passed as num_ctx) and the
     # model's total KV allocation is roughly parallel_slots * num_ctx.
     parallel_slots: int = 1
+    # Primary host name (key into HostsConfig.hosts). When None, the loader
+    # fills this in by synthesising a host from the legacy `backend` +
+    # `endpoint` fields so pre-multi-host configs keep working.
+    host: str | None = None
+    # Ordered list of alternate host names the dispatcher should try before
+    # falling back to the legacy client.
+    host_fallbacks: list[str] = Field(default_factory=list)
+    # Per-tier opt-out from the always-on legacy (OLLAMA_URL/LLAMACPP_URL)
+    # clients. Useful for tiers that only make sense on a specific cloud GPU.
+    allow_legacy_fallback: bool = True
 
 
 class ModelsConfig(BaseModel):
@@ -178,6 +188,47 @@ class AuthConfig(BaseModel):
     rate_limits: AuthRateLimits = Field(default_factory=AuthRateLimits)
 
 
+class FailoverConfig(BaseModel):
+    """Circuit-breaker + legacy-fallback policy for the TierDispatcher."""
+
+    open_after: int = 3                   # consecutive failures before circuit opens
+    half_open_probe_sec: float = 30.0     # re-probe cadence while open
+    legacy_fallback_enabled: bool = True  # global kill-switch for legacy clients
+
+
+class HostConfig(BaseModel):
+    """One entry under config/hosts.yaml `hosts:`.
+
+    A host describes *where* to reach an inference backend. It is decoupled
+    from which tier runs there — tiers reference hosts by name.
+    """
+
+    kind: str                             # "ollama" | "llama_cpp" | "openai"
+    url: str
+    location: str = "local"               # "local" | "remote"
+    # VRAM bookkeeping. For location=local this is the physical GPU size
+    # (pynvml reports the truth and corrects). For location=remote we trust
+    # this value — remote VRAM isn't observable.
+    total_vram_gb: float = 0.0
+    headroom_gb: float = 1.5
+    # Hosts that share a physical accelerator and therefore must share an
+    # eviction pool. Names reference other entries in `hosts:`.
+    shared_vram_with: list[str] = Field(default_factory=list)
+    # Optional bearer token. The backend reads this env var at startup and
+    # resolve-time; if unset, no Authorization header is attached.
+    auth_env: str | None = None
+    verify_tls: bool = True
+    connect_timeout_sec: float = 10.0
+    request_timeout_sec: float = 300.0
+    enabled: bool = True
+
+
+class HostsConfig(BaseModel):
+    default_local_host: str = "local-ollama"
+    failover: FailoverConfig = Field(default_factory=FailoverConfig)
+    hosts: dict[str, HostConfig] = Field(default_factory=dict)
+
+
 class ConcurrencyConfig(BaseModel):
     """Backend-wide concurrency knobs (Uvicorn workers, Redis coordination).
 
@@ -195,6 +246,7 @@ class AppConfig(BaseModel):
     models: ModelsConfig
     router: RouterConfig
     vram: VRAMConfig
+    hosts: HostsConfig = Field(default_factory=HostsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     concurrency: ConcurrencyConfig = Field(default_factory=ConcurrencyConfig)
 
@@ -212,6 +264,11 @@ class AppConfig(BaseModel):
         runtime_path = d / "runtime.yaml"
         if runtime_path.exists():
             kwargs["concurrency"] = ConcurrencyConfig(**_read_yaml(runtime_path))
+        hosts_path = d / "hosts.yaml"
+        if hosts_path.exists():
+            kwargs["hosts"] = HostsConfig(**_read_yaml(hosts_path))
+        else:
+            kwargs["hosts"] = HostsConfig()
         # Env overrides the YAML — it's what Uvicorn actually runs with.
         import os as _os
         env_workers = _os.getenv("BACKEND_WORKERS")
@@ -226,7 +283,85 @@ class AppConfig(BaseModel):
             if env_redis:
                 c = c.model_copy(update={"redis_url": env_redis})
             kwargs["concurrency"] = c
-        return cls(**kwargs)
+        cfg = cls(**kwargs)
+        cfg._reconcile_hosts()
+        return cfg
+
+    def _reconcile_hosts(self) -> None:
+        """Ensure every tier has a resolvable `host`.
+
+        For backward compat: when `config/hosts.yaml` is absent or a tier
+        omits the new `host` field, we synthesise hosts from the legacy
+        `tier.backend` + `tier.endpoint` pair. This keeps pre-multi-host
+        deployments working with zero config changes.
+        """
+        import os as _os
+
+        # Populate an auto-synth host for each unique (backend, endpoint)
+        # still missing from the hosts registry.
+        synth_by_url: dict[str, str] = {
+            cfg.url.rstrip("/"): name
+            for name, cfg in self.hosts.hosts.items()
+        }
+        vram_total = self.vram.total_vram_gb
+        vram_head = self.vram.headroom_gb
+        for tier_name, tier in self.models.tiers.items():
+            if tier.host and tier.host in self.hosts.hosts:
+                continue
+            # First, try to match by URL.
+            ep = (tier.endpoint or "").rstrip("/")
+            matched = synth_by_url.get(ep)
+            if matched is None:
+                # Synthesise. Prefer a stable name so it's visible in /admin/hosts.
+                matched = f"auto-{tier.backend}"
+                i = 2
+                while matched in self.hosts.hosts:
+                    matched = f"auto-{tier.backend}-{i}"
+                    i += 1
+                self.hosts.hosts[matched] = HostConfig(
+                    kind=tier.backend,
+                    url=tier.endpoint,
+                    location="local",
+                    total_vram_gb=vram_total,
+                    headroom_gb=vram_head,
+                    enabled=True,
+                )
+                synth_by_url[ep] = matched
+            tier.host = matched
+
+        # Always ensure the two always-on legacy hosts exist in the registry
+        # (even when they don't correspond to any tier) so the dispatcher can
+        # fall back to them on request failure.
+        legacy_pairs = [
+            ("__legacy_ollama__", "ollama",
+             _os.getenv("OLLAMA_URL", "http://ollama:11434")),
+            ("__legacy_llama_cpp__", "llama_cpp",
+             _os.getenv("LLAMACPP_URL", "http://llama-server:8001/v1")),
+        ]
+        for name, kind, url in legacy_pairs:
+            if name not in self.hosts.hosts:
+                self.hosts.hosts[name] = HostConfig(
+                    kind=kind,
+                    url=url,
+                    location="local",
+                    total_vram_gb=vram_total,
+                    headroom_gb=vram_head,
+                    enabled=True,
+                )
+
+        # Validate host_fallbacks references after synthesis is done.
+        for tier_name, tier in self.models.tiers.items():
+            if tier.host not in self.hosts.hosts:
+                raise ValueError(
+                    f"Tier {tier_name!r} references host {tier.host!r} "
+                    "which is not defined in hosts.yaml"
+                )
+            for fb in tier.host_fallbacks:
+                if fb not in self.hosts.hosts:
+                    raise ValueError(
+                        f"Tier {tier_name!r} host_fallback {fb!r} "
+                        "is not defined in hosts.yaml"
+                    )
 
     def compile_signals(self) -> "CompiledSignals":
         """Pre-compile all regexes so hot-path evaluation is cheap."""

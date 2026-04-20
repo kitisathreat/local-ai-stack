@@ -18,6 +18,7 @@ tiers:
     description: "Maximum reasoning quality. Slow (~15-20 t/s with RAM spillover). Use for hardest problems."
     backend: ollama
     endpoint: http://ollama:11434
+    host: local-ollama                  # see config/hosts.yaml
     model_tag: "qwen3:72b-q3_k_m"
     context_window: 8192
     think_default: true
@@ -37,6 +38,7 @@ tiers:
     description: "MoE with 3B active params. Fast (~120+ t/s) and capable. Default tier + multi-agent orchestrator."
     backend: ollama
     endpoint: http://ollama:11434
+    host: local-ollama
     model_tag: "qwen3.6:35b-a3b"
     context_window: 16384
     think_default: false
@@ -59,6 +61,7 @@ tiers:
     description: "Small, fully GPU-offloaded. 3 instances fit in 24GB VRAM simultaneously — used as multi-agent workers."
     backend: ollama
     endpoint: http://ollama:11434
+    host: local-ollama
     model_tag: "qwen3.5:9b"
     context_window: 4096
     think_default: false
@@ -79,6 +82,7 @@ tiers:
     description: "71.3% SWE-bench Verified. RL-trained on 800K real GitHub PRs. Native tool calling."
     backend: ollama
     endpoint: http://ollama:11434
+    host: local-ollama
     model_tag: "hf.co/bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF:Q4_K_XL"
     fallback_tag: "qwen2.5-coder:32b"
     context_window: 32768
@@ -101,6 +105,7 @@ tiers:
     description: "Multimodal via llama.cpp with mmproj-F16.gguf. Charts, screenshots, UI, documents."
     backend: llama_cpp
     endpoint: http://llama-server:8001/v1
+    host: local-llama-cpp
     model_tag: "qwen3.6-35b-a3b"
     mmproj_path: "/models/mmproj-qwen3.6-35b-F16.gguf"
     context_window: 16384

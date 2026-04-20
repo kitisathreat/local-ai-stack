@@ -13,6 +13,7 @@ import httpx
 
 from ..config import TierConfig
 from ..schemas import ChatMessage
+from .base import build_session_kwargs
 
 
 def _messages_to_payload(messages: list[ChatMessage]) -> list[dict]:
@@ -33,9 +34,23 @@ def _messages_to_payload(messages: list[ChatMessage]) -> list[dict]:
 
 
 class LlamaCppClient:
-    def __init__(self, endpoint: str, timeout_sec: float = 300.0):
+    def __init__(
+        self,
+        endpoint: str,
+        timeout_sec: float = 300.0,
+        *,
+        auth_token: str | None = None,
+        verify_tls: bool = True,
+        connect_timeout_sec: float = 10.0,
+    ):
         self.endpoint = endpoint.rstrip("/")
-        self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
+        self.timeout = httpx.Timeout(timeout_sec, connect=connect_timeout_sec)
+        self._session_kwargs = build_session_kwargs(
+            auth_token=auth_token,
+            verify_tls=verify_tls,
+            connect_timeout_sec=connect_timeout_sec,
+            request_timeout_sec=timeout_sec,
+        )
 
     async def chat_stream(
         self,
@@ -64,7 +79,7 @@ class LlamaCppClient:
             payload.update(extra_options)
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(**self._session_kwargs) as client:
             async with client.stream(
                 "POST", f"{self.endpoint}/chat/completions", json=payload
             ) as resp:
@@ -98,7 +113,8 @@ class LlamaCppClient:
     async def is_ready(self) -> bool:
         """llama.cpp serves models at container start; /v1/models confirms."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            kwargs = {**self._session_kwargs, "timeout": httpx.Timeout(5.0, connect=5.0)}
+            async with httpx.AsyncClient(**kwargs) as client:
                 r = await client.get(f"{self.endpoint}/models")
                 return r.status_code == 200
         except httpx.HTTPError:

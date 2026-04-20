@@ -13,6 +13,7 @@ import httpx
 
 from ..config import TierConfig
 from ..schemas import ChatMessage
+from .base import build_session_kwargs
 
 
 def build_options(tier: TierConfig, think: bool, extra: dict[str, Any] | None = None) -> dict:
@@ -49,9 +50,26 @@ def _messages_to_payload(messages: list[ChatMessage]) -> list[dict]:
 
 
 class OllamaClient:
-    def __init__(self, endpoint: str, timeout_sec: float = 300.0):
+    def __init__(
+        self,
+        endpoint: str,
+        timeout_sec: float = 300.0,
+        *,
+        auth_token: str | None = None,
+        verify_tls: bool = True,
+        connect_timeout_sec: float = 10.0,
+    ):
         self.endpoint = endpoint.rstrip("/")
-        self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
+        self.timeout = httpx.Timeout(timeout_sec, connect=connect_timeout_sec)
+        # Shared kwargs for every AsyncClient spawned by this instance. The
+        # legacy single-arg ctor path still works because auth/tls have
+        # sensible defaults.
+        self._session_kwargs = build_session_kwargs(
+            auth_token=auth_token,
+            verify_tls=verify_tls,
+            connect_timeout_sec=connect_timeout_sec,
+            request_timeout_sec=timeout_sec,
+        )
 
     async def chat_stream(
         self,
@@ -78,7 +96,7 @@ class OllamaClient:
         }
         if tools:
             payload["tools"] = tools
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(**self._session_kwargs) as client:
             async with client.stream("POST", f"{self.endpoint}/api/chat", json=payload) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
@@ -119,7 +137,7 @@ class OllamaClient:
             "options": {"num_predict": 1, "num_ctx": min(tier.context_window, 2048)},
             "keep_alive": keep_alive,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(**self._session_kwargs) as client:
             r = await client.post(f"{self.endpoint}/api/chat", json=payload)
             r.raise_for_status()
         return time.monotonic() - t0
@@ -132,7 +150,8 @@ class OllamaClient:
             "stream": False,
             "keep_alive": 0,
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        kwargs = {**self._session_kwargs, "timeout": httpx.Timeout(30.0, connect=10.0)}
+        async with httpx.AsyncClient(**kwargs) as client:
             # Fire-and-forget; non-2xx here is not fatal
             try:
                 await client.post(f"{self.endpoint}/api/chat", json=payload)
@@ -142,14 +161,16 @@ class OllamaClient:
     async def list_running(self) -> list[dict]:
         """GET /api/ps — returns currently-loaded models. Used by scheduler
         at startup to repopulate its registry."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        kwargs = {**self._session_kwargs, "timeout": httpx.Timeout(10.0, connect=5.0)}
+        async with httpx.AsyncClient(**kwargs) as client:
             r = await client.get(f"{self.endpoint}/api/ps")
             r.raise_for_status()
             return r.json().get("models", [])
 
     async def list_installed(self) -> list[dict]:
         """GET /api/tags — list all pulled models."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        kwargs = {**self._session_kwargs, "timeout": httpx.Timeout(10.0, connect=5.0)}
+        async with httpx.AsyncClient(**kwargs) as client:
             r = await client.get(f"{self.endpoint}/api/tags")
             r.raise_for_status()
             return r.json().get("models", [])

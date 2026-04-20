@@ -28,9 +28,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pathlib import Path
 
 from . import admin, auth, db, history_store, memory, metrics, rag
+from .backends import BackendClient, client_for
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
+from .dispatch import LEGACY_LLAMA_CPP, LEGACY_OLLAMA, TierDispatcher
 from .middleware.clarification import (
     format_clarifications,
     inject_clarification_instruction,
@@ -76,6 +78,8 @@ class AppState:
     signals: CompiledSignals
     ollama: OllamaClient
     llama_cpp: LlamaCppClient
+    hosts: dict[str, BackendClient]
+    dispatcher: TierDispatcher
     scheduler: VRAMScheduler
     orchestrator: Orchestrator
     tools: ToolRegistry
@@ -132,15 +136,37 @@ async def lifespan(app: FastAPI):
     state.tools = build_registry(tools_dir=tools_dir, config_dir=config_dir)
     logger.info("Tool registry ready: %d tools", len(state.tools.tools))
 
-    # Backend clients — endpoint overridable per-tier, these are fallbacks
+    # ── Always-on legacy clients ────────────────────────────────────────────
+    # Retained verbatim for backward compatibility. The TierDispatcher uses
+    # them as the final fallback whenever every registered host for a tier
+    # is unhealthy. Do NOT remove — see backend/dispatch.py.
     default_ollama = os.getenv("OLLAMA_URL", "http://ollama:11434")
     default_llama = os.getenv("LLAMACPP_URL", "http://llama-server:8001/v1")
     state.ollama = OllamaClient(default_ollama)
     state.llama_cpp = LlamaCppClient(default_llama)
 
-    # Per-tier clients (routed by tier.endpoint). For Phase 1 the endpoints
-    # in models.yaml match the env-defaults, so a single client per backend
-    # is fine. Future: per-tier endpoint dispatch.
+    # ── Per-host clients from hosts.yaml ────────────────────────────────────
+    # Built *alongside* the legacy clients — the dispatcher treats them
+    # uniformly via synthetic __legacy_ollama__ / __legacy_llama_cpp__ names.
+    state.hosts = {}
+    for name, host_cfg in state.config.hosts.hosts.items():
+        if not host_cfg.enabled and name not in (LEGACY_OLLAMA, LEGACY_LLAMA_CPP):
+            continue
+        if name == LEGACY_OLLAMA:
+            state.hosts[name] = state.ollama
+        elif name == LEGACY_LLAMA_CPP:
+            state.hosts[name] = state.llama_cpp
+        else:
+            state.hosts[name] = client_for(host_cfg)
+    state.dispatcher = TierDispatcher(state.config, state.hosts)
+    logger.info(
+        "Host registry: %d enabled (%s)",
+        len(state.hosts), ", ".join(sorted(state.hosts)),
+    )
+
+    # Legacy `clients` map (by backend kind) — kept for orchestrator
+    # back-compat. The dispatcher is authoritative; this map is only read by
+    # code paths we haven't migrated yet.
     clients = {"ollama": state.ollama, "llama_cpp": state.llama_cpp}
 
     async def _ollama_load(tier):
@@ -169,7 +195,13 @@ async def lifespan(app: FastAPI):
 
     # Phase 6: threads the tool registry into the orchestrator so workers
     # can call tools within subtasks.
-    state.orchestrator = Orchestrator(state.config, state.scheduler, clients, tools=state.tools)
+    state.orchestrator = Orchestrator(
+        state.config,
+        state.scheduler,
+        clients,
+        tools=state.tools,
+        dispatcher=state.dispatcher,
+    )
 
     logger.info("Ready. Tiers: %s", list(state.config.models.tiers))
 
@@ -404,7 +436,11 @@ async def chat_completions(
     )
 
     tier = state.config.models.tiers[decision.tier_name]
-    client = state.ollama if tier.backend == "ollama" else state.llama_cpp
+    choice = state.dispatcher.client_for_tier(tier)
+    client = choice.client
+    chosen_host = choice.host_name
+    logger.info("dispatch: tier=%s host=%s kind=%s",
+                tier.name, chosen_host, choice.host.kind)
 
     started = time.time()
 
@@ -450,6 +486,12 @@ async def chat_completions(
                 latency_ms=int((time.time() - started) * 1000),
                 error=err,
             )
+            # Update the dispatcher's circuit breaker so the next request
+            # rotates hosts if this one errored.
+            if err:
+                state.dispatcher.record_failure(chosen_host, err)
+            else:
+                state.dispatcher.record_success(chosen_host)
 
     if decision.multi_agent:
         return StreamingResponse(
