@@ -56,3 +56,44 @@ queue:
   max_depth_per_tier: 10
   max_wait_sec: 60
   position_update_interval_sec: 2
+
+# ── KV cache pressure manager ───────────────────────────────────────────────
+# When the live context for a request would push the tier's KV allocation
+# past `spill_trigger_fraction * num_ctx`, `backend/kv_cache_manager.py`
+# classifies each message by importance (recency + lexical relevance to
+# the live turn + role prior − size penalty) and drops the lowest-scoring
+# unpinned segments. System prompts, the current user turn, and linked
+# tool_call/result pairs are always pinned. Evicted text is stashed in an
+# in-process SpillStore so later turns can recall it.
+#
+# Acting at 0.92 means we prune before llama.cpp starts paging — the
+# degradation curve is non-linear and tokens/sec falls off a cliff once
+# true RAM spillover engages.
+kv_cache:
+  enable: true
+  spill_trigger_fraction: 0.92
+  reserve_output_tokens: 512
+  max_spill_entries_per_conv: 256
+  weights:
+    recency: 0.45
+    relevance: 0.30
+    role_prior: 0.15
+    size_penalty: 0.10
+    hot_window: 4                       # last N turns get an automatic recency boost
+
+# ── Per-model partial residency ─────────────────────────────────────────────
+# `backend/model_residency.py` picks a `num_gpu` layer count + mmap/mlock
+# posture per load. With enough free VRAM and a non-trivial user turn we
+# keep every layer on the card (FULL mode). When the card is tight, we
+# drop to PARTIAL (CPU-offloading some layers via mmap) or MINIMAL
+# (smallest working offload). A trivial-looking turn shaves an extra
+# `low_complexity_savings` fraction of layers so other tiers can share
+# the card without eviction.
+residency:
+  enable: true
+  full_headroom_multiplier: 1.15        # free >= cost * this → go FULL
+  partial_min_ratio: 0.35               # floor for PARTIAL layer ratio
+  minimal_ratio: 0.15                   # floor for MINIMAL mode
+  low_complexity_savings: 0.15          # extra layers we're willing to drop for easy turns
+  mlock_full_mode: true                 # pin pages when fully resident
+  mlock_partial_mode: false             # let CPU side page in/out under memory pressure
