@@ -136,6 +136,42 @@ class QueueConfig(BaseModel):
     position_update_interval_sec: int = 2
 
 
+class KVCacheWeights(BaseModel):
+    recency: float = 0.45
+    relevance: float = 0.30
+    role_prior: float = 0.15
+    size_penalty: float = 0.10
+    hot_window: int = 4
+
+
+class KVCacheConfig(BaseModel):
+    """KV-pressure manager (see backend/kv_cache_manager.py).
+
+    The manager prunes low-importance context segments before dispatch
+    when the live request would push a tier's KV allocation into RAM
+    spillover. `spill_trigger_fraction` defines how early we act —
+    below 1.0 so we never actually engage llama.cpp's page-fault path.
+    """
+
+    enable: bool = True
+    spill_trigger_fraction: float = 0.92
+    reserve_output_tokens: int = 512
+    max_spill_entries_per_conv: int = 256
+    weights: KVCacheWeights = Field(default_factory=KVCacheWeights)
+
+
+class ResidencyPolicyConfig(BaseModel):
+    """Per-model partial residency planner (backend/model_residency.py)."""
+
+    enable: bool = True
+    full_headroom_multiplier: float = 1.15
+    partial_min_ratio: float = 0.35
+    minimal_ratio: float = 0.15
+    low_complexity_savings: float = 0.15
+    mlock_full_mode: bool = True
+    mlock_partial_mode: bool = False
+
+
 class VRAMConfig(BaseModel):
     total_vram_gb: float
     headroom_gb: float = 1.5
@@ -145,6 +181,8 @@ class VRAMConfig(BaseModel):
     multi_agent: VRAMMultiAgent = Field(default_factory=VRAMMultiAgent)
     observed_costs: ObservedCosts = Field(default_factory=ObservedCosts)
     queue: QueueConfig = Field(default_factory=QueueConfig)
+    kv_cache: KVCacheConfig = Field(default_factory=KVCacheConfig)
+    residency: ResidencyPolicyConfig = Field(default_factory=ResidencyPolicyConfig)
 
 
 class MagicLinkConfig(BaseModel):
