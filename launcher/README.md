@@ -8,7 +8,7 @@ Single-click Windows launcher for the stack. Double-click `LocalAIStack.exe` and
 pwsh -File launcher\build.ps1
 ```
 
-Outputs `launcher\dist\LocalAIStack.exe` and `launcher\dist\gpu-agent.exe`. Requires `ps2exe` (auto-installed on first build).
+Outputs `launcher\dist\LocalAIStack.exe`, `launcher\dist\gpu-agent.exe`, and `launcher\dist\AirgapChat.exe`. Requires `ps2exe` (auto-installed on first build).
 
 ## What it wraps
 
@@ -41,10 +41,23 @@ All output is logged to `%APPDATA%\LocalAIStack\launcher.log` (rotated at 2 MB, 
 
 ## Tray menu
 
-- **Open Chat** — reopens the chat URL
+- **Open Chat** — reopens the chat URL (browser)
+- **Open Airgap Chat (desktop)** — launches the native desktop chat window (`AirgapChat.exe`)
 - **View Logs** — opens `launcher.log` in Notepad
 - **Restart** — relaunches the executable
 - **Stop & Exit** — runs `scripts\stop.ps1` (if present) + `docker compose down` silently and exits
+
+## Airgap desktop chat (`AirgapChat.exe`)
+
+A standalone WinForms chat window intended for use when airgap mode is ON. It opens in its own top-level window — separate from the browser UI and the admin dashboard — and talks directly to the backend at `http://localhost:8000` (override via `-BackendUrl <url>` or `LAI_BACKEND_URL`).
+
+- Streams token-by-token via SSE from `POST /v1/chat/completions`
+- Tier picker populated from `GET /v1/models`
+- Airgap status indicator polls `GET /airgap` every 15s (green = airgap ON, red = OFF or backend unreachable)
+- `Ctrl+Enter` to send, `New chat` to reset, `Send` doubles as `Stop` while streaming
+- Logs to `%APPDATA%\LocalAIStack\airgap-chat.log`
+
+Run directly during development: `pwsh -File launcher\AirgapChat.ps1`.
 
 ## Troubleshooting
 

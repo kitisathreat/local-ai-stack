@@ -123,9 +123,40 @@ $tray.Visible          = $false
 if (Test-Path $iconPath) { $tray.Icon = New-Object System.Drawing.Icon($iconPath) }
 else { $tray.Icon = [System.Drawing.SystemIcons]::Application }
 
+# Path to the airgap desktop chat app. Prefer the packaged .exe (same dir
+# when running from dist/, or launcher/dist/ when running the .ps1 directly);
+# fall back to executing the .ps1 via PowerShell if the .exe isn't present.
+$airgapChatExe = Join-Path $PSScriptRoot "AirgapChat.exe"
+if (-not (Test-Path $airgapChatExe)) {
+    $airgapChatExe = Join-Path $PSScriptRoot "dist\AirgapChat.exe"
+}
+$airgapChatPs1 = Join-Path $PSScriptRoot "AirgapChat.ps1"
+
+function Open-AirgapChat {
+    if (Test-Path $airgapChatExe) {
+        Start-Process -FilePath $airgapChatExe
+    } elseif (Test-Path $airgapChatPs1) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName        = (Get-Command pwsh -ErrorAction SilentlyContinue).Path
+        if (-not $psi.FileName) { $psi.FileName = "powershell.exe" }
+        $psi.Arguments       = "-NoProfile -ExecutionPolicy Bypass -File `"$airgapChatPs1`""
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow  = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+    } else {
+        [System.Windows.Forms.MessageBox]::Show(
+            "AirgapChat.exe not found. Build it with launcher\build.ps1.",
+            "LocalAIStack",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+    }
+}
+
 $trayMenu              = New-Object System.Windows.Forms.ContextMenuStrip
 $openItem              = $trayMenu.Items.Add("Open Chat")
 $openItem.Add_Click({ Start-Process $chatUrl })
+$airgapChatItem        = $trayMenu.Items.Add("Open Airgap Chat (desktop)")
+$airgapChatItem.Add_Click({ Open-AirgapChat })
 $logsItem              = $trayMenu.Items.Add("View Logs")
 $logsItem.Add_Click({ Start-Process notepad.exe $logPath })
 $restartItem           = $trayMenu.Items.Add("Restart")

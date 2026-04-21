@@ -34,4 +34,11 @@ Invoke-PS2EXE `
     -noConsole -title "LocalAIStack GPU Agent" `
     @iconArgs
 
+Invoke-PS2EXE `
+    -InputFile  (Join-Path $PSScriptRoot "AirgapChat.ps1") `
+    -OutputFile (Join-Path $distDir "AirgapChat.exe") `
+    -noConsole -title "LocalAIStack Chat (Airgap)" -product "LocalAIStack" `
+    -company "kitisathreat" `
+    @iconArgs
+
 Write-Host "Build complete → $distDir"
