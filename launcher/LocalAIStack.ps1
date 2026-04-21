@@ -20,26 +20,41 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-# Walk up from this script until we find docker-compose.yml. Needed because the
-# ps2exe-compiled EXE lives in launcher\dist\, so the naive parent-of-parent
-# is launcher\, not the repo root.
+# ps2exe may leave $PSScriptRoot empty in older versions of the module.
+# Fall back to the running EXE's own directory.
+$_scriptRoot = $PSScriptRoot
+if (-not $_scriptRoot) {
+    try {
+        $_scriptRoot = Split-Path ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -Parent
+    } catch {
+        $_scriptRoot = $PWD.Path
+    }
+}
+
+# Walk up from the EXE directory until we find docker-compose.yml.
+# The compiled EXE lives in launcher\dist\, so the repo root is two levels up.
 function Find-RepoRoot {
     param([string]$Start)
+    if (-not $Start) { return $Start }
     $dir = $Start
     for ($i = 0; $i -lt 6; $i++) {
         if (Test-Path (Join-Path $dir "docker-compose.yml")) { return $dir }
+        if (-not $dir) { break }
         $parent = Split-Path $dir -Parent
         if (-not $parent -or $parent -eq $dir) { break }
         $dir = $parent
     }
-    # Fallback: old behaviour
-    return (Split-Path $Start -Parent)
+    if ($Start) {
+        $p = Split-Path $Start -Parent
+        return if ($p) { $p } else { $Start }
+    }
+    return $Start
 }
-$repoRoot    = Find-RepoRoot $PSScriptRoot
-$stepsDir    = Join-Path $PSScriptRoot "steps"
+$repoRoot    = Find-RepoRoot $_scriptRoot
+$stepsDir    = Join-Path $_scriptRoot "steps"
 $appDataDir  = Join-Path $env:APPDATA "LocalAIStack"
 $logPath     = Join-Path $appDataDir "launcher.log"
-$iconPath    = Join-Path $PSScriptRoot "assets\icon.ico"
+$iconPath    = Join-Path $_scriptRoot "assets\icon.ico"
 
 # Default to local frontend. Override by setting PUBLIC_BASE_URL in .env.local
 # (e.g. to the Cloudflare Tunnel hostname) to open the public URL instead.
@@ -248,11 +263,11 @@ else { $tray.Icon = [System.Drawing.SystemIcons]::Application }
 # Path to the airgap desktop chat app. Prefer the packaged .exe (same dir
 # when running from dist/, or launcher/dist/ when running the .ps1 directly);
 # fall back to executing the .ps1 via PowerShell if the .exe isn't present.
-$airgapChatExe = Join-Path $PSScriptRoot "AirgapChat.exe"
+$airgapChatExe = Join-Path $_scriptRoot "AirgapChat.exe"
 if (-not (Test-Path $airgapChatExe)) {
-    $airgapChatExe = Join-Path $PSScriptRoot "dist\AirgapChat.exe"
+    $airgapChatExe = Join-Path $_scriptRoot "dist\AirgapChat.exe"
 }
-$airgapChatPs1 = Join-Path $PSScriptRoot "AirgapChat.ps1"
+$airgapChatPs1 = Join-Path $_scriptRoot "AirgapChat.ps1"
 
 function Open-AirgapChat {
     if (Test-Path $airgapChatExe) {

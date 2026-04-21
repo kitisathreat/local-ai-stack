@@ -19,17 +19,28 @@ if (-not $wslRoot) {
     exit 0
 }
 
-# Source .env.local so AUTH_SECRET_KEY and friends are exported before compose
-# interpolates them. Also set CLOUDFLARE_TUNNEL_TOKEN to a placeholder when
-# unset: the service is gated behind --profile public, but compose validates
-# the ${VAR:?...} syntax even for inactive services.
-$cmd = "cd '$wslRoot' && " +
-       "set -a; [ -f .env.local ] && . ./.env.local; set +a; " +
-       "export CLOUDFLARE_TUNNEL_TOKEN=`"`${CLOUDFLARE_TUNNEL_TOKEN:-_disabled_}`"; " +
-       "docker compose $profileFlag up -d"
+# Build the bash script as a plain string (no special chars that could be
+# mangled by PowerShell's native argument passing), then base64-encode it and
+# decode inside WSL. This avoids every quoting/escaping hazard.
+$bashLines = @(
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "cd '$wslRoot'",
+    "set -a",
+    "[ -f .env.local ] && . ./.env.local || true",
+    "set +a",
+    'CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-_disabled_}"',
+    "export CLOUDFLARE_TUNNEL_TOKEN",
+    "docker compose $profileFlag up -d"
+)
+$bashScript = $bashLines -join "`n"
 
-$output = & wsl.exe -d $distro -- bash -c $cmd 2>&1
-$code = $LASTEXITCODE
+# UTF-8 encode then base64 (no BOM)
+$bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes($bashScript)
+$b64   = [Convert]::ToBase64String($bytes)
+
+$output = & wsl.exe -d $distro -- bash -c "echo '$b64' | base64 -d | bash" 2>&1
+$code   = $LASTEXITCODE
 $output | ForEach-Object { [Console]::Error.WriteLine($_) }
 
 if ($code -eq 0) {
