@@ -194,10 +194,20 @@ async def by_user(window_seconds: int = 86400, limit: int = 50) -> list[dict[str
 
 
 async def recent_errors(limit: int = 25) -> list[dict[str, Any]]:
+    """Merge chat-loop errors (usage_events) with fire-and-forget failures
+    surfaced via the `backend_errors` table (#18, #32)."""
     async with db.get_conn() as c:
-        rows = await (await c.execute(
-            "SELECT ts, tier, user_id, error FROM usage_events "
+        chat_rows = await (await c.execute(
+            "SELECT ts, tier, user_id, error, 'chat' AS source FROM usage_events "
             "WHERE error IS NOT NULL ORDER BY ts DESC LIMIT ?",
             (limit,),
         )).fetchall()
-    return [dict(r) for r in rows]
+        bg_rows = await (await c.execute(
+            "SELECT created_at AS ts, stage AS tier, user_id, error, "
+            "       'background' AS source "
+            "FROM backend_errors ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )).fetchall()
+    merged = [dict(r) for r in chat_rows] + [dict(r) for r in bg_rows]
+    merged.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+    return merged[:limit]

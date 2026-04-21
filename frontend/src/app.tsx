@@ -1023,6 +1023,10 @@ function ChatView({
         model: tier,
         messages: newMsgs,
         think: reasoning === "auto" ? null : reasoning === "on",
+        // #13: pass the active conversation id so the backend can
+        // persist turns to the right conversation and trigger memory
+        // distillation every 5th assistant turn.
+        conversation_id: convId ?? null,
         // Only send per-chat overrides when the user is admin AND has touched
         // the panel. Non-admin users always fall through to server defaults.
         multi_agent_options:

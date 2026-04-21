@@ -118,3 +118,19 @@ def test_rate_limit_allows_below_threshold(auth_cfg, db_path):
     run(db_mod.create_magic_link("ok@x.io", 60, None))
     # Should not raise.
     run(check_rate_limits("ok@x.io", auth_cfg))
+
+
+def test_rate_limit_per_ip_tripped_without_email_quota(auth_cfg, db_path):
+    """#71: a single IP should hit the per-IP limiter even when every
+    magic-link targets a different email address."""
+    from backend import db as db_mod
+    from backend.auth import check_rate_limits
+    from fastapi import HTTPException
+
+    run(db_mod.init_db())
+    ip = "203.0.113.7"
+    for i in range(auth_cfg.rate_limits.requests_per_hour_per_ip):
+        run(db_mod.create_magic_link(f"u{i}@x.io", 60, ip))
+    with pytest.raises(HTTPException) as excinfo:
+        run(check_rate_limits("fresh@x.io", auth_cfg, client_ip=ip))
+    assert excinfo.value.status_code == 429

@@ -128,6 +128,10 @@ class ToolEntry:
     handler: Callable         # bound method on the Tools instance
     default_enabled: bool = True
     requires_service: str | None = None
+    # Soft per-tool execution timeout (seconds) enforced by the executor
+    # (#69). Overridable per-tool in tools.yaml; default is conservative
+    # because a runaway handler otherwise ties up a worker slot.
+    timeout_s: float = 30.0
 
 
 # Services considered safe to reach from an airgap environment because they
@@ -251,6 +255,10 @@ def build_registry(
         yaml_entry = yaml_entries.get(module, {})
         default_enabled = bool(yaml_entry.get("default_enabled", True))
         requires_service = yaml_entry.get("requires_service")
+        try:
+            timeout_s = float(yaml_entry.get("timeout_s", 30.0))
+        except (TypeError, ValueError):
+            timeout_s = 30.0
 
         for meth_name, meth in inspect.getmembers(instance, predicate=inspect.ismethod):
             if meth_name.startswith("_"):
@@ -267,6 +275,7 @@ def build_registry(
                 handler=meth,
                 default_enabled=default_enabled,
                 requires_service=requires_service,
+                timeout_s=timeout_s,
             )
 
     logger.info("Loaded %d tool methods from %s", len(reg.tools), tools_dir)

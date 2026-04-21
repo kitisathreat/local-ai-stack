@@ -95,11 +95,18 @@ services:
       - public                          # opt-in: `docker compose --profile public up`
 
   # ── Ollama — primary inference backend ────────────────────────────────────────
+  #
+  # Port intentionally NOT published to the host. The backend reaches
+  # ollama over the internal compose network (service name `ollama`).
+  # Publishing 11434 lets any LAN-reachable caller bypass the backend's
+  # auth + rate-limit + logging, so we bind only internally (#61).
+  # Override with the `dev-ports` compose override if you need direct
+  # curl access for debugging.
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-    ports:
-      - "11434:11434"
+    expose:
+      - "11434"
     volumes:
       - ollama-data:/root/.ollama
     environment:
@@ -121,11 +128,15 @@ services:
   # Requires the vision GGUF + mmproj files in ./models/. Download via
   # scripts/setup-models.sh. Service stays idle (failed-start) if files are
   # missing — the backend's VRAM scheduler won't route to it in that case.
+  #
+  # Internal-only publish (#61): the backend calls llama-server over the
+  # compose network. Exposing 8001 publicly lets anyone pin the vision
+  # model in VRAM without going through auth.
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: llama-server
-    ports:
-      - "8001:8001"
+    expose:
+      - "8001"
     volumes:
       - ./models:/models:ro
     # NOTE: -c is the *total* KV budget; --parallel splits it into slots, so
@@ -161,18 +172,23 @@ services:
   # Matplotlib, etc., plus PyTorch. With the NVIDIA device reservation below,
   # PyTorch (and any other CUDA library installed at runtime) can use the GPU
   # directly — enabling GPU-accelerated ML/DL workloads inside notebooks.
+  #
+  # #59: JUPYTER_TOKEN MUST come from .env.local — never hardcode a
+  # known-public token. Port 8888 is reachable only on the internal
+  # compose network (`expose`, not `ports`) so LAN callers can't
+  # authenticate with the token and run arbitrary Python on the host.
   jupyter:
     image: quay.io/jupyter/pytorch-notebook:latest
     container_name: jupyter
     environment:
-      - JUPYTER_TOKEN=local-ai-stack-token
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:?set JUPYTER_TOKEN in .env.local (random 32+ bytes)}
       - JUPYTER_ENABLE_LAB=yes
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - jupyter-data:/home/jovyan/work
-    ports:
-      - "8888:8888"
+    expose:
+      - "8888"
     deploy:
       resources:
         reservations:
@@ -182,22 +198,31 @@ services:
     restart: always
 
   # ── Qdrant: vector database ──────────────────────────────────────────────────
+  #
+  # Internal-only publish (#61). Qdrant has no built-in auth; exposing
+  # 6333/6334 to the host lets any LAN caller read, write, or delete
+  # every user's memory + RAG vectors. The backend reaches it via the
+  # service name `qdrant`.
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    expose:
+      - "6333"
+      - "6334"
     volumes:
       - qdrant-data:/qdrant/storage
     restart: always
 
   # ── SearXNG: meta-search engine for web search tools ──────────────────────────
+  #
+  # #65: bind to 127.0.0.1 only. A public 0.0.0.0 SearXNG draws upstream
+  # search engines into blocking the host and makes the backend into an
+  # SSRF reflector. The backend reaches it via the internal service name.
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
     ports:
-      - "4000:8080"
+      - "127.0.0.1:4000:8080"
     volumes:
       - ./config/searxng:/etc/searxng:rw
     environment:
@@ -211,18 +236,24 @@ services:
     restart: always
 
   # ── n8n: optional workflow automation ────────────────────────────────────────
+  #
+  # #60: basic auth is now REQUIRED. Set N8N_BASIC_AUTH_USER/PASSWORD in
+  # .env.local. Port 5678 is bound to 127.0.0.1 so LAN callers can't
+  # reach the UI directly.
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     volumes:
       - n8n-data:/home/node/.n8n
     environment:
       - N8N_HOST=localhost
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
-      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:?set N8N_BASIC_AUTH_USER in .env.local}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:?set N8N_BASIC_AUTH_PASSWORD in .env.local}
       - WEBHOOK_URL=http://localhost:5678
       - N8N_RUNNERS_ENABLED=true
     restart: always

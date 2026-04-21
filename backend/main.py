@@ -25,7 +25,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ipaddress import ip_address, ip_network
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import admin, airgap, auth, db, history_store, memory, metrics, rag
 from .backends.llama_cpp import LlamaCppClient
@@ -92,6 +94,29 @@ class AppState:
 state = AppState()
 
 
+# Bounded queue for fire-and-forget post-stream work so a slow distiller
+# (or an unreachable Ollama) can't pile up detached tasks unbounded (#76).
+# Tasks are tracked in a weak-ref set so they aren't garbage-collected
+# mid-flight and so lifespan shutdown can await them.
+_FINALIZE_MAX_CONCURRENCY = int(os.getenv("FINALIZE_MAX_CONCURRENCY", "8"))
+_finalize_sem = asyncio.Semaphore(_FINALIZE_MAX_CONCURRENCY)
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    """Spawn a task, keep a strong ref while it runs, and log failures."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.error("background task failed: %r", exc)
+    task.add_done_callback(_done)
+    return task
+
+
 async def _init_redis(cfg: AppConfig):
     """Lazy-imported so the `redis` package isn't required when unused."""
     url = cfg.concurrency.redis_url
@@ -112,12 +137,73 @@ async def _init_redis(cfg: AppConfig):
         return None
 
 
+# ── Trusted-proxy + client-IP helpers ─────────────────────────────────────
+
+def _parse_trusted_proxies(raw: str | None) -> list:
+    """TRUSTED_PROXIES is a comma-separated list of IPs or CIDRs. Entries
+    that don't parse are logged and skipped — we never fail open here."""
+    if not raw:
+        return []
+    nets = []
+    for item in (p.strip() for p in raw.split(",")):
+        if not item:
+            continue
+        try:
+            nets.append(ip_network(item, strict=False))
+        except ValueError:
+            logger.warning("TRUSTED_PROXIES: skipping invalid entry %r", item)
+    return nets
+
+
+def _ip_in_networks(ip_str: str, nets) -> bool:
+    try:
+        ip = ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(ip in n for n in nets)
+
+
+def _client_ip(request: Request) -> str:
+    """Return the best guess at the end-user's IP.
+
+    Only trusts X-Forwarded-For / CF-Connecting-IP when the immediate peer
+    matches TRUSTED_PROXIES (or CLOUDFLARE_TUNNEL_ENABLED=1). Otherwise
+    falls back to `request.client.host` — the actual socket peer —
+    regardless of what headers the client sent.
+    """
+    peer = request.client.host if request.client else ""
+    trusted = _parse_trusted_proxies(os.getenv("TRUSTED_PROXIES"))
+    cf_tunnel = os.getenv("CLOUDFLARE_TUNNEL_ENABLED", "").lower() in {"1", "true", "yes"}
+
+    peer_is_trusted = bool(peer) and (
+        _ip_in_networks(peer, trusted)
+        or (cf_tunnel and peer in {"127.0.0.1", "::1"})
+    )
+
+    if peer_is_trusted:
+        cf = request.headers.get("cf-connecting-ip")
+        if cf:
+            return cf.strip()
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            # Take the left-most entry that isn't itself a trusted hop.
+            for hop in (h.strip() for h in xff.split(",")):
+                if not hop:
+                    continue
+                if not _ip_in_networks(hop, trusted):
+                    return hop
+            # All hops were trusted — fall through to peer.
+    return peer or "anon"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Loading config…")
     state.config = AppConfig.load()
     state.signals = state.config.compile_signals()
     app.state.app_config = state.config       # for auth dependencies
+
+    _validate_public_base_url(state.config)
 
     logger.info("Initialising database…")
     await db.init_db()
@@ -201,6 +287,21 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Drain bounded background tasks so in-flight finalizations complete
+        # (or time out) before we tear down the scheduler/db connections (#76).
+        if _background_tasks:
+            pending = list(_background_tasks)
+            logger.info("Draining %d background task(s)…", len(pending))
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Background drain exceeded 10s; %d task(s) still running at shutdown",
+                    len(_background_tasks),
+                )
         await state.scheduler.stop()
         if state.redis is not None:
             try:
@@ -209,13 +310,92 @@ async def lifespan(app: FastAPI):
                 pass
 
 
+# ── Startup validators ────────────────────────────────────────────────────
+
+def _is_localhost_host(host: str) -> bool:
+    if not host:
+        return False
+    h = host.lower()
+    if h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return True
+    if h.endswith(".localhost"):
+        return True
+    return False
+
+
+def _validate_public_base_url(cfg: AppConfig) -> None:
+    """Fail-closed if PUBLIC_BASE_URL is missing or mis-matched with
+    cookie.secure / ALLOWED_ORIGINS (#64, #72, #73)."""
+    raw = os.getenv("PUBLIC_BASE_URL", "").strip()
+    if not raw:
+        # Dev shortcut — the /auth/verify redirect falls back to "/" below.
+        logger.warning(
+            "PUBLIC_BASE_URL is unset; magic-link redirects default to '/'. "
+            "Set it to your public URL (e.g. https://chat.example.com) in production."
+        )
+        return
+
+    parts = urlsplit(raw)
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower()
+    if scheme not in {"http", "https"} or not host:
+        raise RuntimeError(
+            f"PUBLIC_BASE_URL={raw!r} must be an absolute http(s) URL."
+        )
+
+    is_local_dev = scheme == "http" and _is_localhost_host(host)
+
+    # #64: production deploys must be HTTPS.
+    if scheme == "http" and not is_local_dev:
+        raise RuntimeError(
+            f"PUBLIC_BASE_URL={raw!r} is plaintext http:// and does not point at "
+            "localhost. Use https:// in production or point it at localhost for "
+            "local dev."
+        )
+
+    # #73: cookie.secure=True silently drops cookies over http://. Refuse
+    # to boot on that mismatch.
+    if cfg.auth.session.cookie_secure and scheme == "http":
+        raise RuntimeError(
+            "cookie_secure=True requires https:// PUBLIC_BASE_URL. Either enable "
+            "TLS (via Cloudflare Tunnel) or set auth.session.cookie_secure=false "
+            "for local dev."
+        )
+    if scheme == "https" and not cfg.auth.session.cookie_secure:
+        logger.warning(
+            "cookie_secure=False while PUBLIC_BASE_URL is https:// — enable "
+            "cookie_secure in auth.yaml to prevent session-cookie leakage."
+        )
+
+    # #72: reject ALLOWED_ORIGINS=* in production (HTTPS deploy).
+    allowed = [
+        o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+    ]
+    if scheme == "https" and allowed == ["*"]:
+        raise RuntimeError(
+            "ALLOWED_ORIGINS=* is unsafe with cookie-based auth over HTTPS. "
+            "Set it to your public origin(s) explicitly, e.g. "
+            f"ALLOWED_ORIGINS={parts.scheme}://{parts.netloc}"
+        )
+    for origin in allowed:
+        if origin == "*":
+            continue
+        op = urlsplit(origin)
+        if op.scheme not in {"http", "https"} or not op.hostname:
+            raise RuntimeError(
+                f"ALLOWED_ORIGINS entry {origin!r} must be an absolute URL "
+                "with an explicit scheme and host."
+            )
+
+
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
 app.include_router(admin.router)
 
 # CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
 # Cloudflare Tunnel hostname is set via setup-cloudflared.sh. Local dev
-# defaults to wildcard. We warn if wildcard+credentials is configured since
-# browsers ignore that combination.
+# defaults to wildcard. When wildcard+credentials is configured we warn
+# because browsers ignore that combination — the startup validator in
+# lifespan() fail-closes this in production (#72).
 _allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 if _allowed_origins == ["*"]:
     logger.warning(
@@ -234,14 +414,31 @@ app.add_middleware(
 )
 
 
+# #75: Content-Security-Policy caps the blast radius of any future XSS.
+# The chat UI currently renders message bodies as text, so there's no
+# known vector today. Override via CSP_HEADER env for deployments that
+# load a different origin or need a stricter connect-src.
+_DEFAULT_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    """Attach HSTS and content-type protection headers to every response.
-    Only meaningful when served behind HTTPS (Cloudflare Tunnel)."""
+    """Attach HSTS, content-type protection, and CSP headers to every response.
+    HSTS is only meaningful when served behind HTTPS (Cloudflare Tunnel)."""
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    csp = os.getenv("CSP_HEADER") or _DEFAULT_CSP
+    if csp and csp.lower() != "off":
+        resp.headers.setdefault("Content-Security-Policy", csp)
     if os.getenv("PUBLIC_BASE_URL", "").startswith("https://"):
         resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return resp
@@ -377,11 +574,25 @@ async def _inject_user_context(req: ChatRequest, user: dict) -> None:
         mem_hits = await memory.retrieve_for_user(
             user["id"], last, k=3, airgap=is_airgap,
         )
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "memory retrieve failed for user=%s: %s", user.get("id"), e,
+        )
+        await db.record_backend_error(
+            user_id=user.get("id"), conversation_id=None,
+            stage="retrieve_memory", error=repr(e),
+        )
         mem_hits = []
     try:
         rag_hits = await rag.retrieve(user["id"], last, k=3)
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "rag retrieve failed for user=%s: %s", user.get("id"), e,
+        )
+        await db.record_backend_error(
+            user_id=user.get("id"), conversation_id=None,
+            stage="retrieve_rag", error=repr(e),
+        )
         rag_hits = []
     blocks = []
     if mem_hits:
@@ -411,11 +622,8 @@ async def chat_completions(
     except KeyError as e:
         raise HTTPException(404, str(e))
 
-    # Rate-limit by user ID (falls back to client IP for anonymous).
-    rate_key = str(user["id"]) if user else (
-        request.headers.get("x-forwarded-for") or
-        (request.client.host if request.client else "anon")
-    )
+    # Rate-limit by user ID (falls back to a validated client IP for anonymous).
+    rate_key = str(user["id"]) if user else _client_ip(request)
     await rate_limiter.check(rate_key)
 
     # Middleware pipeline — inlet:
@@ -704,7 +912,7 @@ async def _single_agent_sse(
 
     # Phase 6: post-stream persistence + memory distillation (fire-and-forget).
     full_text = "".join(assembled_text)
-    asyncio.create_task(_finalize_conversation(req, user, decision, full_text))
+    _spawn_background(_finalize_conversation(req, user, decision, full_text))
 
     yield _openai_chunk("", model_id, done=True)
     yield "data: [DONE]\n\n"
@@ -714,17 +922,49 @@ async def _finalize_conversation(
     req: ChatRequest, user: dict | None, decision, assistant_text: str,
 ) -> None:
     """Persist the user+assistant messages and periodically distill memory.
-    Runs as a background task after the stream completes; never raises."""
+    Runs as a background task after the stream completes; never raises.
+
+    Bounded by _finalize_sem (#76) so a stuck distiller can't queue up
+    unlimited tasks. Silent failures are surfaced via the `backend_errors`
+    table so the admin dashboard can show them (#18).
+    """
     if not user or not req.conversation_id or not assistant_text.strip():
         return
-    try:
+    async with _finalize_sem:
+      try:
         conv = await db.get_conversation(req.conversation_id, user["id"])
         if not conv:
             return
 
-        # Save the trailing user message + the assistant reply.
+        # #16 Back-fill any earlier turns in the request that haven't yet
+        # been persisted. Keeps SQLite authoritative even if the frontend
+        # stops calling /chats POST for every message — we compare the
+        # request's message count against what's on disk and insert the
+        # missing prefix in order.
         from .router import last_user_text
         user_text = last_user_text(req.messages)
+        existing = await db.list_messages(req.conversation_id)
+        existing_count = len(existing)
+        # The final user message (user_text) and the assistant reply below
+        # are persisted separately; only back-fill messages strictly
+        # earlier than those.
+        earlier = [
+            m for m in req.messages
+            if m.role in {"user", "assistant", "system"}
+        ]
+        if earlier and earlier[-1].role == "user":
+            earlier = earlier[:-1]
+        to_backfill = earlier[existing_count:]
+        for m in to_backfill:
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            if not content:
+                continue
+            await db.add_message(
+                req.conversation_id, m.role, content,
+                tier=decision.tier_name, think=False,
+            )
+
+        # Save the trailing user message + the assistant reply.
         if user_text:
             await db.add_message(
                 req.conversation_id, "user", user_text,
@@ -783,8 +1023,14 @@ async def _finalize_conversation(
                 user["id"], req.conversation_id, state.ollama, versatile_tier,
                 airgap=conv_airgap,
             )
-    except Exception:
+      except Exception as e:
         logger.exception("Post-stream finalization failed")
+        await db.record_backend_error(
+            user_id=user.get("id") if user else None,
+            conversation_id=req.conversation_id,
+            stage="finalize_conversation",
+            error=repr(e),
+        )
 
 
 async def _multi_agent_sse(
@@ -839,10 +1085,10 @@ async def auth_request(req: MagicLinkRequest, request: Request):
     if not auth.valid_email(email, cfg):
         raise HTTPException(400, "Invalid or disallowed email address")
 
-    await auth.check_rate_limits(email, cfg)
+    client_ip = _client_ip(request)
+    await auth.check_rate_limits(email, cfg, client_ip=client_ip)
 
     expiry_s = cfg.magic_link.expiry_minutes * 60
-    client_ip = request.headers.get("x-forwarded-for", "") or (request.client.host if request.client else "")
     token = await db.create_magic_link(email, expiry_s, client_ip)
 
     base = os.getenv("PUBLIC_BASE_URL", f"http://{request.url.hostname}:{request.url.port or 8000}")
@@ -866,8 +1112,19 @@ async def auth_verify(token: str, request: Request):
     user = await db.get_or_create_user(consumed["email"])
     session_token = auth.issue_session_token(user["id"], cfg)
 
-    # Redirect to the app root with the session cookie set.
+    # Redirect to the app root with the session cookie set. We cross-check
+    # the configured URL against the host we were asked to redirect to so a
+    # mis-set or tampered PUBLIC_BASE_URL can't send a freshly-authenticated
+    # user to an attacker-controlled origin (#64).
     redirect_to = os.getenv("PUBLIC_BASE_URL", "/")
+    if redirect_to != "/":
+        parts = urlsplit(redirect_to)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            logger.warning(
+                "PUBLIC_BASE_URL=%r is not an absolute URL; redirecting to '/'",
+                redirect_to,
+            )
+            redirect_to = "/"
     resp = Response(status_code=302)
     resp.headers["Location"] = redirect_to
     resp.set_cookie(
@@ -984,10 +1241,20 @@ async def rag_upload(
         raise HTTPException(400, "Empty file")
     if len(content) > 20 * 1024 * 1024:
         raise HTTPException(413, "File too large (>20MB)")
+    # #67: detect the file type from the body's magic bytes, not the
+    # attacker-controlled content-type header / extension. This throws
+    # UnsupportedUploadError which we translate to 415 so the client
+    # sees why the upload was rejected.
+    try:
+        rag.sniff_kind(content, filename=file.filename or "")
+    except rag.UnsupportedUploadError as e:
+        raise HTTPException(415, str(e))
     try:
         ingest = await rag.ingest_document(
             user["id"], file.filename or "upload", content, mime=file.content_type,
         )
+    except rag.UnsupportedUploadError as e:
+        raise HTTPException(415, str(e))
     except Exception as e:
         logger.exception("RAG ingest failed")
         raise HTTPException(500, f"Ingest failed: {e}")
@@ -995,13 +1262,12 @@ async def rag_upload(
     # Persist doc metadata so the UI can list + delete.
     now = time.time()
     async with db.get_conn() as c:
-        import json as _json
         await c.execute(
             "INSERT INTO rag_docs (user_id, filename, mime_type, size_bytes, chunk_count, qdrant_ids, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 user["id"], file.filename, file.content_type, len(content),
-                ingest["chunks"], _json.dumps(ingest["qdrant_ids"]), now,
+                ingest["chunks"], json.dumps(ingest["qdrant_ids"]), now,
             ),
         )
         await c.commit()
@@ -1021,7 +1287,6 @@ async def rag_list(user: dict = Depends(auth.current_user)):
 
 @app.delete("/rag/docs/{doc_id}")
 async def rag_delete(doc_id: int, user: dict = Depends(auth.current_user)):
-    import json as _json
     async with db.get_conn() as c:
         row = await (await c.execute(
             "SELECT id, qdrant_ids FROM rag_docs WHERE id = ? AND user_id = ?",
@@ -1029,7 +1294,7 @@ async def rag_delete(doc_id: int, user: dict = Depends(auth.current_user)):
         )).fetchone()
         if not row:
             raise HTTPException(404, "Document not found")
-        ids = _json.loads(row["qdrant_ids"] or "[]")
+        ids = json.loads(row["qdrant_ids"] or "[]")
         await c.execute("DELETE FROM rag_docs WHERE id = ?", (doc_id,))
         await c.commit()
     # Best-effort Qdrant cleanup (the upload persists point IDs, not doc_id).

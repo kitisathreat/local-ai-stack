@@ -53,8 +53,11 @@ PROMPTS_DIR = SCRIPT_DIR / "prompts"
 MODELS_YAML = REPO_ROOT / "config" / "models.yaml"
 
 LMSTUDIO_URL = "http://localhost:1234/v1"
-JUPYTER_URL  = "http://localhost:8888"
-JUPYTER_TOKEN = "local-ai-stack-token"
+JUPYTER_URL  = os.environ.get("JUPYTER_URL", "http://localhost:8888")
+# #59: never hardcode a known-public Jupyter token. The container reads
+# JUPYTER_TOKEN from .env.local; this script reads it from the same env
+# var at invocation time so the two stay in sync.
+JUPYTER_TOKEN = os.environ.get("JUPYTER_TOKEN", "")
 
 VALID_MODES    = ["explain", "review", "fix", "test", "plan"]
 # New 5-tier schema — code_assist reads `tiers:` and `model_tag:` from models.yaml.

@@ -338,6 +338,11 @@ export async function* streamChat(params: {
   tools?: Array<Record<string, unknown>> | null;
   response_mode?: ResponseMode | null;
   plan_text?: string | null;
+  // #13: pass the active conversation_id so the backend's post-stream
+  // persistence can match the turn to a conversation and trigger
+  // distillation every 5th assistant turn. Null when the user is
+  // chatting anonymously (no active conversation yet).
+  conversation_id?: number | null;
   signal?: AbortSignal;
 }): AsyncGenerator<SseEnvelope> {
   const body: Record<string, unknown> = {
@@ -347,6 +352,9 @@ export async function* streamChat(params: {
     think: params.think ?? null,
     multi_agent: params.multi_agent ?? null,
   };
+  if (params.conversation_id != null) {
+    body.conversation_id = params.conversation_id;
+  }
   if (params.multi_agent_options) {
     // Trim null/undefined fields so the server gets a clean partial.
     const opt: Record<string, unknown> = {};

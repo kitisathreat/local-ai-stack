@@ -15,6 +15,7 @@ unused until Phase 5.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -136,6 +137,23 @@ CREATE TABLE IF NOT EXISTS usage_events (
 CREATE INDEX IF NOT EXISTS idx_usage_ts   ON usage_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_events(user_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_tier ON usage_events(tier, ts DESC);
+
+-- Observability: non-fatal backend failures that wouldn't otherwise
+-- surface (fire-and-forget finalization, memory/RAG retrieval, etc.).
+-- Populated by _finalize_conversation and _inject_user_context so
+-- operators can see silent-failure rates without scraping logs.
+CREATE TABLE IF NOT EXISTS backend_errors (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+    stage           TEXT NOT NULL,
+    error           TEXT NOT NULL,
+    created_at      REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_errors_ts    ON backend_errors(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_errors_user  ON backend_errors(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_errors_stage ON backend_errors(stage, created_at DESC);
 """
 
 
@@ -179,10 +197,32 @@ async def init_db() -> None:
         await c.commit()
 
 
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ALLOWED_TYPE_SQL = {
+    "INTEGER NOT NULL DEFAULT 0",
+    "INTEGER NOT NULL DEFAULT 1",
+    "TEXT",
+    "TEXT NOT NULL DEFAULT ''",
+    "REAL",
+}
+
+
 async def _migrate_add_column(
     conn: aiosqlite.Connection, table: str, column: str, type_sql: str,
 ) -> None:
-    """Add a column if it doesn't exist (SQLite has no ADD COLUMN IF NOT EXISTS)."""
+    """Add a column if it doesn't exist (SQLite has no ADD COLUMN IF NOT EXISTS).
+
+    SQLite can't parameterize identifiers, so we validate table/column
+    names and allow-list `type_sql` against the strings the codebase
+    actually uses. This keeps the helper from becoming a SQL-injection
+    primitive if a caller ever routes a config value through it.
+    """
+    if not _IDENT_RE.match(table):
+        raise ValueError(f"invalid table identifier: {table!r}")
+    if not _IDENT_RE.match(column):
+        raise ValueError(f"invalid column identifier: {column!r}")
+    if type_sql not in _ALLOWED_TYPE_SQL:
+        raise ValueError(f"disallowed type_sql: {type_sql!r}")
     rows = await (await conn.execute(f"PRAGMA table_info({table})")).fetchall()
     if any(r["name"] == column for r in rows):
         return
@@ -250,6 +290,53 @@ async def count_recent_magic_links_for_email(email: str, window_seconds: int) ->
         row = await (await c.execute(
             "SELECT COUNT(*) AS n FROM magic_links WHERE email = ? AND created_at >= ?",
             (email, since),
+        )).fetchone()
+        return int(row["n"])
+
+
+# ── Backend error log ────────────────────────────────────────────────────
+
+async def record_backend_error(
+    *,
+    user_id: int | None,
+    conversation_id: int | None,
+    stage: str,
+    error: str,
+) -> None:
+    """Best-effort insert into backend_errors. Callers should catch
+    anything raised by this so observability logging can't itself
+    cascade into a new failure."""
+    try:
+        async with get_conn() as c:
+            await c.execute(
+                "INSERT INTO backend_errors "
+                "(user_id, conversation_id, stage, error, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, conversation_id, stage, error[:2000], time.time()),
+            )
+            await c.commit()
+    except Exception:
+        pass
+
+
+async def list_recent_backend_errors(limit: int = 100) -> list[dict]:
+    async with get_conn() as c:
+        rows = await (await c.execute(
+            "SELECT id, user_id, conversation_id, stage, error, created_at "
+            "FROM backend_errors ORDER BY id DESC LIMIT ?",
+            (int(max(1, min(limit, 1000))),),
+        )).fetchall()
+        return [dict(r) for r in rows]
+
+
+async def count_recent_magic_links_for_ip(ip: str, window_seconds: int) -> int:
+    if not ip:
+        return 0
+    since = time.time() - window_seconds
+    async with get_conn() as c:
+        row = await (await c.execute(
+            "SELECT COUNT(*) AS n FROM magic_links WHERE ip = ? AND created_at >= ?",
+            (ip, since),
         )).fetchone()
         return int(row["n"])
 

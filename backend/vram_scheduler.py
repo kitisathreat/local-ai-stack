@@ -525,19 +525,24 @@ class VRAMScheduler:
             )
 
     async def _unload(self, model: LoadedModel) -> None:
-        """Must be called with `self._lock` held."""
+        """Must be called with `self._lock` held.
+
+        #30: previous revisions manually released/re-acquired the lock
+        around the unloader call to "be nice" to other coroutines. That
+        broke asyncio's lock contract (release raises if the caller
+        doesn't hold it) and opened a window where another coroutine
+        could mutate `self.loaded` mid-unload. Ollama's
+        `keep_alive=0` unload takes ~50–200ms and llama.cpp's unloader
+        is effectively a no-op — bounded enough that holding the lock
+        throughout is safer than the dance.
+        """
         model.state = ModelState.EVICTING
         tier = self.tiers.get(model.tier_id)
         if tier:
             unloader = self.unloaders.get(tier.backend)
             if unloader:
                 try:
-                    # Release lock briefly; unloader may be slow
-                    self._lock.release()
-                    try:
-                        await unloader(tier)
-                    finally:
-                        await self._lock.acquire()
+                    await unloader(tier)
                 except Exception as e:
                     logger.warning("Unload failed for %s: %s", model.tier_id, e)
         self.loaded.pop(model.tier_id, None)

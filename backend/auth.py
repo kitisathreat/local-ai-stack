@@ -143,7 +143,18 @@ async def send_magic_email(
     )
 
     if not (smtp_host and smtp_user and smtp_pass):
-        logger.info("SMTP not configured — would have emailed %s: %s", to_email, verify_url)
+        # Do NOT log the full verify_url by default: it contains a live magic-link
+        # token that would grant sign-in to anyone with log access. Opt in with
+        # AUTH_DEV_LINK_LOG=1 for local dev; otherwise log a redacted form.
+        if os.getenv("AUTH_DEV_LINK_LOG", "").lower() in {"1", "true", "yes"}:
+            logger.info(
+                "SMTP not configured — would have emailed %s: %s", to_email, verify_url
+            )
+        else:
+            logger.info(
+                "SMTP not configured — would have emailed %s (token redacted; set AUTH_DEV_LINK_LOG=1 to log the URL)",
+                to_email,
+            )
         return
 
     msg = EmailMessage()
@@ -164,12 +175,25 @@ async def send_magic_email(
 
 # ── Rate-limit gate ─────────────────────────────────────────────────────
 
-async def check_rate_limits(email: str, cfg: AuthConfig) -> None:
-    """Raise HTTPException 429 if too many requests have been made
-    recently for this email."""
-    n = await db.count_recent_magic_links_for_email(email, window_seconds=3600)
-    if n >= cfg.rate_limits.requests_per_hour_per_email:
+async def check_rate_limits(
+    email: str, cfg: AuthConfig, client_ip: str | None = None,
+) -> None:
+    """Raise HTTPException 429 if too many magic-link requests have been
+    made recently for this email **or** originating client IP.
+
+    We return the same generic 429 regardless of which bucket tripped so
+    attackers can't use it to enumerate known emails vs. rate-limited IPs
+    (#71).
+    """
+    n_email = await db.count_recent_magic_links_for_email(email, window_seconds=3600)
+    n_ip = 0
+    if client_ip and cfg.rate_limits.requests_per_hour_per_ip > 0:
+        n_ip = await db.count_recent_magic_links_for_ip(client_ip, window_seconds=3600)
+    if (
+        n_email >= cfg.rate_limits.requests_per_hour_per_email
+        or n_ip >= cfg.rate_limits.requests_per_hour_per_ip
+    ):
         raise HTTPException(
             429,
-            f"Too many sign-in requests for {email}. Try again in an hour.",
+            "Too many sign-in requests. Try again in an hour.",
         )

@@ -31,6 +31,43 @@ from .registry import ToolEntry, ToolRegistry
 logger = logging.getLogger(__name__)
 
 
+def _validate_args(entry: ToolEntry, args: dict) -> str | None:
+    """Lightweight validator against the tool's registered JSON schema
+    (#68). Rejects unknown property types and missing required fields;
+    returns a human-readable error string on violation, else None.
+
+    We don't pull in `jsonschema` as a dep — only the primitive types
+    we emit from `method_to_schema` are checked, which covers the
+    registry's entire surface today."""
+    if not isinstance(args, dict):
+        return "arguments must be a JSON object"
+    fn_schema = ((entry.schema or {}).get("function") or {}).get("parameters") or {}
+    properties = fn_schema.get("properties") or {}
+    required = fn_schema.get("required") or []
+    for key in required:
+        if key not in args:
+            return f"missing required argument: {key}"
+    _TYPE_CHECKS = {
+        "string": lambda v: isinstance(v, str),
+        "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        "boolean": lambda v: isinstance(v, bool),
+        "array": lambda v: isinstance(v, list),
+        "object": lambda v: isinstance(v, dict),
+    }
+    for key, val in args.items():
+        spec = properties.get(key)
+        if not spec:
+            continue
+        t = spec.get("type")
+        if not t:
+            continue
+        check = _TYPE_CHECKS.get(t)
+        if check is not None and not check(val):
+            return f"argument {key!r} must be of type {t}"
+    return None
+
+
 async def dispatch_tool_call(
     call: dict,
     registry: ToolRegistry,
@@ -60,6 +97,13 @@ async def dispatch_tool_call(
             "and has been blocked. Disable airgap in the admin dashboard "
             "to use it.",
         )
+
+    # #68: validate model-supplied args against the registered schema
+    # before we hand them to the handler. Rejections come back to the
+    # model as tool-role errors so it can self-correct.
+    err = _validate_args(entry, args)
+    if err:
+        return _error_message(call_id, name, f"Invalid arguments: {err}")
 
     return await _invoke(entry, args, user, event_emitter, call_id)
 
@@ -96,14 +140,26 @@ async def _invoke(
     if "__request__" in sig.parameters:
         kw["__request__"] = None
 
+    # #69: every tool invocation runs under a soft timeout so a slow
+    # or adversarial handler can't tie up an event loop worker
+    # indefinitely. Per-tool overrides come from tools.yaml; the
+    # default is 30s.
+    timeout_s = max(1.0, float(getattr(entry, "timeout_s", 30.0) or 30.0))
     try:
         if inspect.iscoroutinefunction(handler):
-            result = await handler(**kw)
+            coro = handler(**kw)
         else:
             # Legacy tools are sync; run in a thread so blocking I/O
             # doesn't stall the event loop.
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, lambda: handler(**kw))
+            coro = loop.run_in_executor(None, lambda: handler(**kw))
+        result = await asyncio.wait_for(coro, timeout=timeout_s)
+    except asyncio.TimeoutError:
+        logger.warning("Tool %s timed out after %.1fs", entry.name, timeout_s)
+        return _error_message(
+            call_id, entry.name,
+            f"Error: tool timed out after {timeout_s:.0f}s",
+        )
     except TypeError as e:
         # Most likely bad args. Return the error so the model can retry.
         logger.info("Tool %s TypeError: %s", entry.name, e)

@@ -11,6 +11,7 @@ licence: MIT
 import asyncio
 import base64
 import json
+import os
 import uuid
 from typing import Callable, Any, Optional
 from pydantic import BaseModel, Field
@@ -24,7 +25,10 @@ except ImportError:
     HAS_WS = False
 
 JUPYTER_BASE = "http://jupyter:8888"
-JUPYTER_TOKEN = "local-ai-stack-token"
+# #59: read the token from the environment at import time so the
+# known-public default never ships in source. The docker-compose service
+# populates JUPYTER_TOKEN from .env.local.
+JUPYTER_TOKEN = os.environ.get("JUPYTER_TOKEN", "")
 WS_BASE = "ws://jupyter:8888"
 
 
@@ -35,8 +39,8 @@ class Tools:
             description="Jupyter server URL (internal Docker URL, e.g. http://jupyter:8888)",
         )
         JUPYTER_TOKEN: str = Field(
-            default="local-ai-stack-token",
-            description="Jupyter authentication token (set in JUPYTER_TOKEN env var in docker-compose.yml)",
+            default_factory=lambda: os.environ.get("JUPYTER_TOKEN", ""),
+            description="Jupyter authentication token (set in JUPYTER_TOKEN env var in .env.local; no hardcoded default)",
         )
         EXECUTION_TIMEOUT: int = Field(
             default=60,

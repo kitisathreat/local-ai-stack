@@ -251,9 +251,8 @@ class AppConfig(BaseModel):
         if runtime_path.exists():
             kwargs["concurrency"] = ConcurrencyConfig(**_read_yaml(runtime_path))
         # Env overrides the YAML — it's what Uvicorn actually runs with.
-        import os as _os
-        env_workers = _os.getenv("BACKEND_WORKERS")
-        env_redis = _os.getenv("REDIS_URL")
+        env_workers = os.getenv("BACKEND_WORKERS")
+        env_redis = os.getenv("REDIS_URL")
         if env_workers or env_redis:
             c = kwargs.get("concurrency") or ConcurrencyConfig()
             if env_workers:
