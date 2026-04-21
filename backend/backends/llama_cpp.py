@@ -43,8 +43,17 @@ class LlamaCppClient:
         messages: list[ChatMessage],
         think: bool,
         extra_options: dict[str, Any] | None = None,
+        *,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> AsyncIterator[dict]:
-        """Yields OpenAI-style SSE data objects (parsed)."""
+        """Yields OpenAI-style SSE data objects (parsed).
+
+        #23: accepts `tools` + `tool_choice` as OpenAI-compatible params
+        so the Vision tier can run the same tool-call loop as the Ollama
+        tiers. llama.cpp's server forwards these through when the loaded
+        model's chat template advertises tool support.
+        """
         params = tier.params or {}
         chat_template_kwargs = dict(tier.chat_template_kwargs or {})
         if tier.think_supported:
@@ -60,6 +69,10 @@ class LlamaCppClient:
             "max_tokens": params.get("num_predict"),
             "chat_template_kwargs": chat_template_kwargs,
         }
+        if tools:
+            payload["tools"] = tools
+            if tool_choice is not None:
+                payload["tool_choice"] = tool_choice
         if extra_options:
             payload.update(extra_options)
         payload = {k: v for k, v in payload.items() if v is not None}

@@ -190,3 +190,75 @@ def test_orchestrator_stores_tool_registry():
         tools=reg,
     )
     assert orch.tools is reg
+
+
+# ── #23: llama.cpp tool-call loop ─────────────────────────────────────────
+
+class FakeLlamaCppClient:
+    """Replays OpenAI-style SSE deltas including tool_call fragments."""
+
+    def __init__(self, *, scripted_chunks: list[list[dict]]):
+        self.calls: list[dict] = []
+        self._scripts = list(scripted_chunks)
+
+    def chat_stream(self, tier, messages, *, think=False, tools=None, **kw):
+        self.calls.append({"messages": messages, "tools": tools})
+        chunks = self._scripts.pop(0) if self._scripts else []
+
+        async def _gen():
+            for c in chunks:
+                yield c
+
+        return _gen()
+
+
+def test_worker_with_tools_handles_llama_cpp_delta_shape():
+    """Verify llama.cpp's streamed tool_call fragments are reassembled
+    into a dispatchable call and fed back to the model."""
+    from backend.orchestrator import Orchestrator
+
+    fake_client = FakeLlamaCppClient(
+        scripted_chunks=[
+            # Round 1: tool_call arrives split across two deltas
+            # (name in the first, arguments in the second).
+            [
+                {"choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "call_v",
+                    "function": {"name": "calculator.calculate"},
+                }]}}]},
+                {"choices": [{"delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"arguments": '{"expression": "2+2"}'},
+                }]}}]},
+                {"choices": [{"finish_reason": "tool_calls", "delta": {}}]},
+            ],
+            # Round 2: final content.
+            [
+                {"choices": [{"delta": {"content": "The answer is 391."}}]},
+                {"choices": [{"finish_reason": "stop", "delta": {}}]},
+            ],
+        ],
+    )
+    orch = Orchestrator(
+        config=SimpleNamespace(),
+        scheduler=SimpleNamespace(),
+        backends={"llama_cpp": fake_client},
+        tools=FakeRegistry(),
+    )
+    tier = SimpleNamespace(backend="llama_cpp")
+    output = asyncio.run(
+        orch._worker_with_tools(
+            worker_client=fake_client,
+            worker_tier=tier,
+            messages=[{"role": "user", "content": "look at this chart"}],
+            think_workers=False,
+            worker_tool_schemas=FakeRegistry().all_schemas(),
+        )
+    )
+
+    # Two model round-trips.
+    assert len(fake_client.calls) == 2
+    # The second call should contain a dispatched tool-role result.
+    second = fake_client.calls[1]["messages"]
+    assert any(isinstance(m, dict) and m.get("role") == "tool" for m in second)
+    assert "391" in output

@@ -594,12 +594,19 @@ async def _single_agent_sse(
         model_id,
     )
 
-    # Serialize messages for the tool loop (needs to append role=tool entries).
+    # Serialize messages for the tool loop (needs to append role=tool
+    # entries). For llama.cpp we use the OpenAI shape from llama_cpp's
+    # _messages_to_payload so the dict-based tool turns we append later
+    # line up with the message format the server expects (#23).
     from .backends.ollama import _messages_to_payload as _ollama_msgs
-    msg_payload = _ollama_msgs(req.messages) if tier.backend == "ollama" else None
+    from .backends.llama_cpp import _messages_to_payload as _llamacpp_msgs
+    msg_payload = (
+        _ollama_msgs(req.messages) if tier.backend == "ollama"
+        else _llamacpp_msgs(req.messages)
+    )
 
     tool_schemas: list[dict] | None = None
-    if tier.backend == "ollama" and req.tools is None:
+    if req.tools is None:
         enabled = state.tools.all_schemas(
             only_enabled=True, airgap=airgap.is_enabled(),
         )
@@ -637,9 +644,14 @@ async def _single_agent_sse(
                             tool_calls_accum.extend(msg["tool_calls"])
                         if chunk.get("done"):
                             break
-                else:  # llama_cpp — no tool support yet
+                else:  # llama_cpp — OpenAI-style tools supported (#23)
+                    # Accumulate tool_call deltas by index: the function
+                    # arguments field arrives in JSON fragments that need
+                    # to be concatenated before the call is valid.
+                    llama_tool_calls: dict[int, dict] = {}
                     async for chunk in client.chat_stream(
-                        tier, req.messages, think=decision.think,
+                        tier, msg_payload or req.messages, think=decision.think,
+                        tools=tool_schemas,
                     ):
                         for choice in chunk.get("choices", []):
                             delta = choice.get("delta") or {}
@@ -647,7 +659,28 @@ async def _single_agent_sse(
                             if text:
                                 assembled_text.append(text)
                                 yield _openai_chunk(text, model_id)
-                    llama_cpp_done = True
+                            for tcd in (delta.get("tool_calls") or []):
+                                idx = tcd.get("index", 0)
+                                slot = llama_tool_calls.setdefault(
+                                    idx,
+                                    {"id": None, "type": "function",
+                                     "function": {"name": "", "arguments": ""}},
+                                )
+                                if tcd.get("id"):
+                                    slot["id"] = tcd["id"]
+                                fn_delta = tcd.get("function") or {}
+                                if fn_delta.get("name"):
+                                    slot["function"]["name"] = fn_delta["name"]
+                                if fn_delta.get("arguments"):
+                                    slot["function"]["arguments"] += (
+                                        fn_delta["arguments"]
+                                    )
+                    if llama_tool_calls:
+                        tool_calls_accum.extend(
+                            llama_tool_calls[k] for k in sorted(llama_tool_calls)
+                        )
+                    else:
+                        llama_cpp_done = True
             finally:
                 await state.scheduler.release(decision.tier_name)
 

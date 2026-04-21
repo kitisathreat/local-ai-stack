@@ -351,7 +351,8 @@ class Orchestrator:
             try:
                 async with self.scheduler.reserve(worker_tier_name):
                     think_workers = settings.reasoning_workers
-                    if worker_tier.backend == "ollama" and worker_tool_schemas:
+                    # #23: both ollama and llama_cpp now accept `tools`.
+                    if worker_tool_schemas:
                         output = await self._worker_with_tools(
                             worker_client, worker_tier, messages,
                             think_workers, worker_tool_schemas,
@@ -376,11 +377,10 @@ class Orchestrator:
     ) -> str:
         """Run one worker chat under a bounded tool-call loop.
 
-        Mirrors the single-agent path in main.py: when Ollama returns
-        `tool_calls`, dispatch them, append the assistant turn + tool
-        results to the message list, and loop until the model stops
-        asking for tools (or we hit the turn cap). Tools that fail are
-        surfaced back to the model as tool-role error messages.
+        Handles Ollama's native chunk shape (`chunk.message.tool_calls`)
+        and llama.cpp's OpenAI SSE shape (`chunk.choices[].delta`) so
+        the Vision tier can participate in the tool loop (#23). Tool
+        failures come back to the model as tool-role messages.
         """
         # Lazy import: keeps the orchestrator self-contained for tests
         # that stub the registry without installing the executor deps.
@@ -389,19 +389,49 @@ class Orchestrator:
         max_turns = 5
         convo = list(messages)
         text_chunks: list[str] = []
+        backend = getattr(worker_tier, "backend", "ollama")
         for _ in range(max_turns + 1):
             tool_calls_accum: list[dict] = []
+            # llama.cpp streams tool_call fragments by index; accumulate
+            # per-index so concatenated `arguments` JSON is valid.
+            llama_slots: dict[int, dict] = {}
             async for chunk in worker_client.chat_stream(
                 worker_tier, convo, think=think_workers,
                 tools=worker_tool_schemas,
             ):
-                msg = chunk.get("message") or {}
-                if msg.get("content"):
-                    text_chunks.append(msg["content"])
-                if msg.get("tool_calls"):
-                    tool_calls_accum.extend(msg["tool_calls"])
-                if chunk.get("done"):
-                    break
+                if backend == "ollama":
+                    msg = chunk.get("message") or {}
+                    if msg.get("content"):
+                        text_chunks.append(msg["content"])
+                    if msg.get("tool_calls"):
+                        tool_calls_accum.extend(msg["tool_calls"])
+                    if chunk.get("done"):
+                        break
+                else:  # llama_cpp / OpenAI SSE
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        if delta.get("content"):
+                            text_chunks.append(delta["content"])
+                        for tcd in (delta.get("tool_calls") or []):
+                            idx = tcd.get("index", 0)
+                            slot = llama_slots.setdefault(
+                                idx,
+                                {"id": None, "type": "function",
+                                 "function": {"name": "", "arguments": ""}},
+                            )
+                            if tcd.get("id"):
+                                slot["id"] = tcd["id"]
+                            fn_delta = tcd.get("function") or {}
+                            if fn_delta.get("name"):
+                                slot["function"]["name"] = fn_delta["name"]
+                            if fn_delta.get("arguments"):
+                                slot["function"]["arguments"] += (
+                                    fn_delta["arguments"]
+                                )
+            if llama_slots:
+                tool_calls_accum.extend(
+                    llama_slots[k] for k in sorted(llama_slots)
+                )
 
             if not tool_calls_accum or self.tools is None:
                 break
