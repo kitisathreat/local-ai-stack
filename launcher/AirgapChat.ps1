@@ -74,7 +74,7 @@ $script:AsstStart  = 0   # char offset of the in-progress assistant reply
 
 # ── Form ──────────────────────────────────────────────────────────────────────
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "LocalAIStack Chat (Airgap)"
+$form.Text = "LocalAIStack Chat"
 $form.StartPosition = "CenterScreen"
 $form.ClientSize = New-Object System.Drawing.Size(760, 620)
 $form.MinimumSize = New-Object System.Drawing.Size(520, 420)

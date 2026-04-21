@@ -291,9 +291,9 @@ function Open-AirgapChat {
 
 $trayMenu              = New-Object System.Windows.Forms.ContextMenuStrip
 $openItem              = $trayMenu.Items.Add("Open Chat")
-$openItem.Add_Click({ Start-Process $chatUrl })
-$airgapChatItem        = $trayMenu.Items.Add("Open Airgap Chat (desktop)")
-$airgapChatItem.Add_Click({ Open-AirgapChat })
+$openItem.Add_Click({ Open-AirgapChat })
+$browserItem           = $trayMenu.Items.Add("Open in Browser")
+$browserItem.Add_Click({ Start-Process $chatUrl })
 $logsItem              = $trayMenu.Items.Add("View Logs")
 $logsItem.Add_Click({ Start-Process notepad.exe $logPath })
 $restartItem           = $trayMenu.Items.Add("Restart")
@@ -305,7 +305,7 @@ $stopItem              = $trayMenu.Items.Add("Stop && Exit")
 $stopItem.Add_Click({ Stop-Stack; $tray.Visible = $false; $form.Close() })
 $tray.ContextMenuStrip = $trayMenu
 $tray.Add_MouseClick({ param($s, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process $chatUrl }
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-AirgapChat }
 })
 
 # ── Run a step hidden, capture output to log ──────────────────────────────────
@@ -430,14 +430,14 @@ $form.Add_Shown({
         $form.Refresh()
     }
 
-    # All steps succeeded
+    # All steps succeeded — open the native chat window, hide to tray
     $statusLabel.Text = "Ready"
-    $detailLabel.Text = "Opening $chatUrl..."
+    $detailLabel.Text = "Opening chat..."
     $form.Refresh()
-    Start-Sleep -Milliseconds 500
-    Start-Process $chatUrl
+    Start-Sleep -Milliseconds 400
+    Open-AirgapChat
     $tray.Visible = $true
-    $tray.ShowBalloonTip(2000, "LocalAIStack", "Stack is ready at $chatUrl", "Info")
+    $tray.ShowBalloonTip(2000, "LocalAIStack", "Stack is ready", "Info")
     $form.Hide()
 })
 
