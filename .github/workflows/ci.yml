@@ -49,6 +49,17 @@ jobs:
             tests/test_rag.py \
             tests/test_memory.py \
             tests/test_docker_setup.py \
+            tests/test_airgap.py \
+            tests/test_diagnostics.py \
+            tests/test_history_store.py \
+            tests/test_kv_cache_manager.py \
+            tests/test_middleware.py \
+            tests/test_model_residency.py \
+            tests/test_orchestrator.py \
+            tests/test_schemas.py \
+            tests/test_metrics.py \
+            tests/test_admin_utils.py \
+            tests/test_response_mode.py \
             -v --tb=short 2>&1 | tee /tmp/pytest.log
 
       - name: Post failing Python tests as PR comment
