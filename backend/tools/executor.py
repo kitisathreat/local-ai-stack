@@ -84,16 +84,28 @@ async def _invoke(
     call_id: str,
 ) -> dict:
     handler = entry.handler
-    sig = inspect.signature(handler)
+    # Prefer the cached injected-param set when the entry carries one
+    # (the lazy-load path; #27) — falling back to live inspection for
+    # eager entries and hand-constructed registries in tests.
+    injected: set[str]
+    entry_injected = getattr(entry, "injected_params", None)
+    if entry_injected:
+        injected = set(entry_injected)
+    else:
+        try:
+            sig = inspect.signature(handler)
+            injected = set(sig.parameters.keys())
+        except (TypeError, ValueError):
+            injected = set()
     # Decide which injected params the handler actually wants.
     kw = dict(args)
-    if "__user__" in sig.parameters:
+    if "__user__" in injected:
         kw["__user__"] = user
-    if "__event_emitter__" in sig.parameters:
+    if "__event_emitter__" in injected:
         kw["__event_emitter__"] = event_emitter
-    if "__metadata__" in sig.parameters:
+    if "__metadata__" in injected:
         kw["__metadata__"] = {}
-    if "__request__" in sig.parameters:
+    if "__request__" in injected:
         kw["__request__"] = None
 
     try:

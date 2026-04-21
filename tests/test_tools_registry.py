@@ -21,6 +21,44 @@ def registry():
     return build_registry(tools_dir=ROOT / "tools", config_dir=ROOT / "config")
 
 
+# ── #27: lazy-load cache ──────────────────────────────────────────────────
+
+def test_lazy_cache_hit_skips_imports(tmp_path, monkeypatch):
+    """On cache hit, the registry hydrates with _LazyHandler handlers and
+    is significantly faster than the eager path. Verifies both that the
+    cache functions at all and that lazy handlers carry the injected-param
+    metadata the executor needs."""
+    monkeypatch.setenv("LAI_DB_PATH", str(tmp_path / "lai.db"))
+    monkeypatch.setenv("LAI_TOOL_CACHE", "1")
+    from backend.tools.registry import build_registry, _LazyHandler
+
+    # First call populates the cache.
+    r1 = build_registry(tools_dir=ROOT / "tools", config_dir=ROOT / "config")
+    assert len(r1.tools) > 0
+
+    # Second call should be a cache hit — every handler is lazy.
+    r2 = build_registry(tools_dir=ROOT / "tools", config_dir=ROOT / "config")
+    assert len(r2.tools) == len(r1.tools)
+    assert all(isinstance(t.handler, _LazyHandler) for t in r2.tools.values())
+    # Schemas are preserved verbatim.
+    for name, t1 in r1.tools.items():
+        assert r2.tools[name].schema == t1.schema
+    # Injected-param metadata flows through.
+    calc = r2.tools.get("calculator.calculate")
+    assert calc is not None
+    assert isinstance(calc.injected_params, tuple)
+
+
+def test_lazy_cache_disabled_via_env(tmp_path, monkeypatch):
+    """LAI_TOOL_CACHE=0 should skip the cache entirely — eager every time."""
+    monkeypatch.setenv("LAI_DB_PATH", str(tmp_path / "lai.db"))
+    monkeypatch.setenv("LAI_TOOL_CACHE", "0")
+    from backend.tools.registry import build_registry, _LazyHandler
+    r = build_registry(tools_dir=ROOT / "tools", config_dir=ROOT / "config")
+    # Real bound methods, not lazy handlers.
+    assert not any(isinstance(t.handler, _LazyHandler) for t in r.tools.values())
+
+
 # ── Coverage ────────────────────────────────────────────────────────────
 
 def test_registry_discovers_tools(registry):
