@@ -296,12 +296,14 @@ def test_docker_compose_has_service(service):
     )
 
 
-def test_docker_compose_backend_uses_gpu():
+def test_docker_compose_ollama_uses_gpu():
+    """Ollama (not the backend) holds the GPU reservation — the backend runs
+    CPU-only inside Docker so Docker Desktop GPU management can't restart it."""
     data = _load_yaml("docker-compose.yml")
-    backend = data["services"].get("backend", {})
-    deploy = backend.get("deploy", {})
+    ollama = data["services"].get("ollama", {})
+    deploy = ollama.get("deploy", {})
     devices = str(deploy.get("resources", {}).get("reservations", {}).get("devices", ""))
-    assert "nvidia" in devices, "backend service must reserve NVIDIA GPUs"
+    assert "nvidia" in devices, "ollama service must reserve NVIDIA GPUs"
 
 
 def test_docker_compose_backend_routes_ollama():

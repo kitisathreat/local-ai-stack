@@ -467,17 +467,17 @@ class TestBackendSmoke:
     # ── /api/system ───────────────────────────────────────────────────────────
 
     def test_system_status_200(self, backend_server):
-        status, _ = _http_get(f"{backend_server}/api/system")
+        status, _ = _http_get(f"{backend_server}/system")
         assert status == 200
 
     def test_system_has_vram_and_ram_keys(self, backend_server):
-        _, body = _http_get(f"{backend_server}/api/system")
+        _, body = _http_get(f"{backend_server}/system")
         assert "vram" in body
         assert "ram" in body
         assert "ts" in body
 
     def test_system_ram_fields_are_numeric(self, backend_server):
-        _, body = _http_get(f"{backend_server}/api/system")
+        _, body = _http_get(f"{backend_server}/system")
         for field in ("total_gb", "used_gb", "free_gb"):
             assert isinstance(body["ram"][field], (int, float)), (
                 f"ram.{field} should be numeric, got {body['ram'][field]!r}"
@@ -486,17 +486,17 @@ class TestBackendSmoke:
     # ── /api/tools ────────────────────────────────────────────────────────────
 
     def test_tools_status_200(self, backend_server):
-        status, _ = _http_get(f"{backend_server}/api/tools")
+        status, _ = _http_get(f"{backend_server}/tools")
         assert status == 200
 
     def test_tools_list_is_nonempty(self, backend_server):
-        _, body = _http_get(f"{backend_server}/api/tools")
+        _, body = _http_get(f"{backend_server}/tools")
         assert len(body.get("data", [])) > 0, "Tool registry returned no tools"
 
     # ── /api/vram ─────────────────────────────────────────────────────────────
 
     def test_vram_status_200(self, backend_server):
-        status, _ = _http_get(f"{backend_server}/api/vram")
+        status, _ = _http_get(f"{backend_server}/vram")
         assert status == 200
 
     # ── security headers ──────────────────────────────────────────────────────
