@@ -352,19 +352,10 @@ class Orchestrator:
                 async with self.scheduler.reserve(worker_tier_name):
                     think_workers = settings.reasoning_workers
                     if worker_tier.backend == "ollama" and worker_tool_schemas:
-                        text_chunks: list[str] = []
-                        async for chunk in worker_client.chat_stream(
-                            worker_tier,
-                            messages,
-                            think=think_workers,
-                            tools=worker_tool_schemas,
-                        ):
-                            msg = chunk.get("message") or {}
-                            if msg.get("content"):
-                                text_chunks.append(msg["content"])
-                            if chunk.get("done"):
-                                break
-                        output = "".join(text_chunks)
+                        output = await self._worker_with_tools(
+                            worker_client, worker_tier, messages,
+                            think_workers, worker_tool_schemas,
+                        )
                     else:
                         output = await worker_client.chat_once(
                             worker_tier, messages, think=think_workers,
@@ -374,6 +365,53 @@ class Orchestrator:
                 return {"id": s.id, "task": s.task, "output": "", "error": str(e)}
 
         return await asyncio.gather(*(run_worker(s) for s in subtasks))
+
+    async def _worker_with_tools(
+        self,
+        worker_client,
+        worker_tier,
+        messages: list,
+        think_workers: bool,
+        worker_tool_schemas: list[dict],
+    ) -> str:
+        """Run one worker chat under a bounded tool-call loop.
+
+        Mirrors the single-agent path in main.py: when Ollama returns
+        `tool_calls`, dispatch them, append the assistant turn + tool
+        results to the message list, and loop until the model stops
+        asking for tools (or we hit the turn cap). Tools that fail are
+        surfaced back to the model as tool-role error messages.
+        """
+        # Lazy import: keeps the orchestrator self-contained for tests
+        # that stub the registry without installing the executor deps.
+        from .tools import executor as tool_executor
+
+        max_turns = 5
+        convo = list(messages)
+        text_chunks: list[str] = []
+        for _ in range(max_turns + 1):
+            tool_calls_accum: list[dict] = []
+            async for chunk in worker_client.chat_stream(
+                worker_tier, convo, think=think_workers,
+                tools=worker_tool_schemas,
+            ):
+                msg = chunk.get("message") or {}
+                if msg.get("content"):
+                    text_chunks.append(msg["content"])
+                if msg.get("tool_calls"):
+                    tool_calls_accum.extend(msg["tool_calls"])
+                if chunk.get("done"):
+                    break
+
+            if not tool_calls_accum or self.tools is None:
+                break
+            results = await tool_executor.dispatch_many(
+                tool_calls_accum, self.tools,
+            )
+            convo = convo + [
+                {"role": "assistant", "content": "", "tool_calls": tool_calls_accum},
+            ] + results
+        return "".join(text_chunks)
 
 
 # ── Plan parsing ────────────────────────────────────────────────────────
