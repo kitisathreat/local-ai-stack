@@ -307,10 +307,11 @@ def _cache_key(tools_dir: Path, config_dir: Path | None) -> str:
 
 
 def _cache_path(tools_dir: Path) -> Path:
-    # Stashed inside `data/` so it's persisted across container restarts
-    # but outside any read-only mount of tools_dir.
+    """Preferred path for the cache. Stashed inside `data/` so it
+    persists across container restarts but outside any read-only mount
+    of tools_dir. NOTE: does not touch the filesystem — the write path
+    is the only place we create directories (and it fails silently)."""
     base = Path(os.environ.get("LAI_DB_PATH", "/app/data/lai.db")).parent
-    base.mkdir(parents=True, exist_ok=True)
     return base / ".tools_cache.json"
 
 
@@ -343,7 +344,12 @@ def _save_cache(
         "key": _cache_key(tools_dir, config_dir),
         "entries": entries,
     }
+    # Create the parent dir only when we actually have something to
+    # write. If the path isn't writable (CI sandbox, read-only mount)
+    # just skip the cache — the registry still works, it just won't be
+    # fast on the next boot.
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(blob), encoding="utf-8")
     except OSError as e:
         logger.debug("Failed to write tool cache %s: %s", path, e)
