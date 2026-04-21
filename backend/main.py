@@ -1163,6 +1163,64 @@ async def memory_delete(memory_id: int, user: dict = Depends(auth.current_user))
     return {"ok": True}
 
 
+@app.patch("/memory/{memory_id}")
+async def memory_update(
+    memory_id: int,
+    patch: dict,
+    user: dict = Depends(auth.current_user),
+):
+    """Edit a memory's content (#21). Body: {"content": "..."}.
+
+    Re-embeds and re-upserts the vector so retrieval reflects the edit.
+    Rejects blank content so the vector index can't be corrupted with
+    empty strings."""
+    content = (patch or {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise HTTPException(400, "content must be a non-empty string")
+    try:
+        updated = await memory.update(user["id"], memory_id, content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not updated:
+        raise HTTPException(404, "Memory not found")
+    return updated
+
+
+@app.post("/memory/bulk_delete")
+async def memory_bulk_delete(
+    body: dict, user: dict = Depends(auth.current_user),
+):
+    """Delete many memories at once (#21). Body: {"ids": [1,2,3]}.
+
+    Returns the count actually deleted so clients can report partial
+    success (e.g. ids that don't belong to the user are silently
+    skipped). Capped at 200 per request to keep the hot path bounded."""
+    raw = (body or {}).get("ids")
+    if not isinstance(raw, list):
+        raise HTTPException(400, "ids must be an array")
+    seen: set[int] = set()
+    ids: list[int] = []
+    for x in raw:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if n in seen:
+            continue
+        seen.add(n)
+        ids.append(n)
+        if len(ids) >= 200:
+            break
+    deleted = 0
+    for mid in ids:
+        try:
+            if await memory.delete(user["id"], mid):
+                deleted += 1
+        except Exception:
+            logger.exception("bulk_delete failed for memory %d", mid)
+    return {"ok": True, "deleted": deleted, "requested": len(ids)}
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception")

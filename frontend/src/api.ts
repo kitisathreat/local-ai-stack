@@ -140,6 +140,17 @@ export const api = {
   // ── Memory ───────────────────────────────────────────────────────────
   listMemory: () => j<{ data: Array<{ id: number; content: string; source_conv: number | null; created_at: number; updated_at: number }> }>("/api/memory"),
   deleteMemory: (id: number) => j<{ ok: boolean }>(`/api/memory/${id}`, { method: "DELETE" }),
+  // #21: edit + bulk delete
+  updateMemory: (id: number, content: string) =>
+    j<{ id: number; content: string; airgap: boolean; updated_at: number }>(
+      `/api/memory/${id}`,
+      { method: "PATCH", body: JSON.stringify({ content }) },
+    ),
+  bulkDeleteMemory: (ids: number[]) =>
+    j<{ ok: boolean; deleted: number; requested: number }>(
+      "/api/memory/bulk_delete",
+      { method: "POST", body: JSON.stringify({ ids }) },
+    ),
 
   // ── Airgap status (read-only; admins toggle via adminApi.setAirgap) ──
   airgapStatus: () => j<AirgapState>("/api/airgap"),

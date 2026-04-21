@@ -122,3 +122,72 @@ def test_list_and_delete_memory(db_path, monkeypatch):
     deleted = run(memory.delete(uid, rows[0]["id"]))
     assert deleted is True
     assert run(memory.list_for_user(uid)) == []
+
+
+# ── #21: memory.update round-trip ───────────────────────────────────────
+
+def test_update_memory_roundtrip(db_path, monkeypatch):
+    """memory.update edits the SQLite row and re-upserts the vector.
+    We stub Qdrant + embedding so the test doesn't need a live stack."""
+    import time
+    from backend import db as db_mod
+    from backend import memory, rag
+
+    uid = run(db_mod.get_or_create_user("mem-edit@x.io"))["id"]
+
+    async def seed():
+        async with db_mod.get_conn() as c:
+            now = time.time()
+            await c.execute(
+                "INSERT INTO memories (user_id, content, source_conv, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (uid, "User is a Rustacean.", None, now, now),
+            )
+            await c.commit()
+    run(seed())
+
+    # Patch embedding + Qdrant so no external services are hit.
+    async def fake_embed(texts): return [[0.1] * 8 for _ in texts]
+    monkeypatch.setattr(memory, "embed", fake_embed)
+
+    deletes_seen: list[tuple] = []
+    upserts_seen: list[tuple] = []
+    async def fake_delete_by_filter(name, filter_):
+        deletes_seen.append((name, filter_)); return 1
+    async def fake_upsert(name, points):
+        upserts_seen.append((name, points))
+    monkeypatch.setattr(rag.qdrant, "delete_by_filter", fake_delete_by_filter)
+    monkeypatch.setattr(rag.qdrant, "upsert", fake_upsert)
+
+    rows = run(memory.list_for_user(uid))
+    mid = rows[0]["id"]
+
+    updated = run(memory.update(uid, mid, "User actually prefers Python."))
+    assert updated is not None
+    assert updated["content"] == "User actually prefers Python."
+
+    # SQLite row now carries the new content.
+    rows = run(memory.list_for_user(uid))
+    assert rows[0]["content"] == "User actually prefers Python."
+
+    # Qdrant: one delete + one upsert.
+    assert len(deletes_seen) == 1
+    assert len(upserts_seen) == 1
+    (_, points), = upserts_seen
+    assert points[0]["payload"]["memory_id"] == mid
+
+
+def test_update_memory_rejects_blank(db_path):
+    from backend import memory
+    with pytest.raises(ValueError):
+        run(memory.update(1, 1, "   "))
+
+
+def test_update_memory_missing_returns_none(db_path, monkeypatch):
+    from backend import memory, rag
+    async def fake_embed(texts): return [[0.0] * 8 for _ in texts]
+    monkeypatch.setattr(memory, "embed", fake_embed)
+    async def noop(*a, **kw): return 0
+    monkeypatch.setattr(rag.qdrant, "delete_by_filter", noop)
+    monkeypatch.setattr(rag.qdrant, "upsert", noop)
+    assert run(memory.update(999, 999, "ghost")) is None

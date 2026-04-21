@@ -410,6 +410,169 @@ function PrefNumber({
   );
 }
 
+/* ── Memories section (#21) ─────────────────────────────────────────── */
+
+interface MemRow {
+  id: number;
+  content: string;
+  source_conv: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function MemoriesSection({
+  mems, onChanged, onStatus,
+}: { mems: MemRow[]; onChanged: () => void; onStatus: (s: string) => void }) {
+  const [query, setQuery] = useState<string>("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editText, setEditText] = useState<string>("");
+  const [grouped, setGrouped] = useState<boolean>(false);
+
+  const q = query.trim().toLowerCase();
+  const visible = q
+    ? mems.filter((m) => m.content.toLowerCase().includes(q))
+    : mems;
+
+  function toggle(id: number) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function deleteOne(id: number) {
+    if (!confirm("Forget this memory?")) return;
+    try {
+      await api.deleteMemory(id);
+      setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
+      await onChanged();
+    } catch (e: any) { onStatus(e?.message || "Delete failed"); }
+  }
+
+  async function bulkDelete() {
+    if (selected.size === 0) return;
+    if (!confirm(`Forget ${selected.size} memories?`)) return;
+    try {
+      const r = await api.bulkDeleteMemory(Array.from(selected));
+      onStatus(`Deleted ${r.deleted} memories`);
+      setSelected(new Set());
+      await onChanged();
+    } catch (e: any) { onStatus(e?.message || "Bulk delete failed"); }
+  }
+
+  function startEdit(m: MemRow) {
+    setEditing(m.id); setEditText(m.content);
+  }
+  async function saveEdit() {
+    if (editing == null) return;
+    const text = editText.trim();
+    if (!text) { onStatus("Memory can't be blank"); return; }
+    try {
+      await api.updateMemory(editing, text);
+      setEditing(null); setEditText("");
+      await onChanged();
+    } catch (e: any) { onStatus(e?.message || "Update failed"); }
+  }
+
+  // Build grouped view when toggled: {source_conv || "untagged" → rows}
+  const groups = new Map<string, MemRow[]>();
+  for (const m of visible) {
+    const key = m.source_conv == null ? "untagged" : `conv:${m.source_conv}`;
+    const arr = groups.get(key) || [];
+    arr.push(m);
+    groups.set(key, arr);
+  }
+
+  return (
+    <>
+      <div style="display:flex; gap:0.5rem; margin-top:0.4rem; align-items:center;">
+        <input
+          type="search"
+          placeholder="Search memories…"
+          value={query}
+          onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+          style="flex:1; padding:0.3rem 0.5rem;"
+        />
+        <label style="font-size:0.8rem; display:flex; align-items:center; gap:0.3rem;">
+          <input type="checkbox" checked={grouped}
+                 onChange={(e) => setGrouped((e.target as HTMLInputElement).checked)} />
+          Group
+        </label>
+      </div>
+      <div style="display:flex; justify-content:space-between; margin-top:0.5rem; font-size:0.8rem; color:var(--fg-dim);">
+        <span>{visible.length} of {mems.length} shown; {selected.size} selected</span>
+        {selected.size > 0 && (
+          <button onClick={bulkDelete}>Forget selected ({selected.size})</button>
+        )}
+      </div>
+      {visible.length === 0 && (
+        <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.5rem;">
+          {q ? "No memories match that search." : "No memories yet. They're distilled after each chat."}
+        </p>
+      )}
+      {grouped ? (
+        <div style="margin-top:0.4rem;">
+          {Array.from(groups.entries()).map(([key, rows]) => (
+            <details key={key} open style="margin-bottom:0.4rem;">
+              <summary style="font-size:0.85rem; cursor:pointer;">
+                {key === "untagged" ? "Untagged" : `Conversation #${key.slice(5)}`}
+                <span style="color:var(--fg-dim);"> · {rows.length}</span>
+              </summary>
+              <ul style="padding-left:0; list-style:none; margin-top:0.2rem;">
+                {rows.map((m) => renderMemRow(m))}
+              </ul>
+            </details>
+          ))}
+        </div>
+      ) : (
+        <ul style="padding-left:0; list-style:none; margin-top:0.4rem;">
+          {visible.map((m) => renderMemRow(m))}
+        </ul>
+      )}
+    </>
+  );
+
+  function renderMemRow(m: MemRow) {
+    const isEdit = editing === m.id;
+    const isSel = selected.has(m.id);
+    const provenance = m.source_conv != null
+      ? `From conv #${m.source_conv}, updated ${new Date(m.updated_at * 1000).toLocaleString()}`
+      : `Updated ${new Date(m.updated_at * 1000).toLocaleString()}`;
+    return (
+      <li key={m.id} style="display:flex; align-items:flex-start; gap:0.5rem; padding:0.4rem 0; font-size:0.9rem; border-bottom:1px solid var(--border);">
+        <input type="checkbox" checked={isSel} onChange={() => toggle(m.id)} style="margin-top:0.2rem;" />
+        <div style="flex:1;" title={provenance}>
+          {isEdit ? (
+            <textarea
+              value={editText}
+              rows={2}
+              style="width:100%;"
+              onInput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}
+            />
+          ) : (
+            <span>{m.content}</span>
+          )}
+        </div>
+        <div style="display:flex; gap:0.3rem;">
+          {isEdit ? (
+            <>
+              <button onClick={saveEdit}>Save</button>
+              <button onClick={() => { setEditing(null); setEditText(""); }}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => startEdit(m)}>Edit</button>
+              <button onClick={() => deleteOne(m.id)}>Forget</button>
+            </>
+          )}
+        </div>
+      </li>
+    );
+  }
+}
+
 /* ── Settings panel: RAG docs + memories ────────────────────────────── */
 
 function SettingsPanel({ onClose }: { onClose: () => void }) {
@@ -463,11 +626,6 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   async function delDoc(id: number) {
     if (!confirm("Delete this document from your knowledge base?")) return;
     await api.deleteRAG(id);
-    await refresh();
-  }
-  async function delMem(id: number) {
-    if (!confirm("Forget this memory?")) return;
-    await api.deleteMemory(id);
     await refresh();
   }
 
@@ -547,15 +705,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.2rem;">
           Long-term facts the assistant remembers about you across conversations.
         </p>
-        <ul style="padding-left:0; list-style:none; margin-top:0.4rem;">
-          {mems.length === 0 && <li style="color:var(--fg-dim); font-size:0.85rem;">No memories yet. They're distilled after each chat.</li>}
-          {mems.map((m) => (
-            <li key={m.id} style="display:flex; justify-content:space-between; padding:0.4rem 0; gap:0.6rem; font-size:0.9rem;">
-              <span>{m.content}</span>
-              <button onClick={() => delMem(m.id)}>Forget</button>
-            </li>
-          ))}
-        </ul>
+        <MemoriesSection mems={mems} onChanged={refresh} onStatus={setStatus} />
 
         {status && <div class="status" style="margin-top:1rem;">{status}</div>}
       </div>

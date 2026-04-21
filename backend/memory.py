@@ -199,6 +199,70 @@ async def list_for_user(user_id: int, *, airgap: bool = False) -> list[dict]:
         return out
 
 
+async def update(
+    user_id: int, memory_id: int, new_content: str,
+) -> dict | None:
+    """Edit a memory's text (#21). Re-embeds the new content and
+    re-upserts it into Qdrant so retrieval finds the updated fact.
+    Returns the updated row or None if the memory doesn't exist.
+
+    Airgap memories get the same treatment — we encrypt the new content
+    before writing SQLite + Qdrant so the plaintext never lands on disk
+    or in the vector index."""
+    if not isinstance(new_content, str) or not new_content.strip():
+        raise ValueError("memory content must be a non-empty string")
+    now = time.time()
+    async with db.get_conn() as c:
+        row = await (await c.execute(
+            "SELECT id, airgap FROM memories WHERE id = ? AND user_id = ?",
+            (memory_id, user_id),
+        )).fetchone()
+        if not row:
+            return None
+        is_airgap = bool(row["airgap"])
+        stored = (
+            history_store.encrypt_value(user_id, new_content, scope="mem", airgap=True)
+            if is_airgap else new_content
+        )
+        await c.execute(
+            "UPDATE memories SET content = ?, updated_at = ? "
+            "WHERE id = ? AND user_id = ?",
+            (stored, now, memory_id, user_id),
+        )
+        await c.commit()
+
+    # Re-embed + re-upsert into the right Qdrant collection. We drop the
+    # previous point for this memory_id first so stale vectors don't
+    # linger when the text changes materially.
+    coll = _coll_name(user_id, airgap=is_airgap)
+    try:
+        await qdrant.delete_by_filter(
+            coll,
+            {"must": [{"key": "memory_id", "match": {"value": memory_id}}]},
+        )
+        vecs = await embed([new_content])
+        if vecs:
+            await qdrant.upsert(coll, [{
+                "id": str(uuid.uuid4()),
+                "vector": vecs[0],
+                "payload": {
+                    "memory_id": memory_id,
+                    "content": stored,
+                    "encrypted": is_airgap,
+                    "updated_at": now,
+                },
+            }])
+    except Exception as e:
+        logger.warning("Qdrant re-upsert for memory %d failed: %s", memory_id, e)
+
+    return {
+        "id": memory_id,
+        "content": new_content,
+        "airgap": is_airgap,
+        "updated_at": now,
+    }
+
+
 async def delete(user_id: int, memory_id: int) -> bool:
     """Remove a memory from SQLite and Qdrant. Looks up the row to
     figure out which Qdrant collection (normal vs airgap) owns it so
