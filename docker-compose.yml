@@ -28,6 +28,10 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
+      # Comma-separated list of emails allowed to access /admin endpoints and
+      # the multi-agent overrides pill. Consumed by backend/admin.py. Unset =
+      # admin dashboard disabled (returns 503).
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
       # ── Concurrency — multi-worker + cross-worker Redis coordination ──────────
       # BACKEND_WORKERS controls Uvicorn's --workers flag. Each worker runs its
       # own asyncio event loop; rate limiting is shared through REDIS_URL. If
