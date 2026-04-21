@@ -122,6 +122,13 @@ Secrets go in `.env.local` (gitignored). See [`.env.example`](.env.example) for 
 
 Several operationally-meaningful values are still hardcoded in `backend/*.py` — tracked by [#29](https://github.com/kitisathreat/local-ai-stack/issues/29).
 
+### Deeper docs
+
+- [`docs/tiers.md`](docs/tiers.md) — tier roster, reasoning toggle, slash commands, multi-agent orchestration
+- [`docs/auth.md`](docs/auth.md) — magic-link flow, SMTP, session cookies, domain allow-list, per-user preferences
+- [`docs/vram.md`](docs/vram.md) — scheduler policy, slot cap + wait queue, observed-cost tuning, headroom tuning
+- [`docs/public-access.md`](docs/public-access.md) — Cloudflare Tunnel setup (token + credentials.json paths), `X-Forwarded-For` trust, metrics, revocation
+
 ## API endpoints
 
 ```

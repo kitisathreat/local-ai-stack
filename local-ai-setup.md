@@ -1,6 +1,22 @@
-# Local AI Setup: Open WebUI + LM Studio + Tailscale
+# Local AI Setup — legacy guide
 
-## Overview
+> **Deprecated.** This file describes the original Open WebUI + LM Studio
+> + Tailscale path. The stack has since replaced all three with a custom
+> frontend (Preact), a FastAPI backend with its own tier router, and a
+> Cloudflare Tunnel for public access.
+>
+> See the current docs instead:
+>
+> - [`README.md`](README.md) — architecture + quick start
+> - [`docs/tiers.md`](docs/tiers.md) — tier roster + reasoning/slash commands
+> - [`docs/auth.md`](docs/auth.md) — magic-link sign-in + SMTP setup
+> - [`docs/vram.md`](docs/vram.md) — scheduler policy + tuning
+> - [`docs/public-access.md`](docs/public-access.md) — Cloudflare Tunnel setup
+>
+> This file is kept as a record of the early setup path. It is **not**
+> supported by the current `docker-compose.yml`.
+
+## Overview (legacy)
 
 This guide sets up a self-hosted AI chat interface (Open WebUI) connected to your local LM Studio instance, accessible from any browser or phone via Tailscale. It also covers configuring system prompts (like Claude's "skills") and context management.
 
