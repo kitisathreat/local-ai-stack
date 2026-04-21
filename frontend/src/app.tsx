@@ -318,6 +318,68 @@ function HistorySidebar({
   );
 }
 
+/* ── ToolCallCard (#19) ───────────────────────────────────────────────── */
+
+interface ToolCallCardState {
+  id: string;
+  name: string;
+  arguments: string;
+  result?: string;
+}
+
+function truncate(s: string, n: number): string {
+  if (!s) return "";
+  const one = s.replace(/\s+/g, " ").trim();
+  return one.length > n ? one.slice(0, n) + "…" : one;
+}
+
+function formatArgsBrief(raw: string): string {
+  if (!raw) return "";
+  try {
+    const obj = JSON.parse(raw);
+    const parts = Object.entries(obj).map(([k, v]) =>
+      `${k}=${typeof v === "string" ? JSON.stringify(v) : String(v)}`
+    );
+    return truncate(parts.join(", "), 120);
+  } catch {
+    return truncate(raw, 120);
+  }
+}
+
+function ToolCallCard({ call }: { call: ToolCallCardState }) {
+  const [open, setOpen] = useState(false);
+  const hasResult = call.result !== undefined;
+  return (
+    <div class="tool-card" style="border:1px solid var(--border); border-radius:6px; padding:0.4rem 0.6rem; margin:0.4rem 0; background:rgba(255,255,255,0.02); font-size:0.85rem;">
+      <div style="display:flex; justify-content:space-between; gap:0.5rem;">
+        <span>
+          <span style="margin-right:0.3rem;">🔧</span>
+          <strong>{call.name}</strong>
+          {call.arguments && (
+            <span style="color:var(--fg-dim); margin-left:0.4rem;">
+              ({formatArgsBrief(call.arguments)})
+            </span>
+          )}
+          {hasResult ? (
+            <span style="margin-left:0.4rem;">→ {truncate(call.result ?? "", 80)}</span>
+          ) : (
+            <span style="margin-left:0.4rem; color:var(--fg-dim);">→ running…</span>
+          )}
+        </span>
+        <button style="background:transparent; border:none; cursor:pointer; color:var(--fg-dim);"
+                onClick={() => setOpen((v) => !v)}>
+          {open ? "▾" : "▸"}
+        </button>
+      </div>
+      {open && (
+        <pre style="margin:0.4rem 0 0; padding:0.4rem; background:rgba(0,0,0,0.2); border-radius:4px; font-size:0.75rem; white-space:pre-wrap; max-height:240px; overflow:auto;">
+{`args:    ${call.arguments || "{}"}\nresult:  ${call.result ?? "(pending)"}`}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 /* ── Preference controls (#17 + #20) ─────────────────────────────────── */
 
 function PrefToggle({
@@ -896,6 +958,10 @@ function ChatView({
   const [messages, setMessages] = useState<Message[]>([]);
   const [pendingAsst, setPendingAsst] = useState<string>("");
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
+  // Tool invocations for the in-flight message (#19). Each card is shown
+  // inside the pending assistant bubble until the stream finishes. Cleared
+  // on each new send.
+  const [toolCalls, setToolCalls] = useState<ToolCallCardState[]>([]);
   const [tier, setTier] = useState<string>("tier.versatile");
   const [reasoning, setReasoning] = useState<"auto" | "on" | "off">("auto");
   // Per-chat memory contribution toggle. Mirrors the active chat's
@@ -1103,6 +1169,7 @@ function ChatView({
     setSending(true);
     setPendingAsst("");
     setAgentSteps([]);
+    setToolCalls([]);  // #19: reset per-message tool cards.
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -1145,7 +1212,29 @@ function ChatView({
           }
           setPendingAsst(assembled);
         } else if (ev.kind === "agent" && ev.agent) {
-          updateAgentSteps(ev.agent.type, ev.agent.data);
+          // #19: splice tool.invoked / tool.result into the pending-bubble
+          // card list. Other agent events go through the existing step
+          // reducer so the AgentPanel stays in sync.
+          const t = ev.agent.type;
+          const d = (ev.agent.data || {}) as Record<string, unknown>;
+          if (t === "tool.invoked") {
+            const id = String(d.id || `call_${Date.now()}`);
+            setToolCalls((prev) => [
+              ...prev,
+              {
+                id,
+                name: String(d.name || ""),
+                arguments: String(d.arguments || ""),
+              },
+            ]);
+          } else if (t === "tool.result") {
+            const id = String(d.id || "");
+            setToolCalls((prev) => prev.map((c) =>
+              c.id === id ? { ...c, result: String(d.result ?? "") } : c
+            ));
+          } else {
+            updateAgentSteps(ev.agent.type, ev.agent.data);
+          }
         } else if (ev.kind === "error") {
           assembled += `\n[Error: ${ev.error}]`;
           setPendingAsst(assembled);
@@ -1232,10 +1321,22 @@ function ChatView({
 
   function cancel() { abortRef.current?.abort(); }
 
-  const pendingBubble = pendingAsst ? (
-    <MessageBubble
-      m={{ role: "assistant", content: pendingAsst, tier, think: reasoning === "on" }}
-    />
+  // While a response is streaming, tool invocations live alongside the
+  // pending assistant bubble. Once the bubble is committed to messages
+  // the cards clear — the model's final text references them implicitly.
+  const pendingBubble = (pendingAsst || toolCalls.length > 0) ? (
+    <div>
+      {toolCalls.length > 0 && (
+        <div style="margin:0 0 0.5rem 0;">
+          {toolCalls.map((c) => <ToolCallCard key={c.id || c.name} call={c} />)}
+        </div>
+      )}
+      {pendingAsst && (
+        <MessageBubble
+          m={{ role: "assistant", content: pendingAsst, tier, think: reasoning === "on" }}
+        />
+      )}
+    </div>
   ) : null;
 
   return (

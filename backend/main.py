@@ -712,16 +712,34 @@ async def _single_agent_sse(
                 break
 
             # Dispatch tools, append results to the conversation, loop again.
+            # Also emit a tool.invoked event per call (#19) carrying name +
+            # raw args so the frontend can render a ToolCallCard before the
+            # tool result comes back.
             for tc in tool_calls_accum:
+                fn = tc.get("function") or {}
                 yield _agent_event_sse(
-                    AgentEvent(type="route.decision", data={
-                        "tool_call": tc.get("function", {}).get("name", ""),
+                    AgentEvent(type="tool.invoked", data={
+                        "id": tc.get("id") or "",
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", ""),
                     }),
                     model_id,
                 )
             results = await tool_executor.dispatch_many(
                 tool_calls_accum, state.tools, user=user,
             )
+            # Emit a tool.result event per dispatched call so the frontend
+            # can fill in the card.
+            for tc, res in zip(tool_calls_accum, results):
+                fn = tc.get("function") or {}
+                yield _agent_event_sse(
+                    AgentEvent(type="tool.result", data={
+                        "id": tc.get("id") or "",
+                        "name": fn.get("name", ""),
+                        "result": (res or {}).get("content", ""),
+                    }),
+                    model_id,
+                )
             # Append the assistant message (with tool_calls) then the tool
             # results, so the model can continue its response.
             msg_payload = (msg_payload or []) + [
