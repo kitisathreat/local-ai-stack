@@ -101,64 +101,72 @@ DIM    = "\033[2m"
 RESET  = "\033[0m"
 
 
-# ── models.yaml helpers (Phase 6: reads new 5-tier schema) ───────────────────
+# ── models.yaml helpers ──────────────────────────────────────────────────────
+#
+# #25: share one schema loader with the backend instead of hand-parsing YAML.
+# We add the repo root to sys.path so `from backend.config import …` works when
+# this script is invoked with `python scripts/code_assist.py` from anywhere.
+# Falls back to a minimal yaml-based loader if backend deps (pydantic, yaml)
+# aren't installed in the CLI's environment.
+
+sys.path.insert(0, str(REPO_ROOT))
+
 
 def _resolve_alias(name: str) -> str:
     """Map legacy profile names to current tier names."""
     return LEGACY_ALIASES.get(name, name)
 
 
-def _tier_field(yaml_path: Path, tier: str, field: str) -> str:
-    """Read a single field from a tier block under `tiers:` in models.yaml.
-    Also consults the top-level `aliases:` table if `tier` is a legacy name."""
-    tier = _resolve_alias(tier)
-    in_tiers_section = False
-    in_block = False
-    with open(yaml_path) as f:
-        for line in f:
-            stripped = line.rstrip()
-            if stripped == "tiers:":
-                in_tiers_section = True
-                continue
-            if in_tiers_section and stripped and not stripped.startswith(" "):
-                # Left the tiers: section (e.g. hit `aliases:`).
-                in_tiers_section = False
-                in_block = False
-                continue
-            if not in_tiers_section:
-                continue
-            # Tier key is at 2-space indent.
-            if line.startswith(f"  {tier}:"):
-                in_block = True
-                continue
-            if in_block:
-                # Next sibling tier at 2-space indent ends the block.
-                if line.startswith("  ") and not line.startswith("   "):
-                    break
-                m = re.match(rf"\s+{field}:\s+[\"']?(.+?)[\"']?\s*$", line)
-                if m:
-                    return m.group(1).strip()
-    return ""
+def _load_models_config(yaml_path: Path = MODELS_YAML):
+    """Return backend.config.ModelsConfig for MODELS_YAML, or None on failure."""
+    try:
+        from backend.config import AppConfig
+        return AppConfig.load(config_dir=yaml_path.parent).models
+    except Exception:
+        return None
 
 
-def get_default_profile(yaml_path: Path) -> str:
-    with open(yaml_path) as f:
-        for line in f:
-            m = re.match(r"^default:\s+(\w+)", line)
-            if m:
-                return m.group(1)
-    return "versatile"
+def _fallback_yaml(yaml_path: Path = MODELS_YAML) -> dict:
+    """Load models.yaml without pydantic — only used when the backend isn't
+    importable (e.g. user ran `pip install openai` without the full deps).
+    Returns the raw dict shape `{default, tiers: {...}, aliases: {...}}`."""
+    try:
+        import yaml as _yaml
+    except ImportError:
+        sys.exit(
+            "code_assist needs either the backend installed (preferred) or "
+            "pyyaml available in the CLI environment. Run: pip install pyyaml"
+        )
+    with open(yaml_path, encoding="utf-8") as f:
+        return _yaml.safe_load(f) or {}
+
+
+def get_default_profile(yaml_path: Path = MODELS_YAML) -> str:
+    models = _load_models_config(yaml_path)
+    if models is not None:
+        return models.default
+    return _fallback_yaml(yaml_path).get("default") or "versatile"
 
 
 def load_model_id(profile: str, yaml_path: Path = MODELS_YAML) -> str:
     """Return the Ollama/llama.cpp model_tag for a tier (or alias)."""
-    # New schema uses `model_tag`; legacy used `id`. Try both for forward
-    # compatibility in case the schema evolves further.
-    for field in ("model_tag", "id"):
-        val = _tier_field(yaml_path, profile, field)
-        if val:
-            return val
-    sys.exit(f"Tier '{profile}' not found in {yaml_path}")
+    models = _load_models_config(yaml_path)
+    if models is not None:
+        try:
+            _, tier = models.resolve(profile)
+            return tier.model_tag
+        except KeyError:
+            sys.exit(f"Tier '{profile}' not found in {yaml_path}")
+    # Fallback: manual lookup through the raw YAML.
+    raw = _fallback_yaml(yaml_path)
+    tiers = (raw.get("tiers") or {})
+    aliases = (raw.get("aliases") or {})
+    key = _resolve_alias(profile)
+    key = aliases.get(key, key)
+    block = tiers.get(key)
+    if not block:
+        sys.exit(f"Tier '{profile}' not found in {yaml_path}")
+    return block.get("model_tag") or block.get("id") or ""
 
 
 def load_all_model_ids(yaml_path: Path = MODELS_YAML) -> dict:
