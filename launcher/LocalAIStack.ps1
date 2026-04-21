@@ -20,7 +20,22 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-$repoRoot    = Split-Path $PSScriptRoot -Parent
+# Walk up from this script until we find docker-compose.yml. Needed because the
+# ps2exe-compiled EXE lives in launcher\dist\, so the naive parent-of-parent
+# is launcher\, not the repo root.
+function Find-RepoRoot {
+    param([string]$Start)
+    $dir = $Start
+    for ($i = 0; $i -lt 6; $i++) {
+        if (Test-Path (Join-Path $dir "docker-compose.yml")) { return $dir }
+        $parent = Split-Path $dir -Parent
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    # Fallback: old behaviour
+    return (Split-Path $Start -Parent)
+}
+$repoRoot    = Find-RepoRoot $PSScriptRoot
 $stepsDir    = Join-Path $PSScriptRoot "steps"
 $appDataDir  = Join-Path $env:APPDATA "LocalAIStack"
 $logPath     = Join-Path $appDataDir "launcher.log"
@@ -36,6 +51,113 @@ if (Test-Path $envLocal) {
 }
 
 if (-not (Test-Path $appDataDir)) { New-Item -ItemType Directory -Path $appDataDir | Out-Null }
+
+# ── First-run admin setup ─────────────────────────────────────────────────────
+# The admin dashboard is gated on ADMIN_EMAILS: whoever logs in via magic
+# link with one of those addresses sees the admin panel. On the very first
+# launch (or if the value is still empty) we prompt for it and persist to
+# .env.local so the user doesn't have to edit files by hand.
+function Get-EnvVal { param([string]$Key)
+    if (-not (Test-Path $envLocal)) { return $null }
+    foreach ($line in [System.IO.File]::ReadAllLines($envLocal)) {
+        if ($line -match "^\s*$Key\s*=\s*(.*)$") { return $Matches[1] }
+    }
+    return $null
+}
+function Set-EnvVal { param([string]$Key, [string]$Value)
+    $text = if (Test-Path $envLocal) { [System.IO.File]::ReadAllText($envLocal) } else { "" }
+    $pat = "(?m)^\s*$([Regex]::Escape($Key))\s*=.*$"
+    if ($text -match $pat) {
+        $text = [System.Text.RegularExpressions.Regex]::Replace($text, $pat, "$Key=$Value")
+    } else {
+        if ($text -and -not $text.EndsWith("`n")) { $text += "`n" }
+        $text += "$Key=$Value`n"
+    }
+    [System.IO.File]::WriteAllText($envLocal, ($text -replace "`r`n", "`n"),
+        (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Show-AdminEmailDialog {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text            = "LocalAIStack - First-Run Setup"
+    $dlg.FormBorderStyle = "FixedDialog"
+    $dlg.StartPosition   = "CenterScreen"
+    $dlg.ClientSize      = New-Object System.Drawing.Size(480, 240)
+    $dlg.BackColor       = [System.Drawing.Color]::FromArgb(15, 15, 15)
+    $dlg.ForeColor       = [System.Drawing.Color]::White
+    $dlg.TopMost         = $true
+    if (Test-Path $iconPath) { $dlg.Icon = New-Object System.Drawing.Icon($iconPath) }
+
+    $title           = New-Object System.Windows.Forms.Label
+    $title.Text      = "Set up admin access"
+    $title.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 12)
+    $title.Location  = New-Object System.Drawing.Point(20, 15)
+    $title.Size     = New-Object System.Drawing.Size(440, 24)
+    $dlg.Controls.Add($title)
+
+    $body             = New-Object System.Windows.Forms.Label
+    $body.Text        = "Enter the email address that should get admin dashboard access. " +
+                        "You'll receive magic-link sign-ins at this address. You can enter " +
+                        "multiple emails separated by commas. This is saved to .env.local."
+    $body.Font        = New-Object System.Drawing.Font("Segoe UI", 9)
+    $body.ForeColor   = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $body.Location    = New-Object System.Drawing.Point(20, 48)
+    $body.Size        = New-Object System.Drawing.Size(440, 70)
+    $dlg.Controls.Add($body)
+
+    $emailLabel           = New-Object System.Windows.Forms.Label
+    $emailLabel.Text      = "Admin email(s):"
+    $emailLabel.Location  = New-Object System.Drawing.Point(20, 125)
+    $emailLabel.Size      = New-Object System.Drawing.Size(100, 20)
+    $dlg.Controls.Add($emailLabel)
+
+    $emailInput           = New-Object System.Windows.Forms.TextBox
+    $emailInput.Location  = New-Object System.Drawing.Point(125, 123)
+    $emailInput.Size      = New-Object System.Drawing.Size(335, 22)
+    $emailInput.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $emailInput.ForeColor = [System.Drawing.Color]::White
+    $emailInput.BorderStyle = "FixedSingle"
+    $dlg.Controls.Add($emailInput)
+
+    $hint              = New-Object System.Windows.Forms.Label
+    $hint.Text         = "Skip if you don't need the admin dashboard; you can add this later in .env.local."
+    $hint.Font         = New-Object System.Drawing.Font("Segoe UI", 8)
+    $hint.ForeColor    = [System.Drawing.Color]::FromArgb(140, 140, 140)
+    $hint.Location     = New-Object System.Drawing.Point(20, 160)
+    $hint.Size         = New-Object System.Drawing.Size(440, 20)
+    $dlg.Controls.Add($hint)
+
+    $saveBtn           = New-Object System.Windows.Forms.Button
+    $saveBtn.Text      = "Save"
+    $saveBtn.Location  = New-Object System.Drawing.Point(270, 195)
+    $saveBtn.Size      = New-Object System.Drawing.Size(95, 28)
+    $saveBtn.Add_Click({ $dlg.DialogResult = "OK"; $dlg.Close() })
+    $dlg.AcceptButton  = $saveBtn
+    $dlg.Controls.Add($saveBtn)
+
+    $skipBtn           = New-Object System.Windows.Forms.Button
+    $skipBtn.Text      = "Skip"
+    $skipBtn.Location  = New-Object System.Drawing.Point(373, 195)
+    $skipBtn.Size      = New-Object System.Drawing.Size(85, 28)
+    $skipBtn.Add_Click({ $dlg.DialogResult = "Cancel"; $dlg.Close() })
+    $dlg.CancelButton  = $skipBtn
+    $dlg.Controls.Add($skipBtn)
+
+    $result = $dlg.ShowDialog()
+    $emailText = $emailInput.Text.Trim()
+    $dlg.Dispose()
+    if ($result -eq "OK" -and $emailText) { return $emailText }
+    return $null
+}
+
+# Show the dialog only on first run (when ADMIN_EMAILS is empty/missing)
+if (Test-Path $envLocal) {
+    $currentAdmin = Get-EnvVal "ADMIN_EMAILS"
+    if (-not $currentAdmin) {
+        $entered = Show-AdminEmailDialog
+        if ($entered) { Set-EnvVal "ADMIN_EMAILS" $entered }
+    }
+}
 
 # ── Logging (file-only; rotates at 2MB, keeps 5) ──────────────────────────────
 function Rotate-Log {

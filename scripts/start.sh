@@ -24,14 +24,20 @@ if [ -f "$ROOT/.env.local" ]; then
   set -a; . "$ROOT/.env.local"; set +a
 fi
 
+# docker-compose.yml gates the cloudflared service on --profile public, but
+# Compose still interpolates its ${CLOUDFLARE_TUNNEL_TOKEN:?...} at validate
+# time, so an empty token fails even when the profile is off. Export a
+# harmless placeholder when the real value is unset.
+export CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-_disabled_}"
+
 # ── Compose up ───────────────────────────────────────────────────────────
 cyan "docker compose up -d"
 docker compose up -d
 
 # ── Wait for backend health ──────────────────────────────────────────────
-cyan "Waiting for backend (http://localhost:8000/healthz)"
+cyan "Waiting for backend (http://localhost:18000/healthz)"
 for i in $(seq 1 30); do
-  if curl -fsS --max-time 2 http://localhost:8000/healthz >/dev/null 2>&1; then
+  if curl -fsS --max-time 2 http://localhost:18000/healthz >/dev/null 2>&1; then
     green "Backend is ready"
     break
   fi
@@ -49,6 +55,6 @@ fi
 
 # ── Done ─────────────────────────────────────────────────────────────────
 green "Stack is up"
-echo "   Backend:    http://localhost:8000/healthz"
+echo "   Backend:    http://localhost:18000/healthz"
 echo "   Open WebUI: http://localhost:3000"
-echo "   VRAM stats: http://localhost:8000/api/vram"
+echo "   VRAM stats: http://localhost:18000/api/vram"

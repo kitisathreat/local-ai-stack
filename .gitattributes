@@ -1,0 +1,8 @@
+# Force LF line endings for shell scripts -- bash in WSL rejects CRLF.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+
+# Windows-native scripts keep CRLF
+*.ps1       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf

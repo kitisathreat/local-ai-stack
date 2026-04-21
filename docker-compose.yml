@@ -8,7 +8,10 @@ services:
     expose:
       - "8000"
     ports:
-      - "8000:8000"
+      # Host port 18000 -> container 8000 (port 8000 on the host is taken by
+      # IncrediBuild's Coordinator on this machine; internal service-to-service
+      # traffic still uses 8000 over the docker network).
+      - "18000:8000"
     environment:
       - OLLAMA_URL=http://ollama:11434
       - LLAMACPP_URL=http://llama-server:8001/v1
@@ -147,7 +150,9 @@ services:
       - "-ngl"
       - "999"
       # Flash Attention 2: faster attention + lower VRAM on CUDA builds.
+      # Recent llama.cpp requires an explicit value (on|off|auto).
       - "--flash-attn"
+      - "auto"
     deploy:
       resources:
         reservations:

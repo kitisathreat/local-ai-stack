@@ -25,7 +25,7 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Net.Http
 
 # ── Resolve backend URL ───────────────────────────────────────────────────────
-# Priority: explicit param > env var > .env.local PUBLIC_BASE_URL backend > localhost:8000.
+# Priority: explicit param > env var > .env.local PUBLIC_BASE_URL backend > localhost:18000.
 $repoRoot   = Split-Path $PSScriptRoot -Parent
 $appDataDir = Join-Path $env:APPDATA "LocalAIStack"
 $logPath    = Join-Path $appDataDir "airgap-chat.log"
@@ -41,10 +41,10 @@ function Write-Log {
 function Resolve-BackendUrl {
     if ($BackendUrl) { return $BackendUrl.TrimEnd('/') }
     if ($env:LAI_BACKEND_URL) { return $env:LAI_BACKEND_URL.TrimEnd('/') }
-    # The backend is always on :8000 inside the host; PUBLIC_BASE_URL points
-    # at the frontend (nginx :3000 or a tunnel hostname) and proxies /api/*.
-    # For a desktop client we talk to the backend directly.
-    return "http://localhost:8000"
+    # The backend is published on host :18000 (container :8000); PUBLIC_BASE_URL
+    # points at the frontend (nginx :3000 or a tunnel hostname) and proxies
+    # /api/*. For a desktop client we talk to the backend directly.
+    return "http://localhost:18000"
 }
 $script:BackendBase = Resolve-BackendUrl
 Write-Log "INFO" "Backend URL: $script:BackendBase"
