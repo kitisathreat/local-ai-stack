@@ -67,6 +67,22 @@ if (Test-Path $envLocal) {
 
 if (-not (Test-Path $appDataDir)) { New-Item -ItemType Directory -Path $appDataDir | Out-Null }
 
+# Open a URL in app-mode (no address bar, no tabs) using Edge or Chrome.
+# Falls back to the default browser if neither is found.
+function Open-AppWindow {
+    param([string]$Url, [string]$WindowSize = "1280,900")
+    $appArgList = @("--app=$Url", "--window-size=$WindowSize")
+    $edge   = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+    $edge64 = "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe"
+    $chrome = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"
+    $chrome64 = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+    if      (Test-Path $edge64)   { Start-Process $edge64   -ArgumentList $appArgList }
+    elseif  (Test-Path $edge)     { Start-Process $edge     -ArgumentList $appArgList }
+    elseif  (Test-Path $chrome64) { Start-Process $chrome64 -ArgumentList $appArgList }
+    elseif  (Test-Path $chrome)   { Start-Process $chrome   -ArgumentList $appArgList }
+    else                          { Start-Process $Url }
+}
+
 # ── First-run admin setup ─────────────────────────────────────────────────────
 # The admin dashboard is gated on ADMIN_EMAILS: whoever logs in via magic
 # link with one of those addresses sees the admin panel. On the very first
@@ -290,10 +306,12 @@ function Open-AirgapChat {
 }
 
 $trayMenu              = New-Object System.Windows.Forms.ContextMenuStrip
-$openItem              = $trayMenu.Items.Add("Open Chat")
-$openItem.Add_Click({ Open-AirgapChat })
-$browserItem           = $trayMenu.Items.Add("Open in Browser")
-$browserItem.Add_Click({ Start-Process $chatUrl })
+$adminItem             = $trayMenu.Items.Add("Open Admin Dashboard")
+$adminItem.Add_Click({ Open-AppWindow -Url "$chatUrl/#/admin" })
+$chatItem              = $trayMenu.Items.Add("Open Chat")
+$chatItem.Add_Click({ Open-AppWindow -Url $chatUrl })
+$airgapItem            = $trayMenu.Items.Add("Open Airgap Chat")
+$airgapItem.Add_Click({ Open-AirgapChat })
 $logsItem              = $trayMenu.Items.Add("View Logs")
 $logsItem.Add_Click({ Start-Process notepad.exe $logPath })
 $restartItem           = $trayMenu.Items.Add("Restart")
@@ -305,7 +323,7 @@ $stopItem              = $trayMenu.Items.Add("Stop && Exit")
 $stopItem.Add_Click({ Stop-Stack; $tray.Visible = $false; $form.Close() })
 $tray.ContextMenuStrip = $trayMenu
 $tray.Add_MouseClick({ param($s, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-AirgapChat }
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-AppWindow -Url "$chatUrl/#/admin" }
 })
 
 # ── Run a step hidden, capture output to log ──────────────────────────────────
@@ -430,15 +448,26 @@ $form.Add_Shown({
         $form.Refresh()
     }
 
-    # All steps succeeded — open the native chat window, hide to tray
+    # All steps succeeded — open admin dashboard + airgap chat if needed
     $statusLabel.Text = "Ready"
-    $detailLabel.Text = "Opening chat..."
+    $detailLabel.Text = "Opening admin dashboard..."
     $form.Refresh()
-    Start-Sleep -Milliseconds 400
-    Open-AirgapChat
+    Start-Sleep -Milliseconds 300
+
+    Open-AppWindow -Url "$chatUrl/#/admin"
+
+    # Also open AirgapChat if airgap mode is currently enabled
+    $airgapEnabled = $false
+    try {
+        $resp = Invoke-RestMethod -Uri "http://localhost:18000/airgap" -TimeoutSec 3 -ErrorAction Stop
+        $airgapEnabled = [bool]$resp.enabled
+    } catch { }
+    if ($airgapEnabled) { Open-AirgapChat }
+
+    $detailLabel.Text = "Stack is running"
+    $form.Refresh()
     $tray.Visible = $true
     $tray.ShowBalloonTip(2000, "LocalAIStack", "Stack is ready", "Info")
-    $form.Hide()
 })
 
 $form.Add_FormClosing({

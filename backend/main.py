@@ -271,7 +271,7 @@ async def list_models():
     ])
 
 
-@app.get("/api/vram")
+@app.get("/vram")
 async def vram_status():
     return await state.scheduler.status()
 
@@ -299,7 +299,7 @@ def _read_meminfo() -> dict[str, int]:
     return out
 
 
-@app.get("/api/system")
+@app.get("/system")
 async def system_status():
     """Lightweight telemetry snapshot for the chat-side status panel.
 
@@ -329,7 +329,7 @@ async def system_status():
     }
 
 
-@app.get("/api/tools")
+@app.get("/tools")
 async def list_tools():
     """List discovered tools. Tool names are `<module>.<method>`.
 
@@ -353,7 +353,7 @@ async def list_tools():
     }
 
 
-@app.get("/api/airgap")
+@app.get("/airgap")
 async def airgap_status():
     """Public-ish airgap state. Any signed-in user can read this so the
     chat UI can render a banner. Writes are admin-only (see /admin/airgap)."""

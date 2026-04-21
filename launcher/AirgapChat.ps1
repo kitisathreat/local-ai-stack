@@ -26,10 +26,15 @@ Add-Type -AssemblyName System.Net.Http
 
 # ── Resolve backend URL ───────────────────────────────────────────────────────
 # Priority: explicit param > env var > .env.local PUBLIC_BASE_URL backend > localhost:18000.
-$repoRoot   = Split-Path $PSScriptRoot -Parent
+$_scriptRoot = $PSScriptRoot
+if (-not $_scriptRoot) {
+    try { $_scriptRoot = Split-Path ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -Parent }
+    catch { $_scriptRoot = $PWD.Path }
+}
+$repoRoot   = Split-Path $_scriptRoot -Parent
 $appDataDir = Join-Path $env:APPDATA "LocalAIStack"
 $logPath    = Join-Path $appDataDir "airgap-chat.log"
-$iconPath   = Join-Path $PSScriptRoot "assets\icon.ico"
+$iconPath   = Join-Path $_scriptRoot "assets\icon.ico"
 if (-not (Test-Path $appDataDir)) { New-Item -ItemType Directory -Path $appDataDir | Out-Null }
 
 function Write-Log {

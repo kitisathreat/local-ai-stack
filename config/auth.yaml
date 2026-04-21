@@ -20,7 +20,7 @@ magic_link:
 session:
   cookie_name: "lai_session"
   cookie_ttl_days: 30
-  cookie_secure: true                     # set false for local http testing
+  cookie_secure: false                    # set false for local http testing
   cookie_samesite: lax                    # "lax" | "strict" | "none"
   jwt_algorithm: HS256
 

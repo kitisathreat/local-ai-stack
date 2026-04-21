@@ -38,15 +38,10 @@ services:
       # limiter falls back to per-worker in-memory counters.
       - BACKEND_WORKERS=${BACKEND_WORKERS:-1}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
     depends_on:
       ollama:
         condition: service_started
@@ -90,7 +85,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: lai-cloudflared
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env.local or omit this service}
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-TUNNEL_TOKEN_NOT_SET}
     depends_on:
       - frontend
     restart: unless-stopped

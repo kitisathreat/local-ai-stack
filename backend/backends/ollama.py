@@ -109,6 +109,9 @@ class OllamaClient:
     async def ensure_loaded(self, tier: TierConfig, keep_alive: int | str = -1) -> float:
         """Force-load model into VRAM with a 1-token dummy completion.
         Returns elapsed seconds (useful for observed-cost measurement).
+
+        Uses the same num_ctx / num_parallel as chat_stream so Ollama doesn't
+        reload the model again when the first real request arrives.
         """
         import time
         t0 = time.monotonic()
@@ -116,7 +119,7 @@ class OllamaClient:
             "model": tier.model_tag,
             "messages": [{"role": "user", "content": "."}],
             "stream": False,
-            "options": {"num_predict": 1, "num_ctx": min(tier.context_window, 2048)},
+            "options": {**build_options(tier, think=False), "num_predict": 1},
             "keep_alive": keep_alive,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
