@@ -24,7 +24,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio pyyaml pydantic httpx aiosqlite aiosmtplib 'python-jose[cryptography]' fastapi
+        run: |
+          pip install \
+            pytest pytest-asyncio \
+            pyyaml pydantic httpx \
+            aiosqlite aiosmtplib \
+            'python-jose[cryptography]' \
+            fastapi 'uvicorn[standard]' \
+            cryptography 'redis[hiredis]' \
+            pypdf python-multipart \
+            pynvml
 
       - name: Run all Python tests
         run: |
@@ -39,6 +48,7 @@ jobs:
             tests/test_tools_registry.py \
             tests/test_rag.py \
             tests/test_memory.py \
+            tests/test_docker_setup.py \
             -v --tb=short 2>&1 | tee /tmp/pytest.log
 
       - name: Post failing Python tests as PR comment
