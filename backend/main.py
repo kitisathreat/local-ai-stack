@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from pathlib import Path
 
-from . import admin, airgap, auth, db, history_store, memory, metrics, rag
+from . import admin, airgap, auth, db, history_store, memory, metrics, preferences, rag
 from .backends.llama_cpp import LlamaCppClient
 from .backends.ollama import OllamaClient
 from .config import AppConfig, CompiledSignals
@@ -361,28 +361,42 @@ async def airgap_status():
     return snap
 
 
-async def _inject_user_context(req: ChatRequest, user: dict) -> None:
+async def _inject_user_context(
+    req: ChatRequest, user: dict, prefs: preferences.UserPreferences | None = None,
+) -> None:
     """Prepend RAG + memory context to the system message for a signed-in
     user. Runs inline (needs embeddings before streaming starts).
 
     When airgap mode is on we pull from the airgap-scoped memory
     collection only, so facts from normal conversations don't leak into
-    an airgap chat and vice versa."""
+    an airgap chat and vice versa.
+
+    #17 + #20: per-user prefs gate whether retrieval runs at all and
+    control top_k. A preferences row with inject_memories=False skips
+    memory retrieval entirely (same for RAG)."""
     from .router import last_user_text
     last = last_user_text(req.messages)
     if not last or not last.strip():
         return
+    prefs = prefs or preferences.UserPreferences()
     is_airgap = airgap.is_enabled()
-    try:
-        mem_hits = await memory.retrieve_for_user(
-            user["id"], last, k=3, airgap=is_airgap,
-        )
-    except Exception:
-        mem_hits = []
-    try:
-        rag_hits = await rag.retrieve(user["id"], last, k=3)
-    except Exception:
-        rag_hits = []
+    mem_hits: list = []
+    if prefs.inject_memories:
+        try:
+            mem_hits = await memory.retrieve_for_user(
+                user["id"], last, k=prefs.memory_top_k, airgap=is_airgap,
+            )
+        except Exception:
+            mem_hits = []
+    rag_hits: list = []
+    if prefs.inject_rag:
+        try:
+            rag_hits = await rag.retrieve(
+                user["id"], last, k=prefs.rag_top_k,
+                min_score=prefs.rag_min_score,
+            )
+        except Exception:
+            rag_hits = []
     blocks = []
     if mem_hits:
         blocks.append(memory.format_memory_block(mem_hits))
@@ -423,12 +437,20 @@ async def chat_completions(
     #   2. Clarification-protocol system prompt + ambiguity nudge
     #   3. Web-search auto-inject (if trigger patterns match the user msg)
     #   4. Per-user RAG + memory context (signed-in users only)
-    inject_system_context(req.messages)
-    inject_clarification_instruction(req.messages)
+    #
+    # Each step can be disabled per-user via /preferences (#17). Anonymous
+    # callers always run the full stack because there's no user row to
+    # carry prefs.
+    prefs = await preferences.get_for_user(user["id"]) if user else None
+    if prefs is None or prefs.inject_datetime:
+        inject_system_context(req.messages)
+    if prefs is None or prefs.inject_clarification:
+        inject_clarification_instruction(req.messages)
     inject_response_mode(req.messages, req.response_mode, req.plan_text)
-    await inject_web_results(req.messages)
+    if prefs is None or prefs.auto_web_search:
+        await inject_web_results(req.messages)
     if user:
-        await _inject_user_context(req, user)
+        await _inject_user_context(req, user, prefs=prefs)
 
     logger.info(
         "route: tier=%s think=%s multi=%s specialist=%s slash=%s user=%s",
@@ -926,6 +948,27 @@ async def auth_logout():
 @app.get("/me", response_model=MeResponse)
 async def me(user: dict = Depends(auth.current_user)):
     return MeResponse(**user)
+
+
+# ── Preferences (#17 + #20) ─────────────────────────────────────────────
+
+@app.get("/preferences")
+async def get_preferences(user: dict = Depends(auth.current_user)):
+    prefs = await preferences.get_for_user(user["id"])
+    return prefs.to_dict()
+
+
+@app.patch("/preferences")
+async def patch_preferences(
+    patch: dict, user: dict = Depends(auth.current_user),
+):
+    """Update a subset of the user's preferences. Unknown keys are
+    ignored, numeric fields are clamped to sane bounds (see
+    preferences._clamp_patch). Returns the post-update row."""
+    if not isinstance(patch, dict):
+        raise HTTPException(400, "patch must be a JSON object")
+    prefs = await preferences.update_for_user(user["id"], patch)
+    return prefs.to_dict()
 
 
 # ── Conversations ───────────────────────────────────────────────────────

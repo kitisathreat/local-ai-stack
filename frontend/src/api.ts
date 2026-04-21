@@ -143,7 +143,27 @@ export const api = {
 
   // ── Airgap status (read-only; admins toggle via adminApi.setAirgap) ──
   airgapStatus: () => j<AirgapState>("/api/airgap"),
+
+  // ── Per-user preferences (#17 + #20) ────────────────────────────────
+  getPreferences: () => j<UserPreferences>("/api/preferences"),
+  patchPreferences: (patch: Partial<UserPreferences>) =>
+    j<UserPreferences>("/api/preferences", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
 };
+
+export interface UserPreferences {
+  inject_datetime: boolean;
+  inject_clarification: boolean;
+  auto_web_search: boolean;
+  inject_memories: boolean;
+  inject_rag: boolean;
+  rag_top_k: number;
+  rag_min_score: number;
+  memory_top_k: number;
+  memory_cadence: number;
+}
 
 // ── Admin dashboard ────────────────────────────────────────────────────
 

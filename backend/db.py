@@ -136,6 +136,23 @@ CREATE TABLE IF NOT EXISTS usage_events (
 CREATE INDEX IF NOT EXISTS idx_usage_ts   ON usage_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_events(user_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_tier ON usage_events(tier, ts DESC);
+
+-- #17 + #20: per-user preferences (middleware opt-outs and retrieval
+-- tunables). One row per user; absent users default via `DEFAULT_PREFERENCES`
+-- in backend/preferences.py.
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id              INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    inject_datetime      INTEGER NOT NULL DEFAULT 1,
+    inject_clarification INTEGER NOT NULL DEFAULT 1,
+    auto_web_search      INTEGER NOT NULL DEFAULT 1,
+    inject_memories      INTEGER NOT NULL DEFAULT 1,
+    inject_rag           INTEGER NOT NULL DEFAULT 1,
+    rag_top_k            INTEGER NOT NULL DEFAULT 3,
+    rag_min_score        REAL    NOT NULL DEFAULT 0.55,
+    memory_top_k         INTEGER NOT NULL DEFAULT 3,
+    memory_cadence       INTEGER NOT NULL DEFAULT 5,
+    updated_at           REAL    NOT NULL
+);
 """
 
 

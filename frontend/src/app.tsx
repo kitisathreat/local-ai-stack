@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 
 import {
   api, adminApi, Message, Tier, ConversationSummary, streamChat, ResponseMode,
-  MultiAgentOptions, InteractionMode, AirgapState,
+  MultiAgentOptions, InteractionMode, AirgapState, UserPreferences,
 } from "./api";
 import { AdminDashboard } from "./admin";
 
@@ -318,22 +318,69 @@ function HistorySidebar({
   );
 }
 
+/* ── Preference controls (#17 + #20) ─────────────────────────────────── */
+
+function PrefToggle({
+  label, checked, onChange,
+}: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;">
+      <input type="checkbox" checked={checked}
+             onChange={(e) => onChange((e.target as HTMLInputElement).checked)} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function PrefNumber({
+  label, value, min, max, step, onChange,
+}: { label: string; value: number; min: number; max: number; step: number;
+     onChange: (v: number) => void }) {
+  return (
+    <label style="display:flex; flex-direction:column; gap:0.2rem;">
+      <span>{label}</span>
+      <input type="range" value={value} min={min} max={max} step={step}
+             onInput={(e) => {
+               const v = Number((e.target as HTMLInputElement).value);
+               if (!Number.isNaN(v)) onChange(v);
+             }} />
+    </label>
+  );
+}
+
 /* ── Settings panel: RAG docs + memories ────────────────────────────── */
 
 function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [docs, setDocs] = useState<any[]>([]);
   const [mems, setMems] = useState<any[]>([]);
+  const [prefs, setPrefs] = useState<UserPreferences | null>(null);
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<string>("");
   const fileInput = useRef<HTMLInputElement | null>(null);
 
   async function refresh() {
     try {
-      const [d, m] = await Promise.all([api.listRAG(), api.listMemory()]);
-      setDocs(d.data); setMems(m.data);
+      const [d, m, p] = await Promise.all([
+        api.listRAG(), api.listMemory(), api.getPreferences(),
+      ]);
+      setDocs(d.data); setMems(m.data); setPrefs(p);
     } catch (e: any) { setStatus(e?.message || "Failed to load"); }
   }
   useEffect(() => { refresh(); }, []);
+
+  async function updatePrefs(patch: Partial<UserPreferences>) {
+    if (!prefs) return;
+    // Optimistic update so the UI feels immediate; server is the source of truth.
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    try {
+      const saved = await api.patchPreferences(patch);
+      setPrefs(saved);
+    } catch (e: any) {
+      setStatus(e?.message || "Failed to save preferences");
+      setPrefs(prefs);  // rollback
+    }
+  }
 
   async function onUpload(e: Event) {
     const f = (e.target as HTMLInputElement).files?.[0];
@@ -370,6 +417,50 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           <h2 style="margin:0;">Settings</h2>
           <button onClick={onClose}>✕</button>
         </div>
+
+        {prefs && (
+          <>
+            <h3 style="margin-top:1.5rem; font-size:1rem;">Assistant behavior</h3>
+            <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.2rem;">
+              Toggle middleware steps for your chats. Changes apply to the next
+              message.
+            </p>
+            <div style="display:grid; gap:0.4rem; margin-top:0.4rem; font-size:0.9rem;">
+              <PrefToggle label="Inject current date/time into system prompt"
+                         checked={prefs.inject_datetime}
+                         onChange={(v) => updatePrefs({ inject_datetime: v })} />
+              <PrefToggle label="Clarification protocol (ask when ambiguous)"
+                         checked={prefs.inject_clarification}
+                         onChange={(v) => updatePrefs({ inject_clarification: v })} />
+              <PrefToggle label="Auto web search when the prompt implies it"
+                         checked={prefs.auto_web_search}
+                         onChange={(v) => updatePrefs({ auto_web_search: v })} />
+              <PrefToggle label="Inject distilled memories"
+                         checked={prefs.inject_memories}
+                         onChange={(v) => updatePrefs({ inject_memories: v })} />
+              <PrefToggle label="Inject retrieved knowledge-base chunks"
+                         checked={prefs.inject_rag}
+                         onChange={(v) => updatePrefs({ inject_rag: v })} />
+            </div>
+
+            <h3 style="margin-top:1.5rem; font-size:1rem;">Retrieval tuning</h3>
+            <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.2rem;">
+              Applied per chat message. Defaults are sensible — only tweak if
+              context is too thin or too noisy.
+            </p>
+            <div style="display:grid; gap:0.5rem; margin-top:0.4rem; font-size:0.9rem;">
+              <PrefNumber label={`RAG top-K (${prefs.rag_top_k})`}
+                          value={prefs.rag_top_k} min={1} max={20} step={1}
+                          onChange={(v) => updatePrefs({ rag_top_k: v })} />
+              <PrefNumber label={`RAG min score (${prefs.rag_min_score.toFixed(2)})`}
+                          value={prefs.rag_min_score} min={0} max={1} step={0.05}
+                          onChange={(v) => updatePrefs({ rag_min_score: Number(v.toFixed(2)) })} />
+              <PrefNumber label={`Memory top-K (${prefs.memory_top_k})`}
+                          value={prefs.memory_top_k} min={1} max={20} step={1}
+                          onChange={(v) => updatePrefs({ memory_top_k: v })} />
+            </div>
+          </>
+        )}
 
         <h3 style="margin-top:1.5rem; font-size:1rem;">Knowledge base</h3>
         <p style="color:var(--fg-dim); font-size:0.85rem; margin-top:0.2rem;">
