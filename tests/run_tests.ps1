@@ -288,19 +288,19 @@ if (-not $CI) {
     }
 
     Test-Case "Backend /healthz returns ok" {
-        $r = Invoke-RestMethod http://localhost:8000/healthz -TimeoutSec 5
+        $r = Invoke-RestMethod http://localhost:18000/healthz -TimeoutSec 5
         if (-not $r.ok) { throw "Backend healthz did not return ok" }
     }
 
     Test-Case "Backend /v1/models exposes tiers" {
-        $r = Invoke-RestMethod http://localhost:8000/v1/models -TimeoutSec 5
+        $r = Invoke-RestMethod http://localhost:18000/v1/models -TimeoutSec 5
         if ($r.data.Count -lt 5) {
             throw "Expected 5 tiers, got $($r.data.Count)"
         }
     }
 
-    Test-Case "Backend /api/vram returns scheduler status" {
-        $r = Invoke-RestMethod http://localhost:8000/api/vram -TimeoutSec 5
+    Test-Case "Backend /vram returns scheduler status" {
+        $r = Invoke-RestMethod http://localhost:18000/vram -TimeoutSec 5
         if (-not ($r.PSObject.Properties.Name -contains "total_vram_gb")) {
             throw "VRAM status endpoint missing total_vram_gb field"
         }
@@ -314,7 +314,7 @@ if (-not $CI) {
     Test-Case "Backend /me rejects unauth'd requests" {
         $failed = $false
         try {
-            Invoke-RestMethod http://localhost:8000/me -TimeoutSec 5 -ErrorAction Stop
+            Invoke-RestMethod http://localhost:18000/me -TimeoutSec 5 -ErrorAction Stop
         } catch {
             if ($_.Exception.Response.StatusCode.value__ -eq 401) { $failed = $true }
         }

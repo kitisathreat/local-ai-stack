@@ -1,32 +1,47 @@
 param([string]$RepoRoot)
 . (Join-Path $PSScriptRoot "_common.ps1")
 
-$dockerExe = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+# This launcher targets Docker Engine running inside a WSL2 Ubuntu distro
+# (not Docker Desktop). Docker Desktop's AF_UNIX reparse-point sockets on
+# Windows cause repeated startup crashes; Docker Engine in WSL doesn't.
 
-# Is the daemon already reachable?
-$null = & docker ps 2>&1
-if ($LASTEXITCODE -eq 0) {
-    Emit-Result -Ok $true -Message "Docker daemon reachable"
-    exit 0
-}
+$distro = "Ubuntu"
 
-if (-not (Test-Path $dockerExe)) {
+# -- WSL installed? ----------------------------------------------------------
+if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) {
     Emit-Result -Ok $false -NeedsUser $true `
-        -Message "Docker Desktop is required but not installed. Click Install to download it, then re-run LocalAIStack." `
-        -ActionLabel "Download" -ActionUrl "https://www.docker.com/products/docker-desktop/"
+        -Message "WSL is not installed. Run setup.ps1 to install WSL + Docker Engine." `
+        -ActionLabel "Open Setup Guide" `
+        -ActionUrl "https://learn.microsoft.com/windows/wsl/install"
     exit 0
 }
 
-Start-Process -FilePath $dockerExe -WindowStyle Hidden
+# -- Distro present? ---------------------------------------------------------
+$distroList = (& wsl.exe -l -q 2>&1) -join "`n" -split "[\r\n]+" | ForEach-Object { $_.Trim() }
+if (-not ($distroList -contains $distro)) {
+    Emit-Result -Ok $false -NeedsUser $true `
+        -Message "WSL distro '$distro' not found. Run setup.ps1 to install it."
+    exit 0
+}
 
-for ($i = 0; $i -lt 30; $i++) {
-    Start-Sleep -Seconds 3
-    $null = & docker ps 2>&1
+# -- Docker reachable inside the distro? ------------------------------------
+& wsl.exe -d $distro -- docker info 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Emit-Result -Ok $true -Message "Docker Engine reachable inside $distro"
+    exit 0
+}
+
+# -- Try starting docker.service --------------------------------------------
+& wsl.exe -d $distro -u root -- bash -c "systemctl start docker 2>/dev/null || service docker start" 2>&1 | Out-Null
+
+for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep 2
+    & wsl.exe -d $distro -- docker info 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Emit-Result -Ok $true -Message "Docker Desktop started ($($i*3 + 3)s)"
+        Emit-Result -Ok $true -Message "Docker Engine started ($($i*2 + 2)s)"
         exit 0
     }
 }
 
 Emit-Result -Ok $false `
-    -Message "Docker Desktop did not become ready within 90 seconds. Check Docker Desktop manually, then retry."
+    -Message "Docker Engine did not start inside $distro. Diagnostic: wsl -d $distro -- sudo journalctl -u docker -n 50"

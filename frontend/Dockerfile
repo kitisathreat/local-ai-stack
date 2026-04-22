@@ -2,7 +2,9 @@ FROM node:20-alpine AS build
 WORKDIR /build
 
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --omit=optional --ignore-scripts || npm install --ignore-scripts
+# esbuild ships its platform binary via optionalDependencies, so --omit=optional
+# breaks the build. Include optional deps; still skip postinstall hooks.
+RUN npm install --ignore-scripts
 
 COPY frontend/ .
 RUN npm run build

@@ -20,11 +20,41 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-$repoRoot    = Split-Path $PSScriptRoot -Parent
-$stepsDir    = Join-Path $PSScriptRoot "steps"
+# ps2exe may leave $PSScriptRoot empty in older versions of the module.
+# Fall back to the running EXE's own directory.
+$_scriptRoot = $PSScriptRoot
+if (-not $_scriptRoot) {
+    try {
+        $_scriptRoot = Split-Path ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -Parent
+    } catch {
+        $_scriptRoot = $PWD.Path
+    }
+}
+
+# Walk up from the EXE directory until we find docker-compose.yml.
+# The compiled EXE lives in launcher\dist\, so the repo root is two levels up.
+function Find-RepoRoot {
+    param([string]$Start)
+    if (-not $Start) { return $Start }
+    $dir = $Start
+    for ($i = 0; $i -lt 6; $i++) {
+        if (Test-Path (Join-Path $dir "docker-compose.yml")) { return $dir }
+        if (-not $dir) { break }
+        $parent = Split-Path $dir -Parent
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    if ($Start) {
+        $p = Split-Path $Start -Parent
+        return if ($p) { $p } else { $Start }
+    }
+    return $Start
+}
+$repoRoot    = Find-RepoRoot $_scriptRoot
+$stepsDir    = Join-Path $_scriptRoot "steps"
 $appDataDir  = Join-Path $env:APPDATA "LocalAIStack"
 $logPath     = Join-Path $appDataDir "launcher.log"
-$iconPath    = Join-Path $PSScriptRoot "assets\icon.ico"
+$iconPath    = Join-Path $_scriptRoot "assets\icon.ico"
 
 # Default to local frontend. Override by setting PUBLIC_BASE_URL in .env.local
 # (e.g. to the Cloudflare Tunnel hostname) to open the public URL instead.
@@ -36,6 +66,129 @@ if (Test-Path $envLocal) {
 }
 
 if (-not (Test-Path $appDataDir)) { New-Item -ItemType Directory -Path $appDataDir | Out-Null }
+
+# Open a URL in app-mode (no address bar, no tabs) using Edge or Chrome.
+# Falls back to the default browser if neither is found.
+function Open-AppWindow {
+    param([string]$Url, [string]$WindowSize = "1280,900")
+    $appArgList = @("--app=$Url", "--window-size=$WindowSize")
+    $edge   = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+    $edge64 = "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe"
+    $chrome = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"
+    $chrome64 = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+    if      (Test-Path $edge64)   { Start-Process $edge64   -ArgumentList $appArgList }
+    elseif  (Test-Path $edge)     { Start-Process $edge     -ArgumentList $appArgList }
+    elseif  (Test-Path $chrome64) { Start-Process $chrome64 -ArgumentList $appArgList }
+    elseif  (Test-Path $chrome)   { Start-Process $chrome   -ArgumentList $appArgList }
+    else                          { Start-Process $Url }
+}
+
+# ── First-run admin setup ─────────────────────────────────────────────────────
+# The admin dashboard is gated on ADMIN_EMAILS: whoever logs in via magic
+# link with one of those addresses sees the admin panel. On the very first
+# launch (or if the value is still empty) we prompt for it and persist to
+# .env.local so the user doesn't have to edit files by hand.
+function Get-EnvVal { param([string]$Key)
+    if (-not (Test-Path $envLocal)) { return $null }
+    foreach ($line in [System.IO.File]::ReadAllLines($envLocal)) {
+        if ($line -match "^\s*$Key\s*=\s*(.*)$") { return $Matches[1] }
+    }
+    return $null
+}
+function Set-EnvVal { param([string]$Key, [string]$Value)
+    $text = if (Test-Path $envLocal) { [System.IO.File]::ReadAllText($envLocal) } else { "" }
+    $pat = "(?m)^\s*$([Regex]::Escape($Key))\s*=.*$"
+    if ($text -match $pat) {
+        $text = [System.Text.RegularExpressions.Regex]::Replace($text, $pat, "$Key=$Value")
+    } else {
+        if ($text -and -not $text.EndsWith("`n")) { $text += "`n" }
+        $text += "$Key=$Value`n"
+    }
+    [System.IO.File]::WriteAllText($envLocal, ($text -replace "`r`n", "`n"),
+        (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Show-AdminEmailDialog {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text            = "LocalAIStack - First-Run Setup"
+    $dlg.FormBorderStyle = "FixedDialog"
+    $dlg.StartPosition   = "CenterScreen"
+    $dlg.ClientSize      = New-Object System.Drawing.Size(480, 240)
+    $dlg.BackColor       = [System.Drawing.Color]::FromArgb(15, 15, 15)
+    $dlg.ForeColor       = [System.Drawing.Color]::White
+    $dlg.TopMost         = $true
+    if (Test-Path $iconPath) { $dlg.Icon = New-Object System.Drawing.Icon($iconPath) }
+
+    $title           = New-Object System.Windows.Forms.Label
+    $title.Text      = "Set up admin access"
+    $title.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 12)
+    $title.Location  = New-Object System.Drawing.Point(20, 15)
+    $title.Size     = New-Object System.Drawing.Size(440, 24)
+    $dlg.Controls.Add($title)
+
+    $body             = New-Object System.Windows.Forms.Label
+    $body.Text        = "Enter the email address that should get admin dashboard access. " +
+                        "You'll receive magic-link sign-ins at this address. You can enter " +
+                        "multiple emails separated by commas. This is saved to .env.local."
+    $body.Font        = New-Object System.Drawing.Font("Segoe UI", 9)
+    $body.ForeColor   = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $body.Location    = New-Object System.Drawing.Point(20, 48)
+    $body.Size        = New-Object System.Drawing.Size(440, 70)
+    $dlg.Controls.Add($body)
+
+    $emailLabel           = New-Object System.Windows.Forms.Label
+    $emailLabel.Text      = "Admin email(s):"
+    $emailLabel.Location  = New-Object System.Drawing.Point(20, 125)
+    $emailLabel.Size      = New-Object System.Drawing.Size(100, 20)
+    $dlg.Controls.Add($emailLabel)
+
+    $emailInput           = New-Object System.Windows.Forms.TextBox
+    $emailInput.Location  = New-Object System.Drawing.Point(125, 123)
+    $emailInput.Size      = New-Object System.Drawing.Size(335, 22)
+    $emailInput.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $emailInput.ForeColor = [System.Drawing.Color]::White
+    $emailInput.BorderStyle = "FixedSingle"
+    $dlg.Controls.Add($emailInput)
+
+    $hint              = New-Object System.Windows.Forms.Label
+    $hint.Text         = "Skip if you don't need the admin dashboard; you can add this later in .env.local."
+    $hint.Font         = New-Object System.Drawing.Font("Segoe UI", 8)
+    $hint.ForeColor    = [System.Drawing.Color]::FromArgb(140, 140, 140)
+    $hint.Location     = New-Object System.Drawing.Point(20, 160)
+    $hint.Size         = New-Object System.Drawing.Size(440, 20)
+    $dlg.Controls.Add($hint)
+
+    $saveBtn           = New-Object System.Windows.Forms.Button
+    $saveBtn.Text      = "Save"
+    $saveBtn.Location  = New-Object System.Drawing.Point(270, 195)
+    $saveBtn.Size      = New-Object System.Drawing.Size(95, 28)
+    $saveBtn.Add_Click({ $dlg.DialogResult = "OK"; $dlg.Close() })
+    $dlg.AcceptButton  = $saveBtn
+    $dlg.Controls.Add($saveBtn)
+
+    $skipBtn           = New-Object System.Windows.Forms.Button
+    $skipBtn.Text      = "Skip"
+    $skipBtn.Location  = New-Object System.Drawing.Point(373, 195)
+    $skipBtn.Size      = New-Object System.Drawing.Size(85, 28)
+    $skipBtn.Add_Click({ $dlg.DialogResult = "Cancel"; $dlg.Close() })
+    $dlg.CancelButton  = $skipBtn
+    $dlg.Controls.Add($skipBtn)
+
+    $result = $dlg.ShowDialog()
+    $emailText = $emailInput.Text.Trim()
+    $dlg.Dispose()
+    if ($result -eq "OK" -and $emailText) { return $emailText }
+    return $null
+}
+
+# Show the dialog only on first run (when ADMIN_EMAILS is empty/missing)
+if (Test-Path $envLocal) {
+    $currentAdmin = Get-EnvVal "ADMIN_EMAILS"
+    if (-not $currentAdmin) {
+        $entered = Show-AdminEmailDialog
+        if ($entered) { Set-EnvVal "ADMIN_EMAILS" $entered }
+    }
+}
 
 # ── Logging (file-only; rotates at 2MB, keeps 5) ──────────────────────────────
 function Rotate-Log {
@@ -126,11 +279,11 @@ else { $tray.Icon = [System.Drawing.SystemIcons]::Application }
 # Path to the airgap desktop chat app. Prefer the packaged .exe (same dir
 # when running from dist/, or launcher/dist/ when running the .ps1 directly);
 # fall back to executing the .ps1 via PowerShell if the .exe isn't present.
-$airgapChatExe = Join-Path $PSScriptRoot "AirgapChat.exe"
+$airgapChatExe = Join-Path $_scriptRoot "AirgapChat.exe"
 if (-not (Test-Path $airgapChatExe)) {
-    $airgapChatExe = Join-Path $PSScriptRoot "dist\AirgapChat.exe"
+    $airgapChatExe = Join-Path $_scriptRoot "dist\AirgapChat.exe"
 }
-$airgapChatPs1 = Join-Path $PSScriptRoot "AirgapChat.ps1"
+$airgapChatPs1 = Join-Path $_scriptRoot "AirgapChat.ps1"
 
 function Open-AirgapChat {
     if (Test-Path $airgapChatExe) {
@@ -153,10 +306,12 @@ function Open-AirgapChat {
 }
 
 $trayMenu              = New-Object System.Windows.Forms.ContextMenuStrip
-$openItem              = $trayMenu.Items.Add("Open Chat")
-$openItem.Add_Click({ Start-Process $chatUrl })
-$airgapChatItem        = $trayMenu.Items.Add("Open Airgap Chat (desktop)")
-$airgapChatItem.Add_Click({ Open-AirgapChat })
+$adminItem             = $trayMenu.Items.Add("Open Admin Dashboard")
+$adminItem.Add_Click({ Open-AppWindow -Url "$chatUrl/#/admin" })
+$chatItem              = $trayMenu.Items.Add("Open Chat")
+$chatItem.Add_Click({ Open-AppWindow -Url $chatUrl })
+$airgapItem            = $trayMenu.Items.Add("Open Airgap Chat")
+$airgapItem.Add_Click({ Open-AirgapChat })
 $logsItem              = $trayMenu.Items.Add("View Logs")
 $logsItem.Add_Click({ Start-Process notepad.exe $logPath })
 $restartItem           = $trayMenu.Items.Add("Restart")
@@ -168,7 +323,7 @@ $stopItem              = $trayMenu.Items.Add("Stop && Exit")
 $stopItem.Add_Click({ Stop-Stack; $tray.Visible = $false; $form.Close() })
 $tray.ContextMenuStrip = $trayMenu
 $tray.Add_MouseClick({ param($s, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process $chatUrl }
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-AppWindow -Url "$chatUrl/#/admin" }
 })
 
 # ── Run a step hidden, capture output to log ──────────────────────────────────
@@ -293,15 +448,26 @@ $form.Add_Shown({
         $form.Refresh()
     }
 
-    # All steps succeeded
+    # All steps succeeded — open admin dashboard + airgap chat if needed
     $statusLabel.Text = "Ready"
-    $detailLabel.Text = "Opening $chatUrl..."
+    $detailLabel.Text = "Opening admin dashboard..."
     $form.Refresh()
-    Start-Sleep -Milliseconds 500
-    Start-Process $chatUrl
+    Start-Sleep -Milliseconds 300
+
+    Open-AppWindow -Url "$chatUrl/#/admin"
+
+    # Also open AirgapChat if airgap mode is currently enabled
+    $airgapEnabled = $false
+    try {
+        $resp = Invoke-RestMethod -Uri "http://localhost:18000/airgap" -TimeoutSec 3 -ErrorAction Stop
+        $airgapEnabled = [bool]$resp.enabled
+    } catch { }
+    if ($airgapEnabled) { Open-AirgapChat }
+
+    $detailLabel.Text = "Stack is running"
+    $form.Refresh()
     $tray.Visible = $true
-    $tray.ShowBalloonTip(2000, "LocalAIStack", "Stack is ready at $chatUrl", "Info")
-    $form.Hide()
+    $tray.ShowBalloonTip(2000, "LocalAIStack", "Stack is ready", "Info")
 })
 
 $form.Add_FormClosing({

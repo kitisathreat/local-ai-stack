@@ -25,11 +25,16 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Net.Http
 
 # ── Resolve backend URL ───────────────────────────────────────────────────────
-# Priority: explicit param > env var > .env.local PUBLIC_BASE_URL backend > localhost:8000.
-$repoRoot   = Split-Path $PSScriptRoot -Parent
+# Priority: explicit param > env var > .env.local PUBLIC_BASE_URL backend > localhost:18000.
+$_scriptRoot = $PSScriptRoot
+if (-not $_scriptRoot) {
+    try { $_scriptRoot = Split-Path ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -Parent }
+    catch { $_scriptRoot = $PWD.Path }
+}
+$repoRoot   = Split-Path $_scriptRoot -Parent
 $appDataDir = Join-Path $env:APPDATA "LocalAIStack"
 $logPath    = Join-Path $appDataDir "airgap-chat.log"
-$iconPath   = Join-Path $PSScriptRoot "assets\icon.ico"
+$iconPath   = Join-Path $_scriptRoot "assets\icon.ico"
 if (-not (Test-Path $appDataDir)) { New-Item -ItemType Directory -Path $appDataDir | Out-Null }
 
 function Write-Log {
@@ -41,10 +46,10 @@ function Write-Log {
 function Resolve-BackendUrl {
     if ($BackendUrl) { return $BackendUrl.TrimEnd('/') }
     if ($env:LAI_BACKEND_URL) { return $env:LAI_BACKEND_URL.TrimEnd('/') }
-    # The backend is always on :8000 inside the host; PUBLIC_BASE_URL points
-    # at the frontend (nginx :3000 or a tunnel hostname) and proxies /api/*.
-    # For a desktop client we talk to the backend directly.
-    return "http://localhost:8000"
+    # The backend is published on host :18000 (container :8000); PUBLIC_BASE_URL
+    # points at the frontend (nginx :3000 or a tunnel hostname) and proxies
+    # /api/*. For a desktop client we talk to the backend directly.
+    return "http://localhost:18000"
 }
 $script:BackendBase = Resolve-BackendUrl
 Write-Log "INFO" "Backend URL: $script:BackendBase"
@@ -74,7 +79,7 @@ $script:AsstStart  = 0   # char offset of the in-progress assistant reply
 
 # ── Form ──────────────────────────────────────────────────────────────────────
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "LocalAIStack Chat (Airgap)"
+$form.Text = "LocalAIStack Chat"
 $form.StartPosition = "CenterScreen"
 $form.ClientSize = New-Object System.Drawing.Size(760, 620)
 $form.MinimumSize = New-Object System.Drawing.Size(520, 420)

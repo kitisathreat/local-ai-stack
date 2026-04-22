@@ -17,6 +17,17 @@ Import-Module ps2exe
 $distDir = Join-Path $PSScriptRoot "dist"
 if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir | Out-Null }
 
+# The compiled EXE resolves `$PSScriptRoot` to its own directory (dist\), so
+# it looks for steps\ and assets\ next to the EXE. Copy them in.
+$distSteps = Join-Path $distDir "steps"
+if (Test-Path $distSteps) { Remove-Item $distSteps -Recurse -Force }
+Copy-Item -Path (Join-Path $PSScriptRoot "steps") -Destination $distSteps -Recurse
+$distAssets = Join-Path $distDir "assets"
+if (Test-Path (Join-Path $PSScriptRoot "assets")) {
+    if (Test-Path $distAssets) { Remove-Item $distAssets -Recurse -Force }
+    Copy-Item -Path (Join-Path $PSScriptRoot "assets") -Destination $distAssets -Recurse
+}
+
 $iconPath = Join-Path $PSScriptRoot "assets\icon.ico"
 $iconArgs = @{}
 if (Test-Path $iconPath) { $iconArgs.iconFile = $iconPath }

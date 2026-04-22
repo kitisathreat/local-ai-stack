@@ -5,7 +5,7 @@ param([string]$RepoRoot)
 #   - backend (FastAPI) on :8000 with /healthz
 #   - frontend (nginx-served Preact) on :3000
 $checks = @(
-    @{ Name = "backend";  Url = "http://localhost:8000/healthz" },
+    @{ Name = "backend";  Url = "http://localhost:18000/healthz" },
     @{ Name = "frontend"; Url = "http://localhost:3000/" }
 )
 
