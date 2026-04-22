@@ -464,7 +464,7 @@ class TestBackendSmoke:
                 f"Tier '{entry['id']}' has unknown backend '{entry['backend']}'"
             )
 
-    # ── /api/system ───────────────────────────────────────────────────────────
+    # ── /system ───────────────────────────────────────────────────────────────
 
     def test_system_status_200(self, backend_server):
         status, _ = _http_get(f"{backend_server}/system")
@@ -483,7 +483,7 @@ class TestBackendSmoke:
                 f"ram.{field} should be numeric, got {body['ram'][field]!r}"
             )
 
-    # ── /api/tools ────────────────────────────────────────────────────────────
+    # ── /tools ────────────────────────────────────────────────────────────────
 
     def test_tools_status_200(self, backend_server):
         status, _ = _http_get(f"{backend_server}/tools")
@@ -493,7 +493,7 @@ class TestBackendSmoke:
         _, body = _http_get(f"{backend_server}/tools")
         assert len(body.get("data", [])) > 0, "Tool registry returned no tools"
 
-    # ── /api/vram ─────────────────────────────────────────────────────────────
+    # ── /vram ─────────────────────────────────────────────────────────────────
 
     def test_vram_status_200(self, backend_server):
         status, _ = _http_get(f"{backend_server}/vram")
