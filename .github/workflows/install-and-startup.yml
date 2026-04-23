@@ -286,6 +286,40 @@ jobs:
           path: ci-logs/
           if-no-files-found: ignore
 
+      - name: Post failure details as PR comment
+        # The API-token MCP integration can't pull Actions logs/artifacts
+        # or check-run output; PR comments ARE readable through the MCP
+        # so the agent iterating on CI can see what failed.
+        if: failure() && github.event_name == 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          $body = "## Windows — Install + Startup failed (run $env:RUN_ID)`n`n"
+          if (Test-Path ci-logs/setup.log) {
+            $tail = Get-Content ci-logs/setup.log -Tail 120 -Raw
+            $body += "<details open><summary>setup.log (last 120 lines)</summary>`n`n``````text`n$tail`n```````n</details>`n`n"
+          } else {
+            $body += "_setup.log missing — failure was before the Setup step._`n`n"
+          }
+          Get-ChildItem ci-logs -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -ne 'setup.log' } |
+              ForEach-Object {
+                $c = Get-Content $_.FullName -Tail 60 -Raw
+                if ($c) {
+                  $body += "<details><summary>$($_.Name) (last 60 lines)</summary>`n`n``````text`n$c`n```````n</details>`n`n"
+                }
+              }
+          $file = Join-Path $env:RUNNER_TEMP 'pr-comment.md'
+          Set-Content -Path $file -Value $body -Encoding utf8NoBOM
+          & gh pr comment $env:PR_NUMBER --body-file $file
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "gh comment failed ($LASTEXITCODE); body preview:"
+            Write-Host $body
+          }
+
   # ── Linux fast-feedback: Python deps + backend boot + dry-run pull ──────────
   install-smoke-linux:
     name: Linux — Python Deps + Backend Boot
