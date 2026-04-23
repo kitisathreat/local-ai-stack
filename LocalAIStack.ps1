@@ -50,8 +50,12 @@ $Script:LogsDir   = Join-Path $AppData 'logs'
 $Script:PidFile   = Join-Path $AppData 'pids.json'
 
 # ── Pinned third-party release tags (override with env vars) ────────────────
+# SHA256 hashes are for the Windows CUDA release assets; leave blank to skip
+# verification (dev only). Ship updated hashes when bumping versions.
 $Script:QdrantVersion    = if ($env:LAI_QDRANT_VERSION)    { $env:LAI_QDRANT_VERSION }    else { 'v1.12.4' }
+$Script:QdrantSha256     = if ($env:LAI_QDRANT_SHA256)     { $env:LAI_QDRANT_SHA256 }     else { '' }
 $Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b4404' }
+$Script:LlamaCppSha256   = if ($env:LAI_LLAMACPP_SHA256)   { $env:LAI_LLAMACPP_SHA256 }   else { '' }
 
 # ── Tiny helpers (dedupe pattern from setup.ps1/launcher) ────────────────────
 function Write-Step($msg)    { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -250,10 +254,10 @@ function Invoke-Setup {
     Ensure-Dir $LogsDir
 
     if (Get-Command Invoke-DownloadQdrant -ErrorAction SilentlyContinue) {
-        Invoke-DownloadQdrant -Version $QdrantVersion -Dest (Join-Path $VendorDir 'qdrant')
+        Invoke-DownloadQdrant -Version $QdrantVersion -Dest (Join-Path $VendorDir 'qdrant') -Sha256 $QdrantSha256
     }
     if (Get-Command Invoke-DownloadLlamaServer -ErrorAction SilentlyContinue) {
-        Invoke-DownloadLlamaServer -Version $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server')
+        Invoke-DownloadLlamaServer -Version $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server') -Sha256 $LlamaCppSha256
     }
     if (Get-Command Invoke-CreateVenvs -ErrorAction SilentlyContinue) {
         Invoke-CreateVenvs -Root $VendorDir -RepoRoot $RepoRoot
@@ -304,16 +308,16 @@ function Invoke-Start {
 
     Write-Step 'Starting ollama serve'
     $Env:OLLAMA_HOST = '127.0.0.1:11434'
-    $pids['ollama'] = (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir).Id
+    $pids['ollama'] = Record-PidEntry (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir)
 
     Write-Step 'Starting qdrant'
     $qdrantBin = Join-Path $VendorDir 'qdrant\qdrant.exe'
     if (Test-Path $qdrantBin) {
         $qdrantStorage = Join-Path $DataDir 'qdrant'
         Ensure-Dir $qdrantStorage
-        $pids['qdrant'] = (Start-TrackedProcess -Name 'qdrant' -FilePath $qdrantBin `
+        $pids['qdrant'] = Record-PidEntry (Start-TrackedProcess -Name 'qdrant' -FilePath $qdrantBin `
             -Args @() -LogDir $LogsDir -WorkDir (Split-Path $qdrantBin) `
-            -Env @{ QDRANT__STORAGE__STORAGE_PATH = $qdrantStorage }).Id
+            -Env @{ QDRANT__STORAGE__STORAGE_PATH = $qdrantStorage })
     } else {
         Write-Warn2 "Qdrant binary missing at $qdrantBin — RAG features disabled"
     }
@@ -322,8 +326,8 @@ function Invoke-Start {
     $llamaBin = Join-Path $VendorDir 'llama-server\llama-server.exe'
     $visionGguf = Join-Path $DataDir 'models\vision.gguf'
     if ((Test-Path $llamaBin) -and (Test-Path $visionGguf)) {
-        $pids['llama-server'] = (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
-            -Args @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf) -LogDir $LogsDir).Id
+        $pids['llama-server'] = Record-PidEntry (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
+            -Args @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf) -LogDir $LogsDir)
     } else {
         Write-Warn2 "llama-server or vision GGUF missing — vision tier disabled"
     }
@@ -333,8 +337,8 @@ function Invoke-Start {
     if (Test-Path $jupyter) {
         $token = [Guid]::NewGuid().ToString('N')
         $Env:JUPYTER_TOKEN = $token
-        $pids['jupyter'] = (Start-TrackedProcess -Name 'jupyter' -FilePath $jupyter `
-            -Args @('--no-browser','--port','8888',"--ServerApp.token=$token") -LogDir $LogsDir).Id
+        $pids['jupyter'] = Record-PidEntry (Start-TrackedProcess -Name 'jupyter' -FilePath $jupyter `
+            -Args @('--no-browser','--port','8888',"--ServerApp.token=$token") -LogDir $LogsDir)
     } else {
         Write-Warn2 "Jupyter venv missing — code interpreter disabled"
     }
@@ -344,9 +348,9 @@ function Invoke-Start {
     if (-not (Test-Path $backendPy)) {
         throw "Backend venv missing at $backendPy — run -Setup."
     }
-    $pids['backend'] = (Start-TrackedProcess -Name 'backend' -FilePath $backendPy `
+    $pids['backend'] = Record-PidEntry (Start-TrackedProcess -Name 'backend' -FilePath $backendPy `
         -Args @('-m','uvicorn','backend.main:app','--host','127.0.0.1','--port','18000') `
-        -LogDir $LogsDir -WorkDir $RepoRoot).Id
+        -LogDir $LogsDir -WorkDir $RepoRoot)
 
     if (Get-Command Wait-HealthOk -ErrorAction SilentlyContinue) {
         Wait-HealthOk -Urls @(
@@ -359,9 +363,9 @@ function Invoke-Start {
     Write-Step 'Launching native GUI'
     $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
     if (Test-Path $guiPy) {
-        $pids['gui'] = (Start-TrackedProcess -Name 'gui' -FilePath $guiPy `
+        $pids['gui'] = Record-PidEntry (Start-TrackedProcess -Name 'gui' -FilePath $guiPy `
             -Args @((Join-Path $RepoRoot 'gui\main.py'), '--api', 'http://127.0.0.1:18000') `
-            -LogDir $LogsDir -WorkDir $RepoRoot).Id
+            -LogDir $LogsDir -WorkDir $RepoRoot)
     } else {
         Write-Warn2 "GUI venv missing — run -Setup or launch manually"
     }
@@ -374,6 +378,15 @@ function Invoke-Start {
 }
 
 # ── Stop ─────────────────────────────────────────────────────────────────────
+function Record-PidEntry([System.Diagnostics.Process]$Process) {
+    # Capture the process name at start time so -Stop can verify the PID
+    # hasn't been reused between runs (e.g. after a reboot).
+    return [pscustomobject]@{
+        pid         = $Process.Id
+        processName = $Process.ProcessName
+    }
+}
+
 function Invoke-Stop {
     if (-not (Test-Path $PidFile)) {
         Write-Warn2 "No pids.json at $PidFile — nothing to stop."
@@ -381,10 +394,25 @@ function Invoke-Stop {
     }
     $pids = Get-Content $PidFile -Raw | ConvertFrom-Json
     foreach ($name in $pids.PSObject.Properties.Name) {
-        $procId = [int]$pids.$name
+        $entry = $pids.$name
+        # Back-compat: older pids.json had `{name: pid}`; newer has `{name: {pid, processName}}`.
+        if ($entry -is [int] -or $entry -is [long]) {
+            $procId = [int]$entry
+            $expectedName = $null
+        } else {
+            $procId = [int]$entry.pid
+            $expectedName = $entry.processName
+        }
         try {
+            $proc = Get-Process -Id $procId -ErrorAction Stop
+            if ($expectedName -and $proc.ProcessName -ne $expectedName) {
+                Write-Warn2 "skipping $name (pid $procId): expected process '$expectedName' but PID owned by '$($proc.ProcessName)' — likely reused"
+                continue
+            }
             Stop-Process -Id $procId -Force -ErrorAction Stop
             Write-Ok "stopped $name (pid $procId)"
+        } catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+            Write-Warn2 "$name (pid $procId) already gone"
         } catch {
             Write-Warn2 "could not stop $name (pid $procId): $($_.Exception.Message)"
         }
@@ -401,15 +429,15 @@ function Invoke-Build {
     Import-Module ps2exe
     $icon = Join-Path $AssetsDir 'icon.ico'
     $out  = Join-Path $RepoRoot 'LocalAIStack.exe'
-    $args = @{
+    $splat = @{
         InputFile  = $MyInvocation.MyCommand.Path
         OutputFile = $out
         NoConsole  = $true
         Title      = 'Local AI Stack'
         Company    = 'Local AI Stack'
     }
-    if (Test-Path $icon) { $args['IconFile'] = $icon }
-    Invoke-PS2EXE @args
+    if (Test-Path $icon) { $splat['IconFile'] = $icon }
+    Invoke-ps2exe @splat
     Write-Ok "Built $out"
 }
 

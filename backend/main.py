@@ -283,7 +283,7 @@ async def resolved_models():
     """Returns data/resolved-models.json — written by backend.model_resolver
     before each -Start. Native GUI reads this to show the tier status tab.
     """
-    data_dir = Path(os.getenv("LAI_DATA_DIR", "/app/data"))
+    data_dir = Path(os.getenv("LAI_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
     path = data_dir / "resolved-models.json"
     if not path.exists():
         return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}

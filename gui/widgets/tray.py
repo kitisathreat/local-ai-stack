@@ -37,7 +37,6 @@ def build_tray(app: QApplication, chat_window, client: BackendClient) -> QSystem
     def _open_admin():
         from gui.windows.admin import AdminWindow
         w = AdminWindow(client)
-        w.setAttribute(w.windowFlags() | 0, True)
         w.show()
         app._admin_win = w  # type: ignore[attr-defined]  # keep a ref
 

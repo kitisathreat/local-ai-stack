@@ -55,13 +55,14 @@ class ChatWindow(QMainWindow):
         self._composer = QPlainTextEdit()
         self._composer.setPlaceholderText("Type a message. Ctrl+Enter to send.")
         self._composer.setFixedHeight(120)
-        send = QPushButton("Send")
-        send.clicked.connect(self._send_clicked)
-        QShortcut(QKeySequence("Ctrl+Return"), self._composer, self._send_clicked)
+        self._send_button = QPushButton("Send")
+        self._send_button.clicked.connect(self._send_clicked)
+        self._send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self._composer, self._send_clicked)
+        self._streaming = False
 
         bottom = QHBoxLayout()
         bottom.addWidget(self._composer, 1)
-        bottom.addWidget(send)
+        bottom.addWidget(self._send_button)
 
         root = QVBoxLayout()
         root.addLayout(top)
@@ -81,6 +82,8 @@ class ChatWindow(QMainWindow):
         self._view.set_markdown("")
 
     def _send_clicked(self) -> None:
+        if self._streaming:
+            return
         text = self._composer.toPlainText().strip()
         if not text:
             return
@@ -91,7 +94,14 @@ class ChatWindow(QMainWindow):
         self._composer.clear()
         self._history.append(ChatTurn(role="user", content=text))
         self._view.append_markdown(f"\n\n**You:** {text}\n\n**Assistant:** ")
+        self._set_streaming(True)
         asyncio.ensure_future(self._stream_reply(model))
+
+    def _set_streaming(self, active: bool) -> None:
+        self._streaming = active
+        self._send_button.setEnabled(not active)
+        self._send_shortcut.setEnabled(not active)
+        self._composer.setReadOnly(active)
 
     async def _stream_reply(self, model: str) -> None:
         buffered = ""
@@ -101,10 +111,12 @@ class ChatWindow(QMainWindow):
             ):
                 buffered += delta
                 self._view.append_markdown(delta)
+            self._history.append(ChatTurn(role="assistant", content=buffered))
         except Exception as exc:
             self._view.append_markdown(f"\n\n*Error: {exc}*\n")
-            return
-        self._history.append(ChatTurn(role="assistant", content=buffered))
+        finally:
+            self._view.flush_now()
+            self._set_streaming(False)
 
     async def _load_models(self) -> None:
         try:
