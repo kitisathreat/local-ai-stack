@@ -62,3 +62,14 @@ def test_resolved_models_malformed_json_returns_empty_shape(tmp_path, monkeypatc
     except json.JSONDecodeError:
         result = {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
         assert result["tiers"] == {}
+
+
+def test_airgap_endpoint_has_both_paths():
+    """Regression: the Qt GUI + host-gate middleware expect
+    /api/airgap, but the original route was /airgap. Both must be
+    reachable on the FastAPI app so /api/airgap doesn't 404."""
+    import importlib, sys
+    from backend import main as main_module
+    routes = {getattr(r, "path", "") for r in main_module.app.routes}
+    assert "/airgap" in routes, "original /airgap route missing"
+    assert "/api/airgap" in routes, "/api/airgap alias missing — GUI polling will 404"

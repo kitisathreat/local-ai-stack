@@ -30,8 +30,8 @@ from ..schemas import ChatMessage
 logger = logging.getLogger(__name__)
 
 
-MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", os.getenv("SEARXNG_MAX_RESULTS", "3")))
-TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", os.getenv("SEARXNG_TIMEOUT", "8")))
+MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "3"))
+TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
 
 
 TRIGGER_PATTERNS = [

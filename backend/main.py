@@ -397,9 +397,14 @@ async def list_tools():
 
 
 @app.get("/airgap")
+@app.get("/api/airgap")
 async def airgap_status():
     """Public-ish airgap state. Any signed-in user can read this so the
-    chat UI can render a banner. Writes are admin-only (see /admin/airgap)."""
+    chat UI can render a banner. Writes are admin-only (see /admin/airgap).
+
+    Exposed at both paths: `/airgap` (pre-Phase-5 path, kept for
+    back-compat) and `/api/airgap` (what the Qt GUI + host-gate
+    middleware expect)."""
     snap = state.airgap.snapshot()
     return snap
 

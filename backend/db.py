@@ -4,8 +4,7 @@ Schema is created on first connection. Uses `aiosqlite` so DB access is
 non-blocking and cooperative with the FastAPI event loop.
 
 One database file per process, path configurable via LAI_DB_PATH env var
-(defaults to /app/data/lai.db inside the container). The surrounding
-`data/` volume is mounted from the host in docker-compose.yml.
+(defaults to `<repo>/data/lai.db` in native mode).
 
 Memory distillation and per-user RAG collections land in Phase 5 —
 their tables are added here so Phase 4 can seed them, but they're

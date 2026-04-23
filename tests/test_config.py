@@ -1,6 +1,8 @@
-"""CI tests for configuration files, docker-compose.yml, and static assets.
+"""CI tests for configuration files.
 
-All checks are purely static — no Docker or running services needed.
+Native-mode layout (post-PR #96): docker-compose.yml is deliberately
+absent; one assertion below guards against it being resurrected. All
+checks are purely static — no running services needed.
 """
 
 import re
