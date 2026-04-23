@@ -65,7 +65,15 @@ jobs:
         shell: pwsh
         env:
           OFFLINE: "1"
-        run: .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs
+        run: |
+          # Tee output so the failure reason ends up in the artifact even
+          # if the step fails partway through.
+          New-Item -ItemType Directory -Path ci-logs -Force | Out-Null
+          & .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs 2>&1 |
+            Tee-Object -FilePath ci-logs/setup.log
+          if ($LASTEXITCODE -ne 0) {
+            throw "Setup failed with exit $LASTEXITCODE (see ci-logs/setup.log)"
+          }
 
       - name: Verify tier detection wrote resolved-models.json
         shell: pwsh
@@ -163,10 +171,16 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Path 'ci-logs' -Force | Out-Null
           $logs = Join-Path $env:APPDATA 'LocalAIStack\logs'
           if (Test-Path $logs) {
-            New-Item -ItemType Directory -Path 'ci-logs' -Force | Out-Null
             Copy-Item -Path (Join-Path $logs '*') -Destination 'ci-logs' -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          # Echo setup.log tail inline so the failure shows in the job log
+          # even without downloading the artifact.
+          if (Test-Path ci-logs/setup.log) {
+            Write-Host '── setup.log (last 120 lines) ──' -ForegroundColor Yellow
+            Get-Content ci-logs/setup.log -Tail 120
           }
 
       - name: Upload logs artifact
