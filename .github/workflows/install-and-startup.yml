@@ -30,12 +30,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Create ci-logs dir
+        shell: pwsh
+        run: New-Item -ItemType Directory -Path ci-logs -Force | Out-Null
+
       - name: Runner diagnostics
         shell: pwsh
         run: |
-          # Emit enough info that an 18s early-exit failure is diagnosable
-          # from $GITHUB_STEP_SUMMARY alone.
-          $summary = $env:GITHUB_STEP_SUMMARY
+          # Tee to ci-logs so the on-failure PR comment picks it up.
+          # GITHUB_STEP_SUMMARY is per-step, not shared, so this file is
+          # the persistent channel.
+          $log = 'ci-logs/01-runner-diagnostics.log'
           $lines = @(
             "### Windows runner diagnostics",
             "- runner image: $env:ImageOS / $env:ImageVersion",
@@ -45,19 +50,20 @@ jobs:
             "- pwd: $(Get-Location)",
             "- python: $((Get-Command python -ErrorAction SilentlyContinue).Source)",
             "- git: $((Get-Command git -ErrorAction SilentlyContinue).Source)",
+            "- curl.exe: $((Get-Command curl.exe -ErrorAction SilentlyContinue).Source)",
+            "- tar.exe: $((Get-Command tar.exe -ErrorAction SilentlyContinue).Source)",
             "- LocalAIStack.ps1 exists: $([bool](Test-Path LocalAIStack.ps1))"
           )
-          $lines | ForEach-Object { Write-Host $_ }
-          if ($summary) { $lines | ForEach-Object { Add-Content -Path $summary -Value "$_`n" } }
+          $lines | ForEach-Object { Write-Host $_; Add-Content -Path $log -Value $_ }
 
       - name: Pre-install Ollama (standalone zip, no installer)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $summary = $env:GITHUB_STEP_SUMMARY
+          $log = 'ci-logs/02-ollama-install.log'
           function Note($msg) {
             Write-Host $msg
-            if ($summary) { Add-Content -Path $summary -Value "$msg`n" }
+            Add-Content -Path $log -Value $msg
           }
 
           $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
@@ -69,7 +75,8 @@ jobs:
           # for >1 GB downloads than Invoke-WebRequest.
           & curl.exe --fail --silent --show-error --location `
             --output $zip `
-            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip'
+            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' 2>&1 |
+              ForEach-Object { Note $_ }
           if ($LASTEXITCODE -ne 0) { throw "curl failed: $LASTEXITCODE" }
           $size = (Get-Item $zip).Length
           Note "downloaded $size bytes"
@@ -77,7 +84,7 @@ jobs:
           Note "==> Extracting to $dest (via tar)"
           # tar on modern Windows (bsdtar) understands zip and is faster
           # than PowerShell's Expand-Archive on multi-GB archives.
-          & tar.exe -xf $zip -C $dest
+          & tar.exe -xf $zip -C $dest 2>&1 | ForEach-Object { Note $_ }
           if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
           Remove-Item $zip -Force
 
@@ -85,19 +92,24 @@ jobs:
           if (-not $exe) {
             Note 'FAIL: ollama.exe not found in extracted archive'
             Note 'extracted tree:'
-            Get-ChildItem -Path $dest -Recurse | Select-Object -First 20 FullName | ForEach-Object { Note "  $($_.FullName)" }
+            Get-ChildItem -Path $dest -Recurse | Select-Object -First 30 FullName |
+                ForEach-Object { Note "  $($_.FullName)" }
             throw 'ollama.exe missing'
           }
           $bindir = $exe.DirectoryName
           Add-Content -Path $env:GITHUB_PATH -Value $bindir
           $env:PATH = "$bindir;$env:PATH"
           Note "ollama at: $($exe.FullName)"
-          & $exe.FullName --version
+          & $exe.FullName --version 2>&1 | ForEach-Object { Note $_ }
 
       - name: Initialize .env with CI secrets
         shell: pwsh
         run: |
-          .\LocalAIStack.ps1 -InitEnv
+          $log = 'ci-logs/03-init-env.log'
+          function Note($msg) { Write-Host $msg; Add-Content -Path $log -Value $msg }
+          Note 'running LocalAIStack.ps1 -InitEnv'
+          & .\LocalAIStack.ps1 -InitEnv 2>&1 | ForEach-Object { Note $_ }
+          if ($LASTEXITCODE -ne 0) { throw "InitEnv failed: $LASTEXITCODE" }
           $bytes = New-Object byte[] 48
           [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
           $secret = [Convert]::ToBase64String($bytes)
@@ -108,10 +120,10 @@ jobs:
             -replace '(?m)^ADMIN_API_ALLOWED_HOSTS=.*', 'ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost' `
             -replace '(?m)^PUBLIC_BASE_URL=.*', 'PUBLIC_BASE_URL=http://127.0.0.1:18000' `
             | Set-Content .env -Encoding utf8NoBOM
-          Write-Host '── .env (redacted) ──'
+          Note '── .env (redacted) ──'
           Get-Content .env | ForEach-Object {
-            if ($_ -match '^(AUTH_SECRET_KEY|HISTORY_SECRET_KEY)=') { $_ -replace '=.*$', '=<redacted>' }
-            else { $_ }
+            $redacted = if ($_ -match '^(AUTH_SECRET_KEY|HISTORY_SECRET_KEY)=') { $_ -replace '=.*$', '=<redacted>' } else { $_ }
+            Note $redacted
           }
 
       # Ollama is deliberately NOT pre-installed. The launcher now soft-skips
