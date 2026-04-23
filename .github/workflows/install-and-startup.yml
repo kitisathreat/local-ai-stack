@@ -170,13 +170,31 @@ jobs:
         env:
           OFFLINE: "1"
         run: |
-          # Tee output so the failure reason ends up in the artifact even
-          # if the step fails partway through.
-          New-Item -ItemType Directory -Path ci-logs -Force | Out-Null
-          & .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs 2>&1 |
-            Tee-Object -FilePath ci-logs/setup.log
-          if ($LASTEXITCODE -gt 0) {
-            throw "Setup failed with exit $LASTEXITCODE (see ci-logs/setup.log)"
+          $log = Join-Path (Get-Location) 'ci-logs/setup.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+
+          Log "step started at $(Get-Date -Format s)"
+          try {
+            # *>&1 captures all streams (success, error, warning, info,
+            # verbose, debug) so Write-Host/Write-Step output from the
+            # launcher reaches the log.
+            & .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs *>&1 | ForEach-Object {
+              Log ($_ | Out-String).TrimEnd()
+            }
+            Log "Setup script returned. LASTEXITCODE=$LASTEXITCODE"
+            if ($LASTEXITCODE -gt 0) {
+              throw "Setup failed with exit $LASTEXITCODE"
+            }
+          } catch {
+            Log ("EXCEPTION: " + $_.Exception.Message)
+            if ($_.ScriptStackTrace) { Log ("STACK: " + $_.ScriptStackTrace) }
+            if ($_.InvocationInfo.PositionMessage) { Log ("AT: " + $_.InvocationInfo.PositionMessage) }
+            throw
           }
 
       - name: Verify tier detection wrote resolved-models.json
