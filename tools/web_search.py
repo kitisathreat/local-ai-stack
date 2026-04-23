@@ -1,32 +1,23 @@
 """
-title: Web Search (SearXNG)
+title: Web Search
 author: local-ai-stack
-description: Search the web in real time using a local SearXNG instance. Gives models access to current news, events, and live information.
+description: Search the web in real time via the configured provider (Brave API or DuckDuckGo). Gives models access to current news, events, and live information.
 required_open_webui_version: 0.4.0
-requirements: httpx
-version: 1.0.0
+requirements: httpx, ddgs
+version: 2.0.0
 licence: MIT
 """
 
-import httpx
+from typing import Any, Callable, Optional
+
 from pydantic import BaseModel, Field
-from typing import Callable, Any, Optional
 
 
 class Tools:
     class Valves(BaseModel):
-        SEARXNG_URL: str = Field(
-            default="http://searxng:8080",
-            description="Base URL of the SearXNG instance",
-        )
         MAX_RESULTS: int = Field(
             default=5, description="Maximum number of results to return"
         )
-        ENGINES: str = Field(
-            default="google,bing,duckduckgo",
-            description="Comma-separated list of search engines to use",
-        )
-        TIMEOUT: int = Field(default=10, description="Request timeout in seconds")
 
     def __init__(self):
         self.valves = self.Valves()
@@ -39,7 +30,13 @@ class Tools:
     ) -> str:
         """
         Search the web for current information on any topic.
-        Use this when you need up-to-date data, recent news, or information beyond your training cutoff.
+        Use this when you need up-to-date data, recent news, or information
+        beyond your training cutoff.
+
+        Native mode uses an in-process provider (Brave API when
+        BRAVE_API_KEY is set, otherwise the DuckDuckGo ``ddgs`` package).
+        There is no SearXNG dependency.
+
         :param query: The search query string
         :return: Formatted search results with titles, URLs, and snippets
         """
@@ -51,49 +48,33 @@ class Tools:
                 }
             )
 
+        from backend.middleware.web_search import get_provider
+
         try:
-            params = {
-                "q": query,
-                "format": "json",
-                "engines": self.valves.ENGINES,
-                "language": "en",
-            }
-            async with httpx.AsyncClient(timeout=self.valves.TIMEOUT) as client:
-                resp = await client.get(
-                    f"{self.valves.SEARXNG_URL}/search", params=params
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            results = await get_provider().search(query, self.valves.MAX_RESULTS)
+        except Exception as exc:
+            return f"Web search failed: {exc}"
 
-            results = data.get("results", [])[: self.valves.MAX_RESULTS]
-            if not results:
-                return f"No results found for: {query}"
+        if not results:
+            return f"No results found for: {query}"
 
-            lines = [f"## Web Search Results: {query}\n"]
-            for i, r in enumerate(results, 1):
-                title = r.get("title", "No title")
-                url = r.get("url", "")
-                snippet = r.get("content", "No description available")
-                lines.append(f"**{i}. {title}**")
-                lines.append(f"   {url}")
-                lines.append(f"   {snippet}\n")
+        lines = [f"## Web Search Results: {query}\n"]
+        for i, r in enumerate(results, 1):
+            title = r.get("title") or "No title"
+            url = r.get("url") or ""
+            snippet = r.get("content") or "No description available"
+            lines.append(f"**{i}. {title}**")
+            lines.append(f"   {url}")
+            lines.append(f"   {snippet}\n")
 
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": f"Found {len(results)} results",
-                            "done": True,
-                        },
-                    }
-                )
-
-            return "\n".join(lines)
-
-        except httpx.ConnectError:
-            return (
-                "Error: SearXNG is not reachable. Ensure the searxng container is running."
+        if __event_emitter__:
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": f"Found {len(results)} results",
+                        "done": True,
+                    },
+                }
             )
-        except Exception as e:
-            return f"Search error: {str(e)}"
+        return "\n".join(lines)

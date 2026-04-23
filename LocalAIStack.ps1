@@ -1,0 +1,435 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Local AI Stack — single-file setup, launcher, and build tool for
+  non-Docker native Windows mode.
+
+.DESCRIPTION
+  One script to rule them all. Replaces setup.ps1, launcher/*.ps1,
+  scripts/start.ps1, scripts/stop.ps1, and launcher/build.ps1 with a
+  consolidated command surface:
+
+      .\LocalAIStack.ps1              # default: -Start
+      .\LocalAIStack.ps1 -Setup       # install prereqs + vendor binaries + venvs + models
+      .\LocalAIStack.ps1 -Start       # resolve models, spawn services, launch GUI, tray
+      .\LocalAIStack.ps1 -Stop        # terminate all tracked processes
+      .\LocalAIStack.ps1 -Build       # ps2exe into LocalAIStack.exe
+      .\LocalAIStack.ps1 -InitEnv     # write a default .env if missing
+      .\LocalAIStack.ps1 -CheckUpdates# re-poll HF + Ollama registry
+      .\LocalAIStack.ps1 -Help        # full operator guide (run for deep docs)
+      .\LocalAIStack.ps1 -Start -NoUpdateCheck  # skip polling, use pinned
+#>
+
+[CmdletBinding(DefaultParameterSetName = 'Start')]
+param(
+    [Parameter(ParameterSetName = 'Setup')]        [switch]$Setup,
+    [Parameter(ParameterSetName = 'Start')]        [switch]$Start,
+    [Parameter(ParameterSetName = 'Stop')]         [switch]$Stop,
+    [Parameter(ParameterSetName = 'Build')]        [switch]$Build,
+    [Parameter(ParameterSetName = 'InitEnv')]      [switch]$InitEnv,
+    [Parameter(ParameterSetName = 'CheckUpdates')] [switch]$CheckUpdates,
+    [Parameter(ParameterSetName = 'Help')]         [switch]$Help,
+
+    # Modifier flags (may combine with -Start)
+    [Parameter(ParameterSetName = 'Start')] [switch]$NoUpdateCheck,
+    [Parameter(ParameterSetName = 'Start')] [switch]$Offline
+)
+
+$ErrorActionPreference = 'Stop'
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+$Script:RepoRoot  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Script:StepsDir  = Join-Path $RepoRoot 'scripts\steps'
+$Script:VendorDir = Join-Path $RepoRoot 'vendor'
+$Script:ConfigDir = Join-Path $RepoRoot 'config'
+$Script:DataDir   = Join-Path $RepoRoot 'data'
+$Script:AssetsDir = Join-Path $RepoRoot 'assets'
+$Script:EnvFile   = Join-Path $RepoRoot '.env'
+$Script:AppData   = Join-Path $env:APPDATA 'LocalAIStack'
+$Script:LogsDir   = Join-Path $AppData 'logs'
+$Script:PidFile   = Join-Path $AppData 'pids.json'
+
+# ── Pinned third-party release tags (override with env vars) ────────────────
+$Script:QdrantVersion    = if ($env:LAI_QDRANT_VERSION)    { $env:LAI_QDRANT_VERSION }    else { 'v1.12.4' }
+$Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b4404' }
+
+# ── Tiny helpers (dedupe pattern from setup.ps1/launcher) ────────────────────
+function Write-Step($msg)    { Write-Host "==> $msg" -ForegroundColor Cyan }
+function Write-Ok($msg)      { Write-Host "   ok $msg" -ForegroundColor Green }
+function Write-Warn2($msg)   { Write-Host "   !! $msg" -ForegroundColor Yellow }
+function Write-Err($msg)     { Write-Host "   xx $msg" -ForegroundColor Red }
+
+function Test-Command($name) {
+    try { return [bool](Get-Command $name -ErrorAction Stop) } catch { return $false }
+}
+
+function Ensure-Dir($path) {
+    if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
+}
+
+function Import-Steps {
+    if (-not (Test-Path $StepsDir)) { return }
+    Get-ChildItem -Path $StepsDir -Filter *.ps1 -File | ForEach-Object {
+        . $_.FullName
+    }
+}
+
+# ── Env file support ─────────────────────────────────────────────────────────
+$Script:EnvTemplate = @'
+# Local AI Stack — native mode environment.
+# Created by `LocalAIStack.ps1 -InitEnv`. Loaded by -Start into the backend
+# and GUI child processes. Treat secrets as sensitive.
+
+# ── Auth ──────────────────────────────────────────────────────────────
+AUTH_SECRET_KEY=
+HISTORY_SECRET_KEY=
+
+# ── Web search ─────────────────────────────────────────────────────────
+# Provider: brave | ddg | none   (default: brave if BRAVE_API_KEY set, else ddg)
+WEB_SEARCH_PROVIDER=ddg
+BRAVE_API_KEY=
+
+# ── Model update behaviour ─────────────────────────────────────────────
+MODEL_UPDATE_POLICY=prompt        # auto | prompt | skip
+HF_TOKEN=                         # optional, for gated/private HF repos
+OFFLINE=                          # 1 = never poll upstream registries
+
+# ── Optional SMTP for magic-link auth ──────────────────────────────────
+SMTP_HOST=
+SMTP_USER=
+SMTP_PASS=
+
+# ── Service URLs (leave blank to use native localhost defaults) ────────
+OLLAMA_URL=
+LLAMACPP_URL=
+QDRANT_URL=
+JUPYTER_URL=
+
+# ── Single-worker native mode: Redis unused ────────────────────────────
+REDIS_URL=
+'@
+
+function Invoke-InitEnv {
+    if (Test-Path $EnvFile) {
+        Write-Warn2 ".env already exists at $EnvFile — leaving it alone"
+        return
+    }
+    $EnvTemplate | Out-File -FilePath $EnvFile -Encoding utf8NoBOM
+    Write-Ok "Wrote default .env to $EnvFile"
+}
+
+function Read-EnvFile {
+    if (-not (Test-Path $EnvFile)) { return @{} }
+    $result = [ordered]@{}
+    foreach ($line in Get-Content $EnvFile) {
+        if ($line -match '^\s*#' -or -not $line.Trim()) { continue }
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+            $key = $Matches[1]; $val = $Matches[2].Trim('"').Trim("'")
+            $result[$key] = $val
+        }
+    }
+    return $result
+}
+
+function Apply-Env($dict) {
+    foreach ($k in $dict.Keys) {
+        if ($dict[$k] -ne '') { Set-Item -Path "Env:$k" -Value $dict[$k] }
+    }
+    # Native-mode defaults the launcher owns regardless of .env.
+    $Env:LAI_CONFIG_DIR  = $ConfigDir
+    $Env:LAI_DATA_DIR    = $DataDir
+    $Env:LAI_DB_PATH     = Join-Path $DataDir 'lai.db'
+    $Env:LAI_HISTORY_DIR = Join-Path $DataDir 'history'
+    $Env:LAI_AIRGAP_STATE= Join-Path $DataDir 'airgap.state'
+    $Env:LAI_TOOLS_DIR   = Join-Path $RepoRoot 'tools'
+    if (-not $Env:OLLAMA_URL)   { $Env:OLLAMA_URL   = 'http://127.0.0.1:11434' }
+    if (-not $Env:LLAMACPP_URL) { $Env:LLAMACPP_URL = 'http://127.0.0.1:8001/v1' }
+    if (-not $Env:QDRANT_URL)   { $Env:QDRANT_URL   = 'http://127.0.0.1:6333' }
+    if (-not $Env:JUPYTER_URL)  { $Env:JUPYTER_URL  = 'http://127.0.0.1:8888' }
+}
+
+# ── Help ─────────────────────────────────────────────────────────────────────
+function Invoke-Help {
+@'
+Local AI Stack — native Windows mode (no Docker, no browser)
+============================================================
+
+First run
+---------
+  1. .\LocalAIStack.ps1 -InitEnv        Write a default .env at the repo root.
+  2. Edit .env: set AUTH_SECRET_KEY, HISTORY_SECRET_KEY, optionally BRAVE_API_KEY / HF_TOKEN.
+  3. .\LocalAIStack.ps1 -Setup          Install prereqs, download binaries,
+                                        create Python venvs, pull Ollama models.
+  4. .\LocalAIStack.ps1 -Start          Launch. A native Qt window opens; no browser.
+
+Daily use
+---------
+  .\LocalAIStack.ps1                    = -Start
+  .\LocalAIStack.ps1 -Start -NoUpdateCheck
+                                        Skip HF / Ollama-registry polling.
+  .\LocalAIStack.ps1 -CheckUpdates      Re-poll, list pending updates.
+  .\LocalAIStack.ps1 -Stop              Terminate all tracked child processes.
+  .\LocalAIStack.ps1 -Build             Compile this script to LocalAIStack.exe.
+
+Cloudflared
+-----------
+Native mode never starts cloudflared. Point your existing native cloudflared
+tunnel at the backend:
+
+    ingress:
+      - hostname: ai.example.com
+        service: http://localhost:18000
+      - service: http_status:404
+
+Logs
+----
+  %APPDATA%\LocalAIStack\logs\<service>.log      Per-service stdout/stderr
+  %APPDATA%\LocalAIStack\pids.json               Tracked PIDs (used by -Stop)
+
+Services started by -Start
+--------------------------
+  ollama              127.0.0.1:11434
+  qdrant              127.0.0.1:6333
+  llama-server        127.0.0.1:8001    (vision tier GGUF)
+  jupyter-lab         127.0.0.1:8888    (code-interpreter sandbox; never opens a browser)
+  backend (FastAPI)   127.0.0.1:18000   (uvicorn, single worker)
+  gui (PySide6)       no listening port — talks to the backend over httpx
+
+Model version resolution
+------------------------
+On -Start the script runs `python -m backend.model_resolver resolve`, which
+polls Hugging Face and the Ollama registry for each tier declared in
+config\model-sources.yaml. On any network failure or when OFFLINE=1 is set
+in .env, the resolver falls back to the pinned version recorded in that file.
+
+Set MODEL_UPDATE_POLICY in .env to control behaviour when an update is
+detected:
+  auto    download immediately
+  prompt  GUI dialog asks the user (default)
+  skip    note it, do not download until next -Setup
+
+Uninstall
+---------
+  .\LocalAIStack.ps1 -Stop
+  Remove-Item -Recurse $env:APPDATA\LocalAIStack
+  Remove-Item -Recurse .\vendor .\data
+
+Disk and memory
+---------------
+  vendor\venv-backend   ~250 MB
+  vendor\venv-gui       ~180 MB  (PySide6 + QtCharts)
+  vendor\venv-jupyter   ~400 MB
+  vendor\qdrant         ~40 MB
+  vendor\llama-server   ~220 MB  (CUDA build)
+  Ollama models         24 - 72 GB depending on tier group
+
+Full documentation of internals lives under docs\ (architecture, API,
+troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.
+'@ | Write-Host
+}
+
+# ── Setup ────────────────────────────────────────────────────────────────────
+function Invoke-Setup {
+    Write-Step 'Verifying prerequisites'
+    if (-not (Test-Command python)) {
+        throw 'Python 3.12 not found on PATH. Install via: winget install Python.Python.3.12'
+    }
+    $pyv = (& python --version) 2>&1
+    Write-Ok  "Python: $pyv"
+
+    if (-not (Test-Command ollama)) {
+        Write-Warn2 'Ollama not found — installing via winget…'
+        & winget install --id=Ollama.Ollama --silent --accept-source-agreements --accept-package-agreements
+    }
+    Write-Ok "Ollama: $(& ollama --version 2>&1)"
+
+    Ensure-Dir $VendorDir
+    Ensure-Dir $DataDir
+    Ensure-Dir $AssetsDir
+    Ensure-Dir $AppData
+    Ensure-Dir $LogsDir
+
+    if (Get-Command Invoke-DownloadQdrant -ErrorAction SilentlyContinue) {
+        Invoke-DownloadQdrant -Version $QdrantVersion -Dest (Join-Path $VendorDir 'qdrant')
+    }
+    if (Get-Command Invoke-DownloadLlamaServer -ErrorAction SilentlyContinue) {
+        Invoke-DownloadLlamaServer -Version $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server')
+    }
+    if (Get-Command Invoke-CreateVenvs -ErrorAction SilentlyContinue) {
+        Invoke-CreateVenvs -Root $VendorDir -RepoRoot $RepoRoot
+    }
+
+    Write-Step 'Pulling Ollama model tiers'
+    Apply-Env (Read-EnvFile)
+    $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
+    if (Test-Path $py) {
+        & $py -m backend.model_resolver resolve --force --pull
+    } else {
+        Write-Warn2 "Backend venv missing at $py — skipping model pull"
+    }
+    Write-Ok 'Setup complete.'
+}
+
+# ── Start ────────────────────────────────────────────────────────────────────
+function Invoke-Start {
+    Ensure-Dir $AppData
+    Ensure-Dir $LogsDir
+
+    if (-not (Test-Path $EnvFile)) {
+        Write-Warn2 ".env missing — creating default. Edit it and re-run."
+        Invoke-InitEnv
+    }
+    Apply-Env (Read-EnvFile)
+
+    # ── Resolve models ───────────────────────────────────────────────
+    if ($NoUpdateCheck -or $Offline -or $Env:OFFLINE -eq '1') {
+        Write-Warn2 'Skipping upstream model poll (offline or -NoUpdateCheck).'
+        $Env:OFFLINE = '1'
+    } else {
+        Write-Step 'Resolving model versions (HF + Ollama registry)'
+        $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
+        if (Test-Path $py) {
+            & $py -m backend.model_resolver resolve
+        } else {
+            Write-Warn2 "Backend venv missing — skipping resolution (run -Setup first)"
+        }
+    }
+
+    # ── Spawn services ───────────────────────────────────────────────
+    $pids = [ordered]@{}
+    $start = (Get-Command Start-TrackedProcess -ErrorAction SilentlyContinue)
+    if (-not $start) {
+        throw "scripts\steps\process.ps1 missing — re-clone or run -Setup."
+    }
+
+    Write-Step 'Starting ollama serve'
+    $Env:OLLAMA_HOST = '127.0.0.1:11434'
+    $pids['ollama'] = (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir).Id
+
+    Write-Step 'Starting qdrant'
+    $qdrantBin = Join-Path $VendorDir 'qdrant\qdrant.exe'
+    if (Test-Path $qdrantBin) {
+        $qdrantStorage = Join-Path $DataDir 'qdrant'
+        Ensure-Dir $qdrantStorage
+        $pids['qdrant'] = (Start-TrackedProcess -Name 'qdrant' -FilePath $qdrantBin `
+            -Args @() -LogDir $LogsDir -WorkDir (Split-Path $qdrantBin) `
+            -Env @{ QDRANT__STORAGE__STORAGE_PATH = $qdrantStorage }).Id
+    } else {
+        Write-Warn2 "Qdrant binary missing at $qdrantBin — RAG features disabled"
+    }
+
+    Write-Step 'Starting llama-server (vision tier)'
+    $llamaBin = Join-Path $VendorDir 'llama-server\llama-server.exe'
+    $visionGguf = Join-Path $DataDir 'models\vision.gguf'
+    if ((Test-Path $llamaBin) -and (Test-Path $visionGguf)) {
+        $pids['llama-server'] = (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
+            -Args @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf) -LogDir $LogsDir).Id
+    } else {
+        Write-Warn2 "llama-server or vision GGUF missing — vision tier disabled"
+    }
+
+    Write-Step 'Starting jupyter-lab (code interpreter)'
+    $jupyter = Join-Path $VendorDir 'venv-jupyter\Scripts\jupyter-lab.exe'
+    if (Test-Path $jupyter) {
+        $token = [Guid]::NewGuid().ToString('N')
+        $Env:JUPYTER_TOKEN = $token
+        $pids['jupyter'] = (Start-TrackedProcess -Name 'jupyter' -FilePath $jupyter `
+            -Args @('--no-browser','--port','8888',"--ServerApp.token=$token") -LogDir $LogsDir).Id
+    } else {
+        Write-Warn2 "Jupyter venv missing — code interpreter disabled"
+    }
+
+    Write-Step 'Starting backend (FastAPI)'
+    $backendPy = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
+    if (-not (Test-Path $backendPy)) {
+        throw "Backend venv missing at $backendPy — run -Setup."
+    }
+    $pids['backend'] = (Start-TrackedProcess -Name 'backend' -FilePath $backendPy `
+        -Args @('-m','uvicorn','backend.main:app','--host','127.0.0.1','--port','18000') `
+        -LogDir $LogsDir -WorkDir $RepoRoot).Id
+
+    if (Get-Command Wait-HealthOk -ErrorAction SilentlyContinue) {
+        Wait-HealthOk -Urls @(
+            'http://127.0.0.1:11434/api/version',
+            'http://127.0.0.1:6333/healthz',
+            'http://127.0.0.1:18000/healthz'
+        ) -TimeoutSeconds 120
+    }
+
+    Write-Step 'Launching native GUI'
+    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
+    if (Test-Path $guiPy) {
+        $pids['gui'] = (Start-TrackedProcess -Name 'gui' -FilePath $guiPy `
+            -Args @((Join-Path $RepoRoot 'gui\main.py'), '--api', 'http://127.0.0.1:18000') `
+            -LogDir $LogsDir -WorkDir $RepoRoot).Id
+    } else {
+        Write-Warn2 "GUI venv missing — run -Setup or launch manually"
+    }
+
+    ($pids | ConvertTo-Json) | Out-File -FilePath $PidFile -Encoding utf8NoBOM
+    Write-Ok "Running. PIDs tracked in $PidFile"
+    Write-Host ''
+    Write-Host 'Leave this window open (or close it — services stay alive).' -ForegroundColor DarkGray
+    Write-Host 'Stop everything:  .\LocalAIStack.ps1 -Stop' -ForegroundColor DarkGray
+}
+
+# ── Stop ─────────────────────────────────────────────────────────────────────
+function Invoke-Stop {
+    if (-not (Test-Path $PidFile)) {
+        Write-Warn2 "No pids.json at $PidFile — nothing to stop."
+        return
+    }
+    $pids = Get-Content $PidFile -Raw | ConvertFrom-Json
+    foreach ($name in $pids.PSObject.Properties.Name) {
+        $procId = [int]$pids.$name
+        try {
+            Stop-Process -Id $procId -Force -ErrorAction Stop
+            Write-Ok "stopped $name (pid $procId)"
+        } catch {
+            Write-Warn2 "could not stop $name (pid $procId): $($_.Exception.Message)"
+        }
+    }
+    Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+}
+
+# ── Build (ps2exe) ───────────────────────────────────────────────────────────
+function Invoke-Build {
+    if (-not (Get-Module -ListAvailable -Name ps2exe)) {
+        Write-Warn2 'ps2exe module missing — installing…'
+        Install-Module -Name ps2exe -Scope CurrentUser -Force -AllowClobber
+    }
+    Import-Module ps2exe
+    $icon = Join-Path $AssetsDir 'icon.ico'
+    $out  = Join-Path $RepoRoot 'LocalAIStack.exe'
+    $args = @{
+        InputFile  = $MyInvocation.MyCommand.Path
+        OutputFile = $out
+        NoConsole  = $true
+        Title      = 'Local AI Stack'
+        Company    = 'Local AI Stack'
+    }
+    if (Test-Path $icon) { $args['IconFile'] = $icon }
+    Invoke-PS2EXE @args
+    Write-Ok "Built $out"
+}
+
+# ── CheckUpdates ─────────────────────────────────────────────────────────────
+function Invoke-CheckUpdates {
+    Apply-Env (Read-EnvFile)
+    $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
+    if (-not (Test-Path $py)) { throw 'Run -Setup first.' }
+    & $py -m backend.model_resolver resolve --force
+}
+
+# ── Dispatch ─────────────────────────────────────────────────────────────────
+Import-Steps
+
+if ($Help)              { Invoke-Help;         return }
+if ($InitEnv)           { Invoke-InitEnv;      return }
+if ($Setup)             { Invoke-Setup;        return }
+if ($Stop)              { Invoke-Stop;         return }
+if ($Build)             { Invoke-Build;        return }
+if ($CheckUpdates)      { Invoke-CheckUpdates; return }
+
+# Default is -Start
+Invoke-Start

@@ -21,7 +21,15 @@ python-multipart==0.0.17   # for file upload endpoints
 # AES-256-GCM + HKDF-SHA256 over AUTH_SECRET_KEY (or HISTORY_SECRET_KEY).
 cryptography==43.0.3
 
-# Cross-worker rate limiting + scheduler coordination (Phase 7).
+# Cross-worker rate limiting + scheduler coordination.
 # Optional at runtime: the backend falls back to in-memory if REDIS_URL is
-# unset or connection fails.
+# unset or connection fails. In native single-worker mode it goes unused.
 redis[hiredis]==5.2.0
+
+# Web search — native mode replaces the SearXNG container with two
+# in-process providers. Brave is HTTP-only; ddgs is pure-Python.
+ddgs==6.3.0
+
+# Model version resolver — polls Hugging Face for the latest GGUF
+# revisions on startup and falls back to pinned versions on failure.
+huggingface_hub==0.26.2
