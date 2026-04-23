@@ -83,12 +83,11 @@ function Ensure-Dir($path) {
     if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
 }
 
-function Import-Steps {
-    if (-not (Test-Path $StepsDir)) { return }
-    Get-ChildItem -Path $StepsDir -Filter *.ps1 -File | ForEach-Object {
-        . $_.FullName
-    }
-}
+# NOTE: step files must be dot-sourced at script scope (see bottom of
+# this file). Dot-sourcing inside a function or ForEach-Object block
+# puts the imported functions in that inner scope and they disappear
+# when the block returns — so Get-Command Invoke-DownloadQdrant / …
+# inside Invoke-Setup silently fails and Setup does nothing.
 
 # ── Env file support ─────────────────────────────────────────────────────────
 $Script:EnvTemplate = @'
@@ -578,7 +577,14 @@ function Invoke-CheckUpdates {
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
-Import-Steps
+if (Test-Path $StepsDir) {
+    # `foreach` (language keyword) runs at script scope; ForEach-Object
+    # creates a per-iteration scope that would swallow the dot-sourced
+    # function definitions.
+    foreach ($f in Get-ChildItem -Path $StepsDir -Filter *.ps1 -File) {
+        . $f.FullName
+    }
+}
 
 if ($Help)              { Invoke-Help;         return }
 if ($InitEnv)           { Invoke-InitEnv;      return }
