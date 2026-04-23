@@ -50,11 +50,22 @@ jobs:
             else { $_ }
           }
 
-      - name: Setup (prereqs + venvs + vendor binaries + dry-run pull)
+      - name: Pre-install Ollama (winget is flaky on CI runners)
+        shell: pwsh
+        run: |
+          # Ollama needs to be on PATH so `ollama serve` can run at -Start
+          # time. Choco is faster and more deterministic than winget here.
+          choco install ollama --limit-output --no-progress -y
+          # Refresh session PATH so subsequent steps see the new binary.
+          $env:PATH = [Environment]::GetEnvironmentVariable('PATH','Machine') + ';' +
+                      [Environment]::GetEnvironmentVariable('PATH','User')
+          Get-Command ollama | Select-Object Source
+
+      - name: Setup (venvs + vendor binaries + dry-run pull; skip winget prereqs)
         shell: pwsh
         env:
           OFFLINE: "1"
-        run: .\LocalAIStack.ps1 -Setup -SkipModels
+        run: .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs
 
       - name: Verify tier detection wrote resolved-models.json
         shell: pwsh
@@ -175,7 +186,10 @@ jobs:
         run: .venv-backend/bin/pip install pytest pytest-asyncio
 
       - name: Dry-run pull test (proves pull code paths are wired)
-        run: .venv-backend/bin/pytest tests/test_model_resolver_dry_run.py -v
+        # Use `python -m pytest` so the repo root is on sys.path; the
+        # console-script entrypoint does not add it and the import of
+        # `backend` fails.
+        run: .venv-backend/bin/python -m pytest tests/test_model_resolver_dry_run.py -v
 
       - name: Resolve tiers + dry-run pull via CLI
         env:

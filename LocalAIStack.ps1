@@ -39,7 +39,12 @@ param(
     # Modifier flag for -Setup: runs the resolver in dry-run pull mode
     # instead of actually pulling multi-GB Ollama models and the vision
     # GGUF. Also skips the interactive admin seeding. Used by CI.
-    [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipModels
+    [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipModels,
+
+    # Modifier flag for -Setup: skip Invoke-EnsurePrereqs (the winget
+    # tool install pass). Use when the caller has already provisioned
+    # the binaries — e.g. CI where winget is flaky.
+    [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipPrereqs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -306,7 +311,9 @@ troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.
 function Invoke-Setup {
     # Consolidated prerequisite check (Windows build, NVIDIA driver,
     # winget-installed tools). Idempotent — safe to call on every -Setup.
-    if (Get-Command Invoke-EnsurePrereqs -ErrorAction SilentlyContinue) {
+    if ($SkipPrereqs) {
+        Write-Warn2 'Skipping prereq check (-SkipPrereqs).'
+    } elseif (Get-Command Invoke-EnsurePrereqs -ErrorAction SilentlyContinue) {
         Invoke-EnsurePrereqs
     } else {
         throw "scripts\steps\prereqs.ps1 missing — re-clone the repo."

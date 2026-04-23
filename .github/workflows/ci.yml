@@ -146,7 +146,7 @@ jobs:
           # Use a single-quoted literal for the needle so PowerShell string
           # interpolation does not mangle the dollar sign.
           $src = Get-Content LocalAIStack.ps1 -Raw
-          $required = @('Setup','Start','Stop','Build','InitEnv','CheckUpdates','Admin','Help','NoUpdateCheck','SkipModels','NoGui')
+          $required = @('Setup','Start','Stop','Build','InitEnv','CheckUpdates','Admin','Help','NoUpdateCheck','SkipModels','NoGui','SkipPrereqs')
           $missingSwitch = @()
           foreach ($name in $required) {
             $needle = '[switch]$' + $name
