@@ -1,0 +1,242 @@
+name: Install + Startup
+
+# End-to-end verification that a fresh clone of the non-docker-dependent
+# branch installs, detects model tiers, and boots the backend to a
+# healthy state — without actually downloading the tens of GB of model
+# weights. Pairs with the existing static-check matrix in ci.yml.
+#
+# Two jobs:
+#   install-and-startup-windows  — real -Setup/-Start path on windows-latest
+#   install-smoke-linux          — fast Python-dep + backend startup test
+
+on:
+  pull_request:
+    branches: [non-docker-dependent, main, master]
+  push:
+    branches: [non-docker-dependent]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ── Windows end-to-end: clone → -Setup -SkipModels → -Start -NoGui → health ──
+  install-and-startup-windows:
+    name: Windows — Install + Startup
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize .env with CI secrets
+        shell: pwsh
+        run: |
+          .\LocalAIStack.ps1 -InitEnv
+          $bytes = New-Object byte[] 48
+          [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+          $secret = [Convert]::ToBase64String($bytes)
+          (Get-Content .env -Raw) `
+            -replace '(?m)^AUTH_SECRET_KEY=.*', "AUTH_SECRET_KEY=$secret" `
+            -replace '(?m)^HISTORY_SECRET_KEY=.*', "HISTORY_SECRET_KEY=$secret" `
+            -replace '(?m)^CHAT_HOSTNAME=.*', 'CHAT_HOSTNAME=localhost' `
+            -replace '(?m)^ADMIN_API_ALLOWED_HOSTS=.*', 'ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost' `
+            -replace '(?m)^PUBLIC_BASE_URL=.*', 'PUBLIC_BASE_URL=http://127.0.0.1:18000' `
+            | Set-Content .env -Encoding utf8NoBOM
+          Write-Host '── .env (redacted) ──'
+          Get-Content .env | ForEach-Object {
+            if ($_ -match '^(AUTH_SECRET_KEY|HISTORY_SECRET_KEY)=') { $_ -replace '=.*$', '=<redacted>' }
+            else { $_ }
+          }
+
+      - name: Setup (prereqs + venvs + vendor binaries + dry-run pull)
+        shell: pwsh
+        env:
+          OFFLINE: "1"
+        run: .\LocalAIStack.ps1 -Setup -SkipModels
+
+      - name: Verify tier detection wrote resolved-models.json
+        shell: pwsh
+        run: |
+          if (-not (Test-Path data/resolved-models.json)) {
+            throw 'resolved-models.json was not written — tier detection failed'
+          }
+          $j = Get-Content data/resolved-models.json -Raw | ConvertFrom-Json
+          if (-not $j.tiers -or $j.tiers.PSObject.Properties.Count -eq 0) {
+            throw 'resolved-models.json has no tiers'
+          }
+          $tierNames = $j.tiers.PSObject.Properties.Name
+          Write-Host "Detected tiers: $($tierNames -join ', ')"
+
+      - name: Verify pull machinery can initiate downloads (dry-run)
+        shell: pwsh
+        env:
+          OFFLINE: "1"
+        run: |
+          $py = Join-Path (Get-Location) 'vendor\venv-backend\Scripts\python.exe'
+          if (-not (Test-Path $py)) { throw "backend venv missing at $py" }
+          & $py -m backend.model_resolver resolve --offline --pull --pull-hf --dry-run
+          if ($LASTEXITCODE -ne 0) {
+            throw "dry-run pull reported tier errors (exit $LASTEXITCODE)"
+          }
+
+      - name: Start stack (no GUI, offline)
+        shell: pwsh
+        run: |
+          # Launch -Start in a detached pwsh so this step returns immediately;
+          # the health-check step below waits for readiness.
+          $launcher = Join-Path (Get-Location) 'LocalAIStack.ps1'
+          Start-Process -FilePath pwsh `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcher,
+                            '-Start','-NoGui','-Offline','-NoUpdateCheck') `
+            -WindowStyle Hidden `
+            -WorkingDirectory (Get-Location)
+
+      - name: Wait for backend /healthz
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddSeconds(180)
+          $ok = $false
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/healthz' `
+                -UseBasicParsing -TimeoutSec 5
+              if ($r.StatusCode -eq 200) {
+                Write-Host "healthz ok — $($r.Content)"
+                $ok = $true
+                break
+              }
+            } catch {
+              Start-Sleep -Seconds 3
+            }
+          }
+          if (-not $ok) {
+            Write-Error 'backend did not become healthy within 180s'
+            exit 1
+          }
+
+      - name: Sanity-check /v1/models
+        shell: pwsh
+        run: |
+          $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/v1/models' `
+            -UseBasicParsing -TimeoutSec 10
+          if ($r.StatusCode -ne 200) {
+            throw "/v1/models returned $($r.StatusCode)"
+          }
+          $body = $r.Content | ConvertFrom-Json
+          if (-not $body.data -or $body.data.Count -eq 0) {
+            throw '/v1/models returned no tiers'
+          }
+          Write-Host "Backend advertises $($body.data.Count) tiers"
+
+      - name: Stop stack
+        if: always()
+        shell: pwsh
+        run: .\LocalAIStack.ps1 -Stop
+
+      - name: Collect logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $logs = Join-Path $env:APPDATA 'LocalAIStack\logs'
+          if (Test-Path $logs) {
+            Copy-Item -Path $logs -Destination 'ci-logs' -Recurse -Force
+          }
+
+      - name: Upload logs artifact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-stack-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+
+  # ── Linux fast-feedback: Python deps + backend boot + dry-run pull ──────────
+  install-smoke-linux:
+    name: Linux — Python Deps + Backend Boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create backend venv and install requirements
+        run: |
+          python -m venv .venv-backend
+          .venv-backend/bin/pip install --upgrade pip
+          .venv-backend/bin/pip install -r backend/requirements.txt
+
+      - name: Install test dependencies
+        run: .venv-backend/bin/pip install pytest pytest-asyncio
+
+      - name: Dry-run pull test (proves pull code paths are wired)
+        run: .venv-backend/bin/pytest tests/test_model_resolver_dry_run.py -v
+
+      - name: Resolve tiers + dry-run pull via CLI
+        env:
+          OFFLINE: "1"
+        run: |
+          .venv-backend/bin/python -m backend.model_resolver \
+            resolve --offline --pull --pull-hf --dry-run
+          test -s data/resolved-models.json
+          .venv-backend/bin/python - <<'PY'
+          import json, sys
+          d = json.load(open("data/resolved-models.json"))
+          tiers = d.get("tiers") or {}
+          assert tiers, "no tiers resolved"
+          print("Detected tiers:", ", ".join(tiers))
+          PY
+
+      - name: Start backend headless
+        env:
+          OFFLINE: "1"
+          AUTH_SECRET_KEY: ci-test-secret-key-padding-padding-padding
+          HISTORY_SECRET_KEY: ci-test-secret-key-padding-padding-padding
+          CHAT_HOSTNAME: localhost
+          ADMIN_API_ALLOWED_HOSTS: "127.0.0.1,localhost"
+          PUBLIC_BASE_URL: "http://127.0.0.1:18000"
+        run: |
+          nohup .venv-backend/bin/python -m uvicorn backend.main:app \
+            --host 127.0.0.1 --port 18000 > backend.log 2>&1 &
+          echo $! > backend.pid
+
+      - name: Wait for /healthz
+        run: |
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:18000/healthz >/dev/null; then
+              echo "healthz ok on attempt $i"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo '--- backend.log ---'
+          cat backend.log || true
+          exit 1
+
+      - name: Sanity-check /v1/models
+        run: |
+          curl -sf http://127.0.0.1:18000/v1/models | python -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          assert d.get("data"), "no tiers in /v1/models"
+          print("tiers:", ", ".join(m.get("id","?") for m in d["data"]))'
+
+      - name: Stop backend
+        if: always()
+        run: |
+          if [ -f backend.pid ]; then
+            kill "$(cat backend.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload backend log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-log-linux
+          path: backend.log
+          if-no-files-found: ignore
