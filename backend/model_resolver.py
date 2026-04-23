@@ -284,6 +284,114 @@ def resolve(*, force: bool = False, offline: bool | None = None) -> ResolveResul
 
 # ── Pull orchestration helpers (used by the launcher's -Start) ─────────────
 
+def _models_dir() -> Path:
+    return _data_dir() / "models"
+
+
+def _target_path_for_hf(tier: str, resolved: Resolved) -> Path:
+    """Return the local path where an HF-sourced file should live.
+
+    Special-case the ``vision`` tier: the launcher starts llama-server
+    pointed at ``data/models/vision.gguf``, so regardless of the HF
+    filename we link/copy the downloaded file there.
+    """
+    target_name = Path(resolved.identifier.split("/")[-1]).name or "model.gguf"
+    return _models_dir() / target_name
+
+
+def _ensure_vision_symlink(downloaded: Path) -> Path:
+    """Create data/models/vision.gguf pointing at `downloaded`.
+
+    Uses a symlink when possible; falls back to a file copy on Windows
+    systems without Developer Mode enabled (symlink requires the
+    SeCreateSymbolicLinkPrivilege).
+    """
+    target = _models_dir() / "vision.gguf"
+    _models_dir().mkdir(parents=True, exist_ok=True)
+    # If the target is already a symlink/copy pointing at the same file,
+    # leave it.
+    try:
+        if target.exists() and target.resolve() == downloaded.resolve():
+            return target
+    except OSError:
+        pass
+    if target.exists() or target.is_symlink():
+        try:
+            target.unlink()
+        except OSError as exc:
+            logger.warning("Could not remove stale %s: %s", target, exc)
+            return downloaded
+    try:
+        target.symlink_to(downloaded)
+    except (OSError, NotImplementedError):
+        # Fall back to a copy; wasteful on disk but works on accounts
+        # that can't create symlinks. The GGUF is large but we don't
+        # have a better option here.
+        import shutil
+        shutil.copy2(downloaded, target)
+    return target
+
+
+def pull_missing_hf_files(
+    result: ResolveResult,
+    *,
+    model_dir: Path | None = None,
+) -> list[str]:
+    """For every Hugging-Face-sourced tier whose resolved file isn't on
+    disk, download it via ``hf_hub_download``. Returns the list of tier
+    names that were pulled.
+
+    Errors are logged and don't raise — the launcher continues with the
+    files it was able to fetch; `llama-server` skips the vision tier if
+    `data/models/vision.gguf` isn't present.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        logger.warning("huggingface_hub not installed — skipping HF file pulls")
+        return []
+
+    pulled: list[str] = []
+    target_root = model_dir or _models_dir()
+    target_root.mkdir(parents=True, exist_ok=True)
+    token = os.getenv("HF_TOKEN") or None
+
+    for tier, r in result.resolved.items():
+        if r.source != "huggingface":
+            continue
+        # identifier is "<repo>/<file>"; split off the filename portion.
+        if "/" not in r.identifier:
+            continue
+        # HF repos have two segments; the third and onward are the file path.
+        parts = r.identifier.split("/")
+        if len(parts) < 3:
+            logger.warning("HF identifier %r has no file component", r.identifier)
+            continue
+        repo_id = "/".join(parts[:2])
+        filename = "/".join(parts[2:])
+        revision = r.revision or "main"
+
+        logger.info("Pulling HF file for tier %s: %s@%s %s",
+                    tier, repo_id, revision, filename)
+        try:
+            downloaded = Path(hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                local_dir=str(target_root),
+                token=token,
+            ))
+        except Exception as exc:
+            logger.warning("hf_hub_download failed for tier %s: %s", tier, exc)
+            continue
+        pulled.append(tier)
+
+        if tier == "vision":
+            _ensure_vision_symlink(downloaded)
+
+    return pulled
+
+
 def pull_missing_ollama_tags(result: ResolveResult) -> list[str]:
     """For every Ollama tier whose resolved tag isn't local, run
     `ollama pull <tag>`. Returns the list of tags that were pulled.
@@ -321,6 +429,7 @@ def _main() -> int:
     r.add_argument("--force", action="store_true", help="ignore cache, re-poll")
     r.add_argument("--offline", action="store_true", help="skip polling, use pinned")
     r.add_argument("--pull", action="store_true", help="pull missing Ollama tags after resolution")
+    r.add_argument("--pull-hf", action="store_true", help="pull missing Hugging Face files after resolution")
     args = parser.parse_args()
 
     if args.cmd == "resolve":
@@ -332,7 +441,11 @@ def _main() -> int:
         if args.pull:
             pulled = pull_missing_ollama_tags(result)
             if pulled:
-                print(f"Pulled: {', '.join(pulled)}")
+                print(f"Ollama pulled: {', '.join(pulled)}")
+        if args.pull_hf:
+            pulled = pull_missing_hf_files(result)
+            if pulled:
+                print(f"HF pulled: {', '.join(pulled)}")
     return 0
 
 

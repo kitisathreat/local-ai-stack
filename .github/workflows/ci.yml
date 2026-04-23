@@ -53,6 +53,7 @@ jobs:
             tests/test_main.py \
             tests/test_admin_endpoints.py \
             tests/test_host_gate.py \
+            tests/test_model_resolver.py \
             -v --tb=short 2>&1 | tee /tmp/pytest.log
 
       - name: Post failing Python tests as PR comment

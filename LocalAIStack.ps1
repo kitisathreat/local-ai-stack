@@ -294,6 +294,19 @@ function Invoke-Setup {
     $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
     if (Test-Path $py) {
         & $py -m backend.model_resolver resolve --force --pull
+
+        # Optional HF pull: vision GGUF is ~25 GB so we confirm first.
+        $visionFile = Join-Path $DataDir 'models\vision.gguf'
+        if (-not (Test-Path $visionFile)) {
+            Write-Host ''
+            Write-Host 'Vision tier GGUF (~25 GB) is not on disk.' -ForegroundColor Cyan
+            $answer = Read-Host 'Download now from Hugging Face? [y/N]'
+            if ($answer -match '^(y|yes)$') {
+                & $py -m backend.model_resolver resolve --force --pull-hf
+            } else {
+                Write-Warn2 'Vision tier skipped — run `-CheckUpdates` or admin panel later.'
+            }
+        }
     } else {
         Write-Warn2 "Backend venv missing at $py — skipping model pull"
     }
