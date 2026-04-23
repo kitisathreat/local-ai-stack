@@ -98,11 +98,6 @@ MODEL_UPDATE_POLICY=prompt        # auto | prompt | skip
 HF_TOKEN=                         # optional, for gated/private HF repos
 OFFLINE=                          # 1 = never poll upstream registries
 
-# ── Optional SMTP for magic-link auth ──────────────────────────────────
-SMTP_HOST=
-SMTP_USER=
-SMTP_PASS=
-
 # ── Service URLs (leave blank to use native localhost defaults) ────────
 OLLAMA_URL=
 LLAMACPP_URL=
@@ -288,6 +283,13 @@ function Invoke-Setup {
     } else {
         Write-Warn2 "Backend venv missing at $py — skipping model pull"
     }
+
+    # First-run admin bootstrap: prompt if no admin user exists yet.
+    if (Test-Path $py) {
+        Write-Step 'Checking for an admin user'
+        & $py -m backend.seed_admin --if-no-admins
+    }
+
     Write-Ok 'Setup complete.'
 }
 

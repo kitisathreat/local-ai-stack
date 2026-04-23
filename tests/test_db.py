@@ -1,10 +1,12 @@
-"""Unit tests for backend/db.py — in-memory-free, per-test SQLite file."""
+"""Unit tests for backend/db.py — in-memory-free, per-test SQLite file.
+
+Phase 3: magic-link tables + helpers were replaced by username/password
+columns on `users`. All user tests go through `create_user` now;
+magic-link tests are gone.
+"""
 
 import asyncio
-import os
 import sys
-import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -18,7 +20,7 @@ def db_path(tmp_path, monkeypatch):
     """Redirect backend.db to a clean sqlite file per test."""
     p = tmp_path / "test.db"
     monkeypatch.setenv("LAI_DB_PATH", str(p))
-    # backend.db caches DB_PATH at import; force re-read.
+    monkeypatch.setenv("BCRYPT_ROUNDS", "4")
     import importlib
     from backend import db as db_mod
     db_mod.DB_PATH = p
@@ -38,62 +40,131 @@ def run(coro):
     return asyncio.run(coro)
 
 
-# ── Users ────────────────────────────────────────────────────────────────
+def _mkuser(db_mod, username: str, email: str, *, is_admin: bool = False):
+    # Dummy password_hash — not exercised by these tests.
+    return run(db_mod.create_user(
+        username=username, email=email,
+        password_hash="$2b$04$stub",
+        is_admin=is_admin,
+    ))
 
-def test_create_user(db):
-    u = run(db.get_or_create_user("Alice@Example.com"))
+
+# ── Users (password auth schema) ────────────────────────────────────────
+
+def test_create_user_minimal(db):
+    u = _mkuser(db, "alice", "Alice@Example.com")
+    assert u["username"] == "alice"
     assert u["email"] == "alice@example.com"
+    assert u["is_admin"] is False
     assert u["id"] > 0
 
 
-def test_create_user_is_idempotent(db):
-    u1 = run(db.get_or_create_user("a@x.io"))
-    u2 = run(db.get_or_create_user("a@x.io"))
-    assert u1["id"] == u2["id"]
-
-
-def test_get_user(db):
-    u = run(db.get_or_create_user("b@x.io"))
+def test_create_user_is_admin_flag_roundtrips(db):
+    u = _mkuser(db, "root", "root@x.io", is_admin=True)
+    assert u["is_admin"] is True
     fetched = run(db.get_user(u["id"]))
-    assert fetched["email"] == "b@x.io"
-    assert run(db.get_user(99999)) is None
+    assert fetched["is_admin"] is True
 
 
-# ── Magic links ──────────────────────────────────────────────────────────
-
-def test_magic_link_roundtrip(db):
-    tok = run(db.create_magic_link("c@x.io", expiry_seconds=60, ip="1.2.3.4"))
-    assert tok
-    consumed = run(db.consume_magic_link(tok))
-    assert consumed == {"email": "c@x.io"}
+def test_create_user_duplicate_username_rejected(db):
+    _mkuser(db, "dup", "dup1@x.io")
+    import aiosqlite
+    with pytest.raises(aiosqlite.IntegrityError):
+        _mkuser(db, "dup", "dup2@x.io")
 
 
-def test_magic_link_single_use(db):
-    tok = run(db.create_magic_link("d@x.io", expiry_seconds=60, ip=None))
-    assert run(db.consume_magic_link(tok))
-    assert run(db.consume_magic_link(tok)) is None
+def test_create_user_duplicate_email_rejected(db):
+    _mkuser(db, "u1", "same@x.io")
+    import aiosqlite
+    with pytest.raises(aiosqlite.IntegrityError):
+        _mkuser(db, "u2", "same@x.io")
 
 
-def test_magic_link_expires(db):
-    tok = run(db.create_magic_link("e@x.io", expiry_seconds=-1, ip=None))
-    assert run(db.consume_magic_link(tok)) is None
+def test_get_user_by_username(db):
+    u = _mkuser(db, "lookup", "lookup@x.io")
+    fetched = run(db.get_user_by_username("lookup"))
+    assert fetched is not None and fetched["id"] == u["id"]
+    assert run(db.get_user_by_username("nobody")) is None
 
 
-def test_magic_link_unknown_token(db):
-    assert run(db.consume_magic_link("does-not-exist")) is None
+def test_mark_login_updates_last_login_at(db):
+    u = _mkuser(db, "timestamp", "ts@x.io")
+    assert u["last_login_at"] is None
+    run(db.mark_login(u["id"]))
+    refetched = run(db.get_user(u["id"]))
+    assert refetched["last_login_at"] is not None
 
 
-def test_magic_link_rate_counter(db):
-    for _ in range(3):
-        run(db.create_magic_link("f@x.io", 60, None))
-    assert run(db.count_recent_magic_links_for_email("f@x.io", 3600)) == 3
-    assert run(db.count_recent_magic_links_for_email("nobody@x.io", 3600)) == 0
+def test_set_user_password(db):
+    u = _mkuser(db, "pwchange", "pw@x.io")
+    ok = run(db.set_user_password(u["id"], "$2b$04$newhash"))
+    assert ok
+    refetched = run(db.get_user(u["id"]))
+    assert refetched["password_hash"] == "$2b$04$newhash"
+
+
+def test_set_user_admin(db):
+    u = _mkuser(db, "promote", "promote@x.io")
+    assert u["is_admin"] is False
+    run(db.set_user_admin(u["id"], True))
+    assert run(db.get_user(u["id"]))["is_admin"] is True
+    run(db.set_user_admin(u["id"], False))
+    assert run(db.get_user(u["id"]))["is_admin"] is False
+
+
+def test_count_admins(db):
+    _mkuser(db, "nonadmin", "n@x.io")
+    _mkuser(db, "adminA", "a@x.io", is_admin=True)
+    _mkuser(db, "adminB", "b@x.io", is_admin=True)
+    assert run(db.count_admins()) == 2
+
+
+def test_migrate_v2_to_v3_adds_columns(db_path):
+    """Pre-Phase-3 DBs (no username/password columns, magic_links table
+    present) must upgrade cleanly."""
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE,
+            created_at REAL NOT NULL,
+            last_login_at REAL
+        );
+        CREATE TABLE magic_links (
+            token TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            used_at REAL,
+            ip TEXT
+        );
+        INSERT INTO users (email, created_at) VALUES ('legacy@x.io', 0);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    # Run init_db() to trigger the migration path.
+    from backend import db as db_mod
+    import importlib
+    importlib.reload(db_mod)
+    db_mod.DB_PATH = db_path
+    run(db_mod.init_db())
+
+    conn = sqlite3.connect(str(db_path))
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert {"username", "password_hash", "is_admin"}.issubset(cols)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "magic_links" not in tables
+    conn.close()
 
 
 # ── Conversations ────────────────────────────────────────────────────────
 
 def test_conversation_crud(db):
-    u = run(db.get_or_create_user("g@x.io"))
+    u = _mkuser(db, "g", "g@x.io")
     assert run(db.list_conversations(u["id"])) == []
 
     conv = run(db.create_conversation(u["id"], title="Hello", tier="versatile"))
@@ -114,7 +185,7 @@ def test_conversation_crud(db):
 
 
 def test_conversation_memory_enabled_defaults_on(db):
-    u = run(db.get_or_create_user("mem-default@x.io"))
+    u = _mkuser(db, "memdefault", "mem-default@x.io")
     conv = run(db.create_conversation(u["id"], title="Default"))
     assert conv["memory_enabled"] is True
     fetched = run(db.get_conversation(conv["id"], u["id"]))
@@ -122,26 +193,23 @@ def test_conversation_memory_enabled_defaults_on(db):
 
 
 def test_conversation_memory_enabled_toggle(db):
-    u = run(db.get_or_create_user("mem-toggle@x.io"))
+    u = _mkuser(db, "memtoggle", "mem-toggle@x.io")
     conv = run(db.create_conversation(u["id"], memory_enabled=True))
     ok = run(db.update_conversation(conv["id"], u["id"], memory_enabled=False))
     assert ok
     assert run(db.get_conversation(conv["id"], u["id"]))["memory_enabled"] is False
-    # list_conversations exposes the flag too (for the sidebar indicator).
     convs = run(db.list_conversations(u["id"]))
     assert convs[0]["memory_enabled"] is False
 
 
 def test_conversation_user_isolation(db):
-    a = run(db.get_or_create_user("h@x.io"))
-    b = run(db.get_or_create_user("i@x.io"))
+    a = _mkuser(db, "h", "h@x.io")
+    b = _mkuser(db, "i", "i@x.io")
     conv = run(db.create_conversation(a["id"], title="A's chat"))
 
-    # b cannot see a's conversation
     assert run(db.get_conversation(conv["id"], b["id"])) is None
     assert run(db.list_conversations(b["id"])) == []
 
-    # b cannot delete a's conversation
     assert run(db.delete_conversation(conv["id"], b["id"])) is False
     assert run(db.get_conversation(conv["id"], a["id"])) is not None
 
@@ -149,7 +217,7 @@ def test_conversation_user_isolation(db):
 # ── Messages ─────────────────────────────────────────────────────────────
 
 def test_messages_add_and_list(db):
-    u = run(db.get_or_create_user("j@x.io"))
+    u = _mkuser(db, "j", "j@x.io")
     conv = run(db.create_conversation(u["id"]))
     run(db.add_message(conv["id"], "user", "Hello", tier="versatile", think=False))
     run(db.add_message(conv["id"], "assistant", "Hi there", tier="versatile", think=True,
@@ -161,9 +229,8 @@ def test_messages_add_and_list(db):
 
 
 def test_deleting_conversation_cascades_messages(db):
-    u = run(db.get_or_create_user("k@x.io"))
+    u = _mkuser(db, "k", "k@x.io")
     conv = run(db.create_conversation(u["id"]))
     run(db.add_message(conv["id"], "user", "x"))
     run(db.delete_conversation(conv["id"], u["id"]))
-    # After conversation is gone, list_messages returns empty
     assert run(db.list_messages(conv["id"])) == []

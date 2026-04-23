@@ -75,7 +75,7 @@ async def _make_db(path: Path) -> str:
     async with aiosqlite.connect(db_path) as conn:
         await conn.execute("PRAGMA journal_mode=WAL")
         for table in (
-            "users", "magic_links", "conversations",
+            "users", "conversations",
             "messages", "memories", "rag_docs", "usage_events",
         ):
             await conn.execute(

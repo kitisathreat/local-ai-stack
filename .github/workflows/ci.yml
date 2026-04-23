@@ -28,7 +28,7 @@ jobs:
           pip install \
             pytest pytest-asyncio \
             pyyaml pydantic httpx \
-            aiosqlite aiosmtplib \
+            aiosqlite bcrypt \
             'python-jose[cryptography]' \
             fastapi 'uvicorn[standard]' \
             cryptography 'redis[hiredis]' \

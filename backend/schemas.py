@@ -146,18 +146,41 @@ class AgentEvent(BaseModel):
 
 # ── Auth ────────────────────────────────────────────────────────────────
 
-class MagicLinkRequest(BaseModel):
-    email: str
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
-class MagicLinkResponse(BaseModel):
+class LoginResponse(BaseModel):
     ok: bool
-    message: str
+    is_admin: bool
+    username: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    is_admin: bool = False
+
+
+class UpdateUserRequest(BaseModel):
+    username: str | None = None
+    email: str | None = None
+    password: str | None = None
+    is_admin: bool | None = None
 
 
 class MeResponse(BaseModel):
     id: int
+    username: str = ""
     email: str
+    is_admin: bool = False
     created_at: float
     last_login_at: float | None = None
 

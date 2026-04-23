@@ -1,38 +1,27 @@
 # Authentication config — consumed by backend/auth.py and backend/config.py.
 #
-# Secrets (SMTP creds, JWT secret) come from environment variables set via
-# .env.local (see .env.example). This file holds the non-secret policy.
-
-magic_link:
-  expiry_minutes: 15                      # how long a magic-link token is valid
-  email_subject: "Sign in to Local AI Stack"
-  email_from: "noreply@localaistack.local" # override via AUTH_EMAIL_FROM env
-  email_body_template: |
-    Hello,
-
-    Click the link below to sign in to Local AI Stack. The link expires in
-    {expiry_minutes} minutes and can only be used once.
-
-    {verify_url}
-
-    If you didn't request this, you can safely ignore it.
+# Phase 3: magic-link auth was replaced by bcrypt username + password.
+# Passwords live in the SQLite users table; admin status is a column
+# (`is_admin`). This file holds the non-secret session + rate-limit policy.
+#
+# Secrets (AUTH_SECRET_KEY for JWT signing, HISTORY_SECRET_KEY for
+# encrypted history) come from environment variables set via `.env`.
 
 session:
   cookie_name: "lai_session"
   cookie_ttl_days: 30
-  cookie_secure: false                    # set false for local http testing
+  cookie_secure: false                    # set true when serving over HTTPS
   cookie_samesite: lax                    # "lax" | "strict" | "none"
   jwt_algorithm: HS256
 
-# Empty list = any email domain is allowed. Set to e.g. ["yourdomain.tld"]
-# to restrict signups to a single domain.
+# Empty list = any email domain is allowed on user creation. Set to
+# e.g. ["yourdomain.tld"] to restrict new accounts to a single domain.
 allowed_email_domains: []
 
-# Rate limits — magic-link throttles and chat-endpoint throttles.
+# Rate limits — login throttle + chat-endpoint throttles.
 # The chat throttles cap inference requests from a single authenticated user
 # (or a single IP for anonymous callers). 0 disables the window.
 rate_limits:
-  requests_per_hour_per_email: 5
-  requests_per_hour_per_ip: 30
-  requests_per_minute_per_user: 30
-  requests_per_day_per_user: 500
+  requests_per_hour_per_ip: 30            # POST /auth/login brute-force gate
+  requests_per_minute_per_user: 30        # /v1/chat/completions
+  requests_per_day_per_user: 500          # /v1/chat/completions
