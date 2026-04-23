@@ -229,15 +229,35 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          $log = Join-Path (Get-Location) 'ci-logs/04-start-health.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+          Log "step started at $(Get-Date -Format s)"
+
           $launcher = Join-Path (Get-Location) 'LocalAIStack.ps1'
 
           # -Start spawns services and runs its own Wait-HealthOk (120s
           # internal timeout) before returning. Non-fatal if ollama/qdrant
           # don't come up — the script only warns.
-          & $launcher -Start -NoGui -Offline -NoUpdateCheck
+          Log "==> invoking LocalAIStack.ps1 -Start -NoGui -Offline -NoUpdateCheck"
+          try {
+            & $launcher -Start -NoGui -Offline -NoUpdateCheck *>&1 | ForEach-Object {
+              Log ($_ | Out-String).TrimEnd()
+            }
+            Log "Start returned. LASTEXITCODE=$LASTEXITCODE"
+          } catch {
+            Log ("Start EXCEPTION: " + $_.Exception.Message)
+            if ($_.ScriptStackTrace) { Log ("STACK: " + $_.ScriptStackTrace) }
+            throw
+          }
 
           # Poll backend ourselves. The launcher's health check may have
           # warned out; we only require the backend to be reachable.
+          Log "==> polling /healthz (up to 90s)"
           $deadline = (Get-Date).AddSeconds(90)
           $ok = $false
           while ((Get-Date) -lt $deadline) {
@@ -245,7 +265,7 @@ jobs:
               $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/healthz' `
                 -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
               if ($r.StatusCode -eq 200) {
-                Write-Host "healthz ok — $($r.Content)"
+                Log "healthz ok — $($r.Content)"
                 $ok = $true
                 break
               }
@@ -295,22 +315,41 @@ jobs:
           }
 
           # Sanity-check /v1/models
-          $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/v1/models' `
-            -UseBasicParsing -TimeoutSec 10
-          if ($r.StatusCode -ne 200) {
-            Write-Error "/v1/models returned $($r.StatusCode)"
-            & $launcher -Stop
+          Log "==> GET /v1/models"
+          try {
+            $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/v1/models' `
+              -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+            Log "/v1/models status=$($r.StatusCode)"
+            if ($r.StatusCode -ne 200) {
+              Log "/v1/models returned $($r.StatusCode)"
+              try { & $launcher -Stop } catch { Log ("Stop error: " + $_.Exception.Message) }
+              exit 1
+            }
+            $body = $r.Content | ConvertFrom-Json
+            $count = @($body.data).Count
+            Log "/v1/models body.data count=$count"
+            if ($count -eq 0) {
+              Log '/v1/models returned no tiers'
+              try { & $launcher -Stop } catch { Log ("Stop error: " + $_.Exception.Message) }
+              exit 1
+            }
+            Log "Backend advertises $count tiers"
+          } catch {
+            Log ("Sanity check EXCEPTION: " + $_.Exception.Message)
+            try { & $launcher -Stop } catch { Log ("Stop error: " + $_.Exception.Message) }
             exit 1
           }
-          $body = $r.Content | ConvertFrom-Json
-          if (-not $body.data -or $body.data.Count -eq 0) {
-            Write-Error '/v1/models returned no tiers'
-            & $launcher -Stop
-            exit 1
-          }
-          Write-Host "Backend advertises $($body.data.Count) tiers"
 
-          & $launcher -Stop
+          # Graceful stop — never fail the job here; we already know the
+          # happy path worked.
+          Log "==> invoking LocalAIStack.ps1 -Stop"
+          try {
+            & $launcher -Stop *>&1 | ForEach-Object { Log ($_ | Out-String).TrimEnd() }
+            Log "Stop returned. LASTEXITCODE=$LASTEXITCODE"
+          } catch {
+            Log ("Stop EXCEPTION (ignored): " + $_.Exception.Message)
+          }
+          Log "step completed at $(Get-Date -Format s)"
 
       - name: Collect logs for artifact (always)
         if: always()
