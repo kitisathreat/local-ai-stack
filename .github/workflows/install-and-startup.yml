@@ -133,18 +133,41 @@ jobs:
 
           if (-not $ok) {
             Write-Host '── backend did not respond; dumping logs ──' -ForegroundColor Red
+            # Also write to GITHUB_STEP_SUMMARY so the failure reason is
+            # visible in the check-runs API output (we may not be able to
+            # download artifacts or read raw job logs from outside).
+            $summary = $env:GITHUB_STEP_SUMMARY
+            if ($summary) {
+              Add-Content -Path $summary -Value "### Windows install+startup — health check failed`n"
+            }
             $logs = Join-Path $env:APPDATA 'LocalAIStack\logs'
             if (Test-Path $logs) {
               Get-ChildItem $logs -File | ForEach-Object {
                 Write-Host "── $($_.Name) ──" -ForegroundColor Yellow
-                Get-Content $_.FullName -Tail 80
+                $content = Get-Content $_.FullName -Tail 80 -Raw
+                Write-Host $content
+                if ($summary) {
+                  Add-Content -Path $summary -Value "<details><summary>$($_.Name) (last 80 lines)</summary>`n`n``````text`n$content`n```````n</details>`n"
+                }
               }
             } else {
               Write-Host "no logs at $logs"
+              if ($summary) { Add-Content -Path $summary -Value "No logs at `$env:APPDATA\LocalAIStack\logs.`n" }
             }
             Write-Host '── pids.json ──' -ForegroundColor Yellow
             $pidf = Join-Path $env:APPDATA 'LocalAIStack\pids.json'
-            if (Test-Path $pidf) { Get-Content $pidf } else { Write-Host "missing" }
+            if (Test-Path $pidf) {
+              $pidc = Get-Content $pidf -Raw
+              Write-Host $pidc
+              if ($summary) { Add-Content -Path $summary -Value "**pids.json**: ``$pidc```n" }
+            } else {
+              Write-Host "missing"
+            }
+            # Port check — is anything listening on 18000?
+            Write-Host '── netstat :18000 ──' -ForegroundColor Yellow
+            $ns = (netstat -ano | Select-String ':18000') -join "`n"
+            Write-Host $ns
+            if ($summary) { Add-Content -Path $summary -Value "**netstat :18000**: ``$ns```n" }
             & $launcher -Stop
             exit 1
           }
@@ -176,11 +199,25 @@ jobs:
           if (Test-Path $logs) {
             Copy-Item -Path (Join-Path $logs '*') -Destination 'ci-logs' -Recurse -Force -ErrorAction SilentlyContinue
           }
-          # Echo setup.log tail inline so the failure shows in the job log
-          # even without downloading the artifact.
+          $summary = $env:GITHUB_STEP_SUMMARY
+          # Echo setup.log tail inline AND write to step summary so the
+          # cause is surfaced in the check-runs API output field.
           if (Test-Path ci-logs/setup.log) {
             Write-Host '── setup.log (last 120 lines) ──' -ForegroundColor Yellow
-            Get-Content ci-logs/setup.log -Tail 120
+            $tail = Get-Content ci-logs/setup.log -Tail 120 -Raw
+            Write-Host $tail
+            if ($summary) {
+              Add-Content -Path $summary -Value "<details><summary>setup.log (last 120 lines)</summary>`n`n``````text`n$tail`n```````n</details>`n"
+            }
+          }
+          # Also surface service logs in summary if they exist.
+          if ($summary -and (Test-Path ci-logs)) {
+            Get-ChildItem ci-logs -File | Where-Object { $_.Name -ne 'setup.log' } | ForEach-Object {
+              $c = Get-Content $_.FullName -Tail 40 -Raw
+              if ($c) {
+                Add-Content -Path $summary -Value "<details><summary>$($_.Name) (last 40 lines)</summary>`n`n``````text`n$c`n```````n</details>`n"
+              }
+            }
           }
 
       - name: Upload logs artifact
