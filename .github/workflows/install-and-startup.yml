@@ -80,52 +80,67 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $log = Join-Path (Get-Location) 'ci-logs/02-ollama-install.log'
-          "step started at $(Get-Date -Format s)" | Out-File -FilePath $log -Encoding utf8
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            # Flush to disk after every line so a partial failure still
+            # leaves something on disk.
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
 
+          Log "step started at $(Get-Date -Format s)"
           $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
           New-Item -ItemType Directory -Path $dest -Force | Out-Null
           $zip = Join-Path $env:RUNNER_TEMP 'ollama.zip'
 
-          "==> Downloading ollama-windows-amd64.zip to $zip" | Tee-Object -FilePath $log -Append | Write-Host
-          # Redirect curl.exe output so any stderr shows in the log AND the job log.
-          & curl.exe --fail --show-error --location `
+          Log "==> Downloading ollama-windows-amd64.zip to $zip"
+          $curlOut = & curl.exe --fail --show-error --location `
             --output $zip `
-            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' *>&1 |
-              Tee-Object -FilePath $log -Append | Write-Host
+            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' 2>&1
+          if ($curlOut) { Log ($curlOut | Out-String) }
           if ($LASTEXITCODE -ne 0) {
-            "curl exit $LASTEXITCODE" | Out-File -FilePath $log -Append -Encoding utf8
+            Log "curl exit $LASTEXITCODE"
             throw "curl failed: $LASTEXITCODE"
           }
           $size = (Get-Item $zip).Length
-          "downloaded $size bytes" | Tee-Object -FilePath $log -Append | Write-Host
+          Log "downloaded $size bytes"
 
-          "==> Extracting to $dest (via tar)" | Tee-Object -FilePath $log -Append | Write-Host
-          & tar.exe -xf $zip -C $dest *>&1 | Tee-Object -FilePath $log -Append | Write-Host
+          Log "==> Extracting to $dest (via tar)"
+          $tarOut = & tar.exe -xf $zip -C $dest 2>&1
+          if ($tarOut) { Log ($tarOut | Out-String) }
           if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
           Remove-Item $zip -Force
 
           $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
           if (-not $exe) {
-            'FAIL: ollama.exe not found in extracted archive' | Out-File -FilePath $log -Append -Encoding utf8
-            'extracted tree:' | Out-File -FilePath $log -Append -Encoding utf8
-            Get-ChildItem -Path $dest -Recurse | Select-Object -First 50 FullName |
-                ForEach-Object { $_.FullName | Out-File -FilePath $log -Append -Encoding utf8 }
+            Log 'FAIL: ollama.exe not found in extracted archive'
+            Log 'extracted tree:'
+            Get-ChildItem -Path $dest -Recurse | Select-Object -First 50 | ForEach-Object { Log $_.FullName }
             throw 'ollama.exe missing'
           }
           $bindir = $exe.DirectoryName
           Add-Content -Path $env:GITHUB_PATH -Value $bindir
           $env:PATH = "$bindir;$env:PATH"
-          "ollama at: $($exe.FullName)" | Tee-Object -FilePath $log -Append | Write-Host
-          & $exe.FullName --version *>&1 | Tee-Object -FilePath $log -Append | Write-Host
+          Log "ollama at: $($exe.FullName)"
+          $verOut = & $exe.FullName --version 2>&1
+          if ($verOut) { Log ($verOut | Out-String) }
 
       - name: Initialize .env with CI secrets
         shell: pwsh
         run: |
           $log = Join-Path (Get-Location) 'ci-logs/03-init-env.log'
-          "step started at $(Get-Date -Format s)" | Out-File -FilePath $log -Encoding utf8
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
 
-          "running LocalAIStack.ps1 -InitEnv" | Tee-Object -FilePath $log -Append | Write-Host
-          & .\LocalAIStack.ps1 -InitEnv *>&1 | Tee-Object -FilePath $log -Append | Write-Host
+          Log "step started at $(Get-Date -Format s)"
+          Log "running LocalAIStack.ps1 -InitEnv"
+          $initOut = & .\LocalAIStack.ps1 -InitEnv 2>&1
+          if ($initOut) { Log ($initOut | Out-String) }
           if ($LASTEXITCODE -ne 0) { throw "InitEnv failed: $LASTEXITCODE" }
 
           $bytes = New-Object byte[] 48
@@ -139,10 +154,10 @@ jobs:
             -replace '(?m)^PUBLIC_BASE_URL=.*', 'PUBLIC_BASE_URL=http://127.0.0.1:18000' `
             | Set-Content .env -Encoding utf8NoBOM
 
-          '── .env (redacted) ──' | Tee-Object -FilePath $log -Append | Write-Host
+          Log '── .env (redacted) ──'
           Get-Content .env | ForEach-Object {
             $redacted = if ($_ -match '^(AUTH_SECRET_KEY|HISTORY_SECRET_KEY)=') { $_ -replace '=.*$', '=<redacted>' } else { $_ }
-            $redacted | Tee-Object -FilePath $log -Append | Write-Host
+            Log $redacted
           }
 
       # Ollama is deliberately NOT pre-installed. The launcher now soft-skips
@@ -348,12 +363,20 @@ jobs:
             $files = Get-ChildItem ci-logs -File -ErrorAction SilentlyContinue | Sort-Object Name
             $body += "ci-logs/ contains " + @($files).Count + " files`n`n"
             foreach ($f in $files) {
-              $c = Get-Content $f.FullName -Tail 80 -Raw
-              if ($c) {
+              # Raw byte read — don't trust Get-Content after experiencing
+              # Out-File silently writing 0 bytes on this runner.
+              $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+              $fileSize = $f.Length
+              $byteLen = $bytes.Length
+              if ($byteLen -gt 0) {
+                $c = [System.Text.Encoding]::UTF8.GetString($bytes)
+                # Tail ~80 lines
+                $split = $c -split "`r?`n"
+                if ($split.Count -gt 80) { $c = ($split | Select-Object -Last 80) -join "`n" }
                 $open = if ($f.Name -eq 'setup.log' -or $f.Name -match 'runner|ollama|init') { 'open' } else { '' }
-                $body += "<details $open><summary>$($f.Name) (last 80 lines)</summary>`n`n``````text`n$c`n```````n</details>`n`n"
+                $body += "<details $open><summary>$($f.Name) — $byteLen bytes (last 80 lines)</summary>`n`n``````text`n$c`n```````n</details>`n`n"
               } else {
-                $body += "- $($f.Name) (empty)`n"
+                $body += "- $($f.Name) (fs_size=$fileSize, read_bytes=$byteLen — empty)`n"
               }
             }
           } else {
