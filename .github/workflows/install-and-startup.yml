@@ -53,29 +53,45 @@ jobs:
       - name: Pre-install Ollama (standalone zip, no installer)
         shell: pwsh
         run: |
-          # Use the standalone Windows zip instead of OllamaSetup.exe.
-          # The installer has hung on windows-latest runners (post-install
-          # tray-service blocks for the full 30-min job timeout). The zip
-          # is just ollama.exe + dependencies — no installer, no tray,
-          # no UAC, no hangs.
+          $ErrorActionPreference = 'Stop'
+          $summary = $env:GITHUB_STEP_SUMMARY
+          function Note($msg) {
+            Write-Host $msg
+            if ($summary) { Add-Content -Path $summary -Value "$msg`n" }
+          }
+
           $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
           New-Item -ItemType Directory -Path $dest -Force | Out-Null
-          $zip = Join-Path $env:RUNNER_TEMP 'ollama-windows-amd64.zip'
-          Write-Host '==> Downloading ollama-windows-amd64.zip'
-          Invoke-WebRequest `
-            -Uri 'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' `
-            -OutFile $zip -UseBasicParsing
-          Write-Host "==> Extracting to $dest"
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $zip = Join-Path $env:RUNNER_TEMP 'ollama.zip'
+
+          Note '==> Downloading ollama-windows-amd64.zip'
+          # curl.exe (bundled on windows-latest) is faster + more reliable
+          # for >1 GB downloads than Invoke-WebRequest.
+          & curl.exe --fail --silent --show-error --location `
+            --output $zip `
+            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip'
+          if ($LASTEXITCODE -ne 0) { throw "curl failed: $LASTEXITCODE" }
+          $size = (Get-Item $zip).Length
+          Note "downloaded $size bytes"
+
+          Note "==> Extracting to $dest (via tar)"
+          # tar on modern Windows (bsdtar) understands zip and is faster
+          # than PowerShell's Expand-Archive on multi-GB archives.
+          & tar.exe -xf $zip -C $dest
+          if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
           Remove-Item $zip -Force
-          # Locate ollama.exe and make sure its dir is on PATH for every
-          # subsequent step (via GITHUB_PATH) and for this shell too.
+
           $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { throw 'ollama.exe not found in extracted archive' }
+          if (-not $exe) {
+            Note 'FAIL: ollama.exe not found in extracted archive'
+            Note 'extracted tree:'
+            Get-ChildItem -Path $dest -Recurse | Select-Object -First 20 FullName | ForEach-Object { Note "  $($_.FullName)" }
+            throw 'ollama.exe missing'
+          }
           $bindir = $exe.DirectoryName
           Add-Content -Path $env:GITHUB_PATH -Value $bindir
           $env:PATH = "$bindir;$env:PATH"
-          Write-Host "ollama at: $($exe.FullName)"
+          Note "ollama at: $($exe.FullName)"
           & $exe.FullName --version
 
       - name: Initialize .env with CI secrets
