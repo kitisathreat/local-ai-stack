@@ -30,6 +30,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Runner diagnostics
+        shell: pwsh
+        run: |
+          # Emit enough info that an 18s early-exit failure is diagnosable
+          # from $GITHUB_STEP_SUMMARY alone.
+          $summary = $env:GITHUB_STEP_SUMMARY
+          $lines = @(
+            "### Windows runner diagnostics",
+            "- runner image: $env:ImageOS / $env:ImageVersion",
+            "- PSVersion: $($PSVersionTable.PSVersion)",
+            "- PSEdition: $($PSVersionTable.PSEdition)",
+            "- OS: $([System.Environment]::OSVersion.VersionString)",
+            "- pwd: $(Get-Location)",
+            "- python: $((Get-Command python -ErrorAction SilentlyContinue).Source)",
+            "- git: $((Get-Command git -ErrorAction SilentlyContinue).Source)",
+            "- LocalAIStack.ps1 exists: $([bool](Test-Path LocalAIStack.ps1))"
+          )
+          $lines | ForEach-Object { Write-Host $_ }
+          if ($summary) { $lines | ForEach-Object { Add-Content -Path $summary -Value "$_`n" } }
+
+      - name: Pre-install Ollama (standalone zip, no installer)
+        shell: pwsh
+        run: |
+          # Use the standalone Windows zip instead of OllamaSetup.exe.
+          # The installer has hung on windows-latest runners (post-install
+          # tray-service blocks for the full 30-min job timeout). The zip
+          # is just ollama.exe + dependencies — no installer, no tray,
+          # no UAC, no hangs.
+          $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'ollama-windows-amd64.zip'
+          Write-Host '==> Downloading ollama-windows-amd64.zip'
+          Invoke-WebRequest `
+            -Uri 'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' `
+            -OutFile $zip -UseBasicParsing
+          Write-Host "==> Extracting to $dest"
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          Remove-Item $zip -Force
+          # Locate ollama.exe and make sure its dir is on PATH for every
+          # subsequent step (via GITHUB_PATH) and for this shell too.
+          $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'ollama.exe not found in extracted archive' }
+          $bindir = $exe.DirectoryName
+          Add-Content -Path $env:GITHUB_PATH -Value $bindir
+          $env:PATH = "$bindir;$env:PATH"
+          Write-Host "ollama at: $($exe.FullName)"
+          & $exe.FullName --version
+
       - name: Initialize .env with CI secrets
         shell: pwsh
         run: |
