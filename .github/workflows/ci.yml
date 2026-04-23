@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main, master, non-docker-dependent]
   push:
-    branches: [main, master, claude-code-integration]
+    branches: [main, master, claude-code-integration, non-docker-dependent]
 
 permissions:
   contents: read
@@ -33,7 +33,8 @@ jobs:
             fastapi 'uvicorn[standard]' \
             cryptography 'redis[hiredis]' \
             pypdf python-multipart \
-            pynvml
+            pynvml \
+            ddgs huggingface_hub
 
       - name: Run all Python tests
         run: |
@@ -48,7 +49,7 @@ jobs:
             tests/test_tools_registry.py \
             tests/test_rag.py \
             tests/test_memory.py \
-            tests/test_docker_setup.py \
+            tests/test_diagnostics.py \
             -v --tb=short 2>&1 | tee /tmp/pytest.log
 
       - name: Post failing Python tests as PR comment
@@ -80,15 +81,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check PS1 script syntax (scripts/ + launcher/)
+      - name: Check PS1 script syntax
         shell: pwsh
         run: |
           $failed = 0
           $paths = @(
+            "LocalAIStack.ps1",
             "scripts/*.ps1",
-            "launcher/*.ps1",
-            "launcher/steps/*.ps1",
-            "tests/*.ps1"
+            "scripts/steps/*.ps1"
           )
           $files = $paths | ForEach-Object { Get-ChildItem -Path $_ -ErrorAction SilentlyContinue }
           foreach ($f in $files) {
@@ -106,7 +106,7 @@ jobs:
           }
           if ($failed -gt 0) { exit 1 }
 
-  # ── Launcher smoke tests: build script + step contract ───────────────────────
+  # ── Launcher smoke tests: consolidated LocalAIStack.ps1 layout ───────────────
   launcher-smoke:
     name: Launcher — Smoke Tests
     runs-on: ubuntu-latest
@@ -114,20 +114,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify launcher structure + step contract
+      - name: Verify consolidated launcher structure
         shell: pwsh
         run: |
           $expected = @(
-            "launcher/LocalAIStack.ps1",
-            "launcher/build.ps1",
-            "launcher/gpu-agent.ps1",
-            "launcher/steps/_common.ps1",
-            "launcher/steps/ensure-docker.ps1",
-            "launcher/steps/ensure-lmstudio.ps1",
-            "launcher/steps/ensure-tunnel.ps1",
-            "launcher/steps/compose-up.ps1",
-            "launcher/steps/wait-ready.ps1",
-            "launcher/README.md"
+            "LocalAIStack.ps1",
+            "scripts/steps/process.ps1",
+            "scripts/steps/download.ps1",
+            "scripts/steps/venvs.ps1"
           )
           $missing = @()
           foreach ($p in $expected) {
@@ -140,41 +134,45 @@ jobs:
           }
           Write-Host "All expected launcher files present."
 
-          # Each step script must source _common.ps1 (for Emit-Result) and
-          # call Emit-Result somewhere — otherwise the launcher can't parse
-          # its result.
-          $stepFiles = Get-ChildItem "launcher/steps/ensure-*.ps1","launcher/steps/compose-up.ps1","launcher/steps/wait-ready.ps1"
-          $failed = 0
-          foreach ($f in $stepFiles) {
-            $content = Get-Content $f.FullName -Raw
-            if ($content -notmatch '_common\.ps1') {
-              Write-Host "FAIL: $($f.Name) does not source _common.ps1" -ForegroundColor Red
-              $failed++
-            }
-            if ($content -notmatch 'Emit-Result') {
-              Write-Host "FAIL: $($f.Name) does not call Emit-Result" -ForegroundColor Red
-              $failed++
-            }
+          # The consolidated launcher must expose every documented subcommand
+          # switch. -Help prints the user-facing guide; -Setup, -Start, -Stop,
+          # -Build, -InitEnv, -CheckUpdates, -NoUpdateCheck are the others.
+          $src = Get-Content LocalAIStack.ps1 -Raw
+          $required = @('-Setup','-Start','-Stop','-Build','-InitEnv','-CheckUpdates','-Help','-NoUpdateCheck')
+          $missingSwitch = @()
+          foreach ($s in $required) {
+            # Match the switch on a parameter line, not in prose/help text.
+            if ($src -notmatch "\[switch\]\$($s.TrimStart('-'))\b") { $missingSwitch += $s }
           }
-          if ($failed -gt 0) { exit 1 }
-          Write-Host "All step scripts conform to the launcher contract."
-
-      - name: Verify Emit-Result produces valid JSON
-        shell: pwsh
-        run: |
-          . ./launcher/steps/_common.ps1
-          $output = Emit-Result -Ok $true -Message "ci smoke test"
-          try {
-            $parsed = $output | ConvertFrom-Json
-            if ($parsed.ok -ne $true -or $parsed.message -ne "ci smoke test") {
-              Write-Host "FAIL: parsed JSON does not round-trip: $output" -ForegroundColor Red
-              exit 1
-            }
-            Write-Host "OK: Emit-Result produces valid JSON → $output"
-          } catch {
-            Write-Host "FAIL: Emit-Result output is not valid JSON: $output" -ForegroundColor Red
+          if ($missingSwitch.Count -gt 0) {
+            Write-Host "FAIL: LocalAIStack.ps1 missing switches: $($missingSwitch -join ', ')" -ForegroundColor Red
             exit 1
           }
+          Write-Host "All launcher subcommands declared."
+
+      - name: Verify scripts/steps exports the process helpers
+        shell: pwsh
+        run: |
+          $content = Get-Content scripts/steps/process.ps1 -Raw
+          foreach ($fn in @('Start-TrackedProcess','Wait-HealthOk')) {
+            if ($content -notmatch "function\s+$fn\b") {
+              Write-Host "FAIL: scripts/steps/process.ps1 missing function $fn" -ForegroundColor Red
+              exit 1
+            }
+          }
+          $content = Get-Content scripts/steps/download.ps1 -Raw
+          foreach ($fn in @('Invoke-DownloadQdrant','Invoke-DownloadLlamaServer')) {
+            if ($content -notmatch "function\s+$fn\b") {
+              Write-Host "FAIL: scripts/steps/download.ps1 missing function $fn" -ForegroundColor Red
+              exit 1
+            }
+          }
+          $content = Get-Content scripts/steps/venvs.ps1 -Raw
+          if ($content -notmatch 'function\s+Invoke-CreateVenvs\b') {
+            Write-Host "FAIL: scripts/steps/venvs.ps1 missing Invoke-CreateVenvs" -ForegroundColor Red
+            exit 1
+          }
+          Write-Host "All step helpers are exported."
 
   # ── YAML lint: all config files parse cleanly ─────────────────────────────────
   yaml-lint:
@@ -202,9 +200,8 @@ jobs:
             "config/vram.yaml",
             "config/tools.yaml",
             "config/ollama-models.yaml",
-            "config/searxng/settings.yml",
+            "config/model-sources.yaml",
             "knowledge/sources.yaml",
-            "docker-compose.yml",
           ]
 
           failed = []
@@ -225,64 +222,38 @@ jobs:
             sys.exit(1)
           EOF
 
-  # ── PowerShell integration tests (Windows runner) ────────────────────────────
-  test:
-    name: Run test suite (Windows)
-    runs-on: windows-latest
+  # ── model_resolver offline-mode smoke test (replaces Windows pwsh suite) ─────
+  model-resolver:
+    name: Model Resolver — Offline Smoke
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
-      - name: Install Python dependencies
-        run: pip install openai
+      - name: Install resolver dependencies
+        run: pip install pyyaml huggingface_hub httpx
 
-      - name: Run tests (CI mode)
-        shell: pwsh
-        run: .\tests\run_tests.ps1 -CI
-
-      - name: Print test log on failure
-        if: failure()
-        shell: pwsh
-        run: |
-          if (Test-Path tests/ci_results.txt) {
-            Write-Host "===== tests/ci_results.txt =====" -ForegroundColor Cyan
-            Get-Content tests/ci_results.txt | ForEach-Object { Write-Host $_ }
-          } else {
-            Write-Host "No ci_results.txt found." -ForegroundColor Yellow
-          }
-
-      - name: Post test results to PR comment
-        if: failure() && github.event_name == 'pull_request'
-        continue-on-error: true
-        shell: bash
+      - name: Resolve tiers with OFFLINE=1 (must fall back to pinned)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_ID: ${{ github.run_id }}
+          OFFLINE: "1"
         run: |
-          set +e
-          echo "STEP STARTED: Post test results"
-          {
-            echo "### Windows CI test log (run $RUN_ID)"
-            echo ""
-            echo '```text'
-            if [ -f tests/ci_results.txt ]; then
-              # Strip any non-printable including CR; keep it bounded.
-              tr -d '\r' < tests/ci_results.txt | tail -100
-            else
-              echo "(tests/ci_results.txt not found)"
-              ls -la tests/ 2>&1 | head -30
-            fi
-            echo '```'
-          } > post_comment.md
-          echo "---- body ----"
-          cat post_comment.md
-          echo "---- gh pr comment ----"
-          gh pr comment "$PR_NUMBER" --body-file post_comment.md
-          echo "exit: $?"
+          python -m backend.model_resolver resolve --offline
+          test -f data/resolved-models.json
+          python - <<'EOF'
+          import json, pathlib, sys
+          data = json.loads(pathlib.Path("data/resolved-models.json").read_text())
+          tiers = data.get("tiers", {})
+          if not tiers:
+              print("FAIL: no tiers resolved")
+              sys.exit(1)
+          for name, info in tiers.items():
+              origin = info.get("origin")
+              if origin != "pinned":
+                  print(f"FAIL: tier {name} resolved to origin={origin}, expected pinned")
+                  sys.exit(1)
+          print(f"OK: {len(tiers)} tiers fell back to pinned")
+          EOF
