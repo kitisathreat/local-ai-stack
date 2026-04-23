@@ -243,20 +243,53 @@ detected:
   prompt  GUI dialog asks the user (default)
   skip    note it, do not download until next -Setup
 
-Uninstall
----------
+Uninstall / reset
+-----------------
   .\LocalAIStack.ps1 -Stop
   Remove-Item -Recurse $env:APPDATA\LocalAIStack
   Remove-Item -Recurse .\vendor .\data
+  # .\data\lai.db holds users, chats, memories, and RAG metadata.
+  # Deleting it resets the install; re-run -Setup to re-seed an admin.
+  #
+  # The Phase 3 schema migration (v2 -> v3, magic-link -> password
+  # auth) is one-way. A manual downgrade would require
+  # `ALTER TABLE users DROP COLUMN username; ...` + recreating the
+  # magic_links table. In practice: blow away data/lai.db.
+
+Web-search providers
+--------------------
+  WEB_SEARCH_PROVIDER=ddg (default)     DuckDuckGo via ddgs pip package.
+                                        Rate-limits silently after a few
+                                        hundred queries/day; fine for
+                                        interactive use but switch to
+                                        Brave once you're past that.
+  WEB_SEARCH_PROVIDER=brave             Brave Search API. Free tier is
+                                        2000 queries/month — sign up at
+                                        https://api.search.brave.com/app/keys
+                                        and set BRAVE_API_KEY in .env.
+  WEB_SEARCH_PROVIDER=none              Disabled. Tools that call the
+                                        middleware return empty results.
 
 Disk and memory
 ---------------
   vendor\venv-backend   ~250 MB
   vendor\venv-gui       ~180 MB  (PySide6 + QtCharts)
+                                 Dropped to ~120 MB if you swap to
+                                 PySide6-Essentials (no multimedia, no
+                                 WebEngine).
   vendor\venv-jupyter   ~400 MB
   vendor\qdrant         ~40 MB
   vendor\llama-server   ~220 MB  (CUDA build)
   Ollama models         24 - 72 GB depending on tier group
+  Vision GGUF           ~25 GB  (optional; download offered during -Setup)
+
+Windows Developer Mode
+----------------------
+  Creating the data\models\vision.gguf symlink to the Hugging Face
+  download requires symlink privileges. On Windows 10/11 non-admin
+  accounts, enable Developer Mode (Settings -> Privacy & security ->
+  For developers). If disabled, model_resolver falls back to a full
+  file copy, wasting ~25 GB but still working.
 
 Full documentation of internals lives under docs\ (architecture, API,
 troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.

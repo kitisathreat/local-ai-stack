@@ -88,6 +88,17 @@ def test_password_hash_survives_malformed():
     assert verify_password("foo", "not-a-bcrypt-hash") is False
 
 
+def test_bcrypt_rounds_env_respected(monkeypatch):
+    """BCRYPT_ROUNDS=4 (min) should verify faster than 12 (default).
+    Doesn't assert exact timing — just that the cost factor is being
+    read and the hash encodes the lower cost."""
+    monkeypatch.setenv("BCRYPT_ROUNDS", "4")
+    from backend.passwords import hash_password
+    h = hash_password("test")
+    # bcrypt encodes cost as two digits after the algo tag: $2b$04$...
+    assert "$04$" in h
+
+
 # ── authenticate() ──────────────────────────────────────────────────────
 
 def test_authenticate_happy_path(db_path):
