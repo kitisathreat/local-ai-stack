@@ -37,79 +37,86 @@ jobs:
       - name: Runner diagnostics
         shell: pwsh
         run: |
-          # Tee to ci-logs so the on-failure PR comment picks it up.
-          # GITHUB_STEP_SUMMARY is per-step, not shared, so this file is
-          # the persistent channel.
-          $log = 'ci-logs/01-runner-diagnostics.log'
+          $log = Join-Path (Get-Location) 'ci-logs/01-runner-diagnostics.log'
+          $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+          $git = (Get-Command git -ErrorAction SilentlyContinue).Source
+          $curlp = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
+          $tarp = (Get-Command tar.exe -ErrorAction SilentlyContinue).Source
+          $ghp = (Get-Command gh -ErrorAction SilentlyContinue).Source
           $lines = @(
-            "### Windows runner diagnostics",
-            "- runner image: $env:ImageOS / $env:ImageVersion",
+            '### Windows runner diagnostics',
+            "- runner image: $($env:ImageOS) / $($env:ImageVersion)",
             "- PSVersion: $($PSVersionTable.PSVersion)",
             "- PSEdition: $($PSVersionTable.PSEdition)",
             "- OS: $([System.Environment]::OSVersion.VersionString)",
             "- pwd: $(Get-Location)",
-            "- python: $((Get-Command python -ErrorAction SilentlyContinue).Source)",
-            "- git: $((Get-Command git -ErrorAction SilentlyContinue).Source)",
-            "- curl.exe: $((Get-Command curl.exe -ErrorAction SilentlyContinue).Source)",
-            "- tar.exe: $((Get-Command tar.exe -ErrorAction SilentlyContinue).Source)",
-            "- LocalAIStack.ps1 exists: $([bool](Test-Path LocalAIStack.ps1))"
+            "- python: $py",
+            "- git: $git",
+            "- curl.exe: $curlp",
+            "- tar.exe: $tarp",
+            "- gh: $ghp",
+            "- LocalAIStack.ps1 exists: $([bool](Test-Path LocalAIStack.ps1))",
+            "- log path (abs): $log"
           )
-          $lines | ForEach-Object { Write-Host $_; Add-Content -Path $log -Value $_ }
+          $content = $lines -join "`n"
+          Write-Host $content
+          # Absolute path + Out-File — no pipeline weirdness.
+          $content | Out-File -FilePath $log -Encoding utf8
+          Write-Host "log size after write: $((Get-Item $log).Length) bytes"
 
       - name: Pre-install Ollama (standalone zip, no installer)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $log = 'ci-logs/02-ollama-install.log'
-          function Note($msg) {
-            Write-Host $msg
-            Add-Content -Path $log -Value $msg
-          }
+          $log = Join-Path (Get-Location) 'ci-logs/02-ollama-install.log'
+          "step started at $(Get-Date -Format s)" | Out-File -FilePath $log -Encoding utf8
 
           $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
           New-Item -ItemType Directory -Path $dest -Force | Out-Null
           $zip = Join-Path $env:RUNNER_TEMP 'ollama.zip'
 
-          Note '==> Downloading ollama-windows-amd64.zip'
-          # curl.exe (bundled on windows-latest) is faster + more reliable
-          # for >1 GB downloads than Invoke-WebRequest.
-          & curl.exe --fail --silent --show-error --location `
+          "==> Downloading ollama-windows-amd64.zip to $zip" | Tee-Object -FilePath $log -Append | Write-Host
+          # Redirect curl.exe output so any stderr shows in the log AND the job log.
+          & curl.exe --fail --show-error --location `
             --output $zip `
-            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' 2>&1 |
-              ForEach-Object { Note $_ }
-          if ($LASTEXITCODE -ne 0) { throw "curl failed: $LASTEXITCODE" }
+            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' *>&1 |
+              Tee-Object -FilePath $log -Append | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            "curl exit $LASTEXITCODE" | Out-File -FilePath $log -Append -Encoding utf8
+            throw "curl failed: $LASTEXITCODE"
+          }
           $size = (Get-Item $zip).Length
-          Note "downloaded $size bytes"
+          "downloaded $size bytes" | Tee-Object -FilePath $log -Append | Write-Host
 
-          Note "==> Extracting to $dest (via tar)"
-          # tar on modern Windows (bsdtar) understands zip and is faster
-          # than PowerShell's Expand-Archive on multi-GB archives.
-          & tar.exe -xf $zip -C $dest 2>&1 | ForEach-Object { Note $_ }
+          "==> Extracting to $dest (via tar)" | Tee-Object -FilePath $log -Append | Write-Host
+          & tar.exe -xf $zip -C $dest *>&1 | Tee-Object -FilePath $log -Append | Write-Host
           if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
           Remove-Item $zip -Force
 
           $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
           if (-not $exe) {
-            Note 'FAIL: ollama.exe not found in extracted archive'
-            Note 'extracted tree:'
-            Get-ChildItem -Path $dest -Recurse | Select-Object -First 30 FullName |
-                ForEach-Object { Note "  $($_.FullName)" }
+            'FAIL: ollama.exe not found in extracted archive' | Out-File -FilePath $log -Append -Encoding utf8
+            'extracted tree:' | Out-File -FilePath $log -Append -Encoding utf8
+            Get-ChildItem -Path $dest -Recurse | Select-Object -First 50 FullName |
+                ForEach-Object { $_.FullName | Out-File -FilePath $log -Append -Encoding utf8 }
             throw 'ollama.exe missing'
           }
           $bindir = $exe.DirectoryName
           Add-Content -Path $env:GITHUB_PATH -Value $bindir
           $env:PATH = "$bindir;$env:PATH"
-          Note "ollama at: $($exe.FullName)"
-          & $exe.FullName --version 2>&1 | ForEach-Object { Note $_ }
+          "ollama at: $($exe.FullName)" | Tee-Object -FilePath $log -Append | Write-Host
+          & $exe.FullName --version *>&1 | Tee-Object -FilePath $log -Append | Write-Host
 
       - name: Initialize .env with CI secrets
         shell: pwsh
         run: |
-          $log = 'ci-logs/03-init-env.log'
-          function Note($msg) { Write-Host $msg; Add-Content -Path $log -Value $msg }
-          Note 'running LocalAIStack.ps1 -InitEnv'
-          & .\LocalAIStack.ps1 -InitEnv 2>&1 | ForEach-Object { Note $_ }
+          $log = Join-Path (Get-Location) 'ci-logs/03-init-env.log'
+          "step started at $(Get-Date -Format s)" | Out-File -FilePath $log -Encoding utf8
+
+          "running LocalAIStack.ps1 -InitEnv" | Tee-Object -FilePath $log -Append | Write-Host
+          & .\LocalAIStack.ps1 -InitEnv *>&1 | Tee-Object -FilePath $log -Append | Write-Host
           if ($LASTEXITCODE -ne 0) { throw "InitEnv failed: $LASTEXITCODE" }
+
           $bytes = New-Object byte[] 48
           [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
           $secret = [Convert]::ToBase64String($bytes)
@@ -120,10 +127,11 @@ jobs:
             -replace '(?m)^ADMIN_API_ALLOWED_HOSTS=.*', 'ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost' `
             -replace '(?m)^PUBLIC_BASE_URL=.*', 'PUBLIC_BASE_URL=http://127.0.0.1:18000' `
             | Set-Content .env -Encoding utf8NoBOM
-          Note '── .env (redacted) ──'
+
+          '── .env (redacted) ──' | Tee-Object -FilePath $log -Append | Write-Host
           Get-Content .env | ForEach-Object {
             $redacted = if ($_ -match '^(AUTH_SECRET_KEY|HISTORY_SECRET_KEY)=') { $_ -replace '=.*$', '=<redacted>' } else { $_ }
-            Note $redacted
+            $redacted | Tee-Object -FilePath $log -Append | Write-Host
           }
 
       # Ollama is deliberately NOT pre-installed. The launcher now soft-skips
