@@ -234,7 +234,10 @@ def test_tools_yaml_all_referenced_files_exist():
 def test_tools_yaml_service_refs_are_valid():
     """requires_service must be null or a known service name."""
     data = _load_yaml("config/tools.yaml")
-    known_services = {None, "qdrant", "ollama", "jupyter", "backend"}
+    # Native mode never starts searxng / n8n containers, but the declarations
+    # stay in tools.yaml so the tool registry can gate them at runtime. Keep
+    # them in the allowlist so the validator doesn't fail.
+    known_services = {None, "qdrant", "ollama", "jupyter", "backend", "n8n", "searxng"}
     all_tool_entries = {}
     for section_val in data.values():
         if isinstance(section_val, dict):

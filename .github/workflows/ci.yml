@@ -137,12 +137,14 @@ jobs:
           # The consolidated launcher must expose every documented subcommand
           # switch. -Help prints the user-facing guide; -Setup, -Start, -Stop,
           # -Build, -InitEnv, -CheckUpdates, -NoUpdateCheck are the others.
+          # Use a single-quoted literal for the needle so PowerShell string
+          # interpolation does not mangle the dollar sign.
           $src = Get-Content LocalAIStack.ps1 -Raw
-          $required = @('-Setup','-Start','-Stop','-Build','-InitEnv','-CheckUpdates','-Help','-NoUpdateCheck')
+          $required = @('Setup','Start','Stop','Build','InitEnv','CheckUpdates','Help','NoUpdateCheck')
           $missingSwitch = @()
-          foreach ($s in $required) {
-            # Match the switch on a parameter line, not in prose/help text.
-            if ($src -notmatch "\[switch\]\$($s.TrimStart('-'))\b") { $missingSwitch += $s }
+          foreach ($name in $required) {
+            $needle = '[switch]$' + $name
+            if (-not $src.Contains($needle)) { $missingSwitch += "-$name" }
           }
           if ($missingSwitch.Count -gt 0) {
             Write-Host "FAIL: LocalAIStack.ps1 missing switches: $($missingSwitch -join ', ')" -ForegroundColor Red
