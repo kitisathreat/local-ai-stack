@@ -414,7 +414,11 @@ function Invoke-Start {
 
     Write-Step 'Starting ollama serve'
     $Env:OLLAMA_HOST = '127.0.0.1:11434'
-    $pids['ollama'] = Record-PidEntry (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir)
+    if (Get-Command ollama -ErrorAction SilentlyContinue) {
+        $pids['ollama'] = Record-PidEntry (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir)
+    } else {
+        Write-Warn2 "ollama binary not found on PATH — Ollama-backed tiers will be unavailable this run"
+    }
 
     Write-Step 'Starting qdrant'
     $qdrantBin = Join-Path $VendorDir 'qdrant\qdrant.exe'

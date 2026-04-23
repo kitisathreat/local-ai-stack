@@ -50,34 +50,10 @@ jobs:
             else { $_ }
           }
 
-      - name: Pre-install Ollama (direct download; winget/choco are flaky on CI)
-        shell: pwsh
-        run: |
-          # Ollama needs to be on PATH so `ollama serve` can run at -Start
-          # time. Both winget and chocolatey have intermittent failures on
-          # windows-latest runners; pulling the official installer directly
-          # is deterministic.
-          $exe = Join-Path $env:TEMP 'OllamaSetup.exe'
-          Write-Host '==> Downloading OllamaSetup.exe'
-          Invoke-WebRequest -Uri 'https://ollama.com/download/OllamaSetup.exe' `
-            -OutFile $exe -UseBasicParsing
-          Write-Host '==> Installing silently (/S)'
-          $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
-          if ($p.ExitCode -ne 0) {
-            throw "OllamaSetup.exe exited with $($p.ExitCode)"
-          }
-          # Refresh session PATH so subsequent steps see the new binary.
-          $env:PATH = [Environment]::GetEnvironmentVariable('PATH','Machine') + ';' +
-                      [Environment]::GetEnvironmentVariable('PATH','User')
-          # Ollama default install dir in case it isn't added to Machine PATH
-          # in this session yet.
-          $ollamaDir = Join-Path $env:LOCALAPPDATA 'Programs\Ollama'
-          if (Test-Path (Join-Path $ollamaDir 'ollama.exe')) {
-            $env:PATH = "$ollamaDir;$env:PATH"
-            # Also persist for subsequent steps via GITHUB_PATH.
-            Add-Content -Path $env:GITHUB_PATH -Value $ollamaDir
-          }
-          Get-Command ollama | Select-Object Source
+      # Ollama is deliberately NOT pre-installed. The launcher now soft-skips
+      # `ollama serve` when the binary is missing (Ollama-backed tiers are
+      # unavailable for the run, which is fine for a smoke test). This
+      # avoids OllamaSetup.exe hangs that timed the job out at 30 min.
 
       - name: Setup (venvs + vendor binaries + dry-run pull; skip winget prereqs)
         shell: pwsh
