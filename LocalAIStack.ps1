@@ -166,6 +166,28 @@ First run
                                         create Python venvs, pull Ollama models.
   4. .\LocalAIStack.ps1 -Start          Launch. A native Qt window opens; no browser.
 
+What -Setup installs
+--------------------
+  Verified prerequisites (one-time UAC prompt per missing package):
+    Git.Git                      (for self-updates)
+    Python.Python.3.12           (backend + GUI + Jupyter venvs)
+    Microsoft.PowerShell         (PS 7 — recommended)
+    Ollama.Ollama                (local model serving)
+    Cloudflare.cloudflared       (HTTPS tunnel for chat.<your-domain>)
+
+  Detected (never auto-installed):
+    NVIDIA driver >= 550 (CUDA 12 runtime is bundled).
+    If missing, download: https://www.nvidia.com/Download/index.aspx
+
+  Downloaded + SHA256-verified:
+    vendor\qdrant\qdrant.exe             (pinned via LAI_QDRANT_VERSION)
+    vendor\llama-server\llama-server.exe (pinned via LAI_LLAMACPP_VERSION)
+
+  Python venvs created under vendor\:
+    venv-backend  ~250 MB
+    venv-gui      ~180 MB
+    venv-jupyter  ~400 MB
+
 Daily use
 ---------
   .\LocalAIStack.ps1                    = -Start
@@ -234,18 +256,13 @@ troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 function Invoke-Setup {
-    Write-Step 'Verifying prerequisites'
-    if (-not (Test-Command python)) {
-        throw 'Python 3.12 not found on PATH. Install via: winget install Python.Python.3.12'
+    # Consolidated prerequisite check (Windows build, NVIDIA driver,
+    # winget-installed tools). Idempotent — safe to call on every -Setup.
+    if (Get-Command Invoke-EnsurePrereqs -ErrorAction SilentlyContinue) {
+        Invoke-EnsurePrereqs
+    } else {
+        throw "scripts\steps\prereqs.ps1 missing — re-clone the repo."
     }
-    $pyv = (& python --version) 2>&1
-    Write-Ok  "Python: $pyv"
-
-    if (-not (Test-Command ollama)) {
-        Write-Warn2 'Ollama not found — installing via winget…'
-        & winget install --id=Ollama.Ollama --silent --accept-source-agreements --accept-package-agreements
-    }
-    Write-Ok "Ollama: $(& ollama --version 2>&1)"
 
     Ensure-Dir $VendorDir
     Ensure-Dir $DataDir

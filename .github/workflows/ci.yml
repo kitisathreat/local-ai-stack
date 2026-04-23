@@ -121,7 +121,8 @@ jobs:
             "LocalAIStack.ps1",
             "scripts/steps/process.ps1",
             "scripts/steps/download.ps1",
-            "scripts/steps/venvs.ps1"
+            "scripts/steps/venvs.ps1",
+            "scripts/steps/prereqs.ps1"
           )
           $missing = @()
           foreach ($p in $expected) {
@@ -172,6 +173,11 @@ jobs:
           $content = Get-Content scripts/steps/venvs.ps1 -Raw
           if ($content -notmatch 'function\s+Invoke-CreateVenvs\b') {
             Write-Host "FAIL: scripts/steps/venvs.ps1 missing Invoke-CreateVenvs" -ForegroundColor Red
+            exit 1
+          }
+          $content = Get-Content scripts/steps/prereqs.ps1 -Raw
+          if ($content -notmatch 'function\s+Invoke-EnsurePrereqs\b') {
+            Write-Host "FAIL: scripts/steps/prereqs.ps1 missing Invoke-EnsurePrereqs" -ForegroundColor Red
             exit 1
           }
           Write-Host "All step helpers are exported."
