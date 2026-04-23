@@ -50,6 +50,8 @@ jobs:
             tests/test_rag.py \
             tests/test_memory.py \
             tests/test_diagnostics.py \
+            tests/test_main.py \
+            tests/test_admin_endpoints.py \
             -v --tb=short 2>&1 | tee /tmp/pytest.log
 
       - name: Post failing Python tests as PR comment
@@ -141,7 +143,7 @@ jobs:
           # Use a single-quoted literal for the needle so PowerShell string
           # interpolation does not mangle the dollar sign.
           $src = Get-Content LocalAIStack.ps1 -Raw
-          $required = @('Setup','Start','Stop','Build','InitEnv','CheckUpdates','Help','NoUpdateCheck')
+          $required = @('Setup','Start','Stop','Build','InitEnv','CheckUpdates','Admin','Help','NoUpdateCheck')
           $missingSwitch = @()
           foreach ($name in $required) {
             $needle = '[switch]$' + $name

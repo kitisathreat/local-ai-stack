@@ -28,6 +28,7 @@ param(
     [Parameter(ParameterSetName = 'Build')]        [switch]$Build,
     [Parameter(ParameterSetName = 'InitEnv')]      [switch]$InitEnv,
     [Parameter(ParameterSetName = 'CheckUpdates')] [switch]$CheckUpdates,
+    [Parameter(ParameterSetName = 'Admin')]        [switch]$Admin,
     [Parameter(ParameterSetName = 'Help')]         [switch]$Help,
 
     # Modifier flags (may combine with -Start)
@@ -186,6 +187,7 @@ What -Setup installs
 Daily use
 ---------
   .\LocalAIStack.ps1                    = -Start
+  .\LocalAIStack.ps1 -Admin             Open the admin Qt window (login prompt).
   .\LocalAIStack.ps1 -Start -NoUpdateCheck
                                         Skip HF / Ollama-registry polling.
   .\LocalAIStack.ps1 -CheckUpdates      Re-poll, list pending updates.
@@ -460,6 +462,20 @@ function Invoke-Build {
     Write-Ok "Built $out"
 }
 
+# ── Admin ────────────────────────────────────────────────────────────────────
+function Invoke-Admin {
+    # Spawn the GUI in admin-only mode. Requires the backend to already
+    # be running; fails fast if not.
+    Apply-Env (Read-EnvFile)
+    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
+    if (-not (Test-Path $guiPy)) {
+        throw "GUI venv missing at $guiPy — run -Setup first."
+    }
+    Write-Step 'Launching admin window'
+    & $guiPy (Join-Path $RepoRoot 'gui\main.py') '--mode' 'admin' '--api' 'http://127.0.0.1:18000'
+}
+
+
 # ── CheckUpdates ─────────────────────────────────────────────────────────────
 function Invoke-CheckUpdates {
     Apply-Env (Read-EnvFile)
@@ -477,6 +493,7 @@ if ($Setup)             { Invoke-Setup;        return }
 if ($Stop)              { Invoke-Stop;         return }
 if ($Build)             { Invoke-Build;        return }
 if ($CheckUpdates)      { Invoke-CheckUpdates; return }
+if ($Admin)             { Invoke-Admin;        return }
 
 # Default is -Start
 Invoke-Start

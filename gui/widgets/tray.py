@@ -35,10 +35,18 @@ def build_tray(app: QApplication, chat_window, client: BackendClient) -> QSystem
             chat_window.activateWindow()
 
     def _open_admin():
-        from gui.windows.admin import AdminWindow
-        w = AdminWindow(client)
-        w.show()
-        app._admin_win = w  # type: ignore[attr-defined]  # keep a ref
+        # Admin is a separate Qt process so it can enforce its own login
+        # dialog without conflicting with the chat session cookies.
+        import subprocess, sys as _sys
+        from pathlib import Path
+        gui_main = Path(__file__).resolve().parent.parent / "main.py"
+        pythonw = Path(_sys.executable).with_name("pythonw.exe")
+        exe = str(pythonw) if pythonw.exists() else _sys.executable
+        try:
+            subprocess.Popen([exe, str(gui_main), "--mode", "admin", "--api",
+                              client._base if hasattr(client, "_base") else "http://127.0.0.1:18000"])
+        except Exception:
+            pass
 
     def _open_metrics():
         from gui.windows.metrics import MetricsWindow

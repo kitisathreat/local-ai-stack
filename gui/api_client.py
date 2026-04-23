@@ -1,8 +1,8 @@
 """Thin async HTTP client for the backend.
 
-Uses ``httpx.AsyncClient`` with Qt via ``qasync``. Exposes typed
-wrappers for the endpoints the GUI needs: model list, SSE chat stream,
-metrics, admin read/write, airgap toggle.
+Uses ``httpx.AsyncClient`` with Qt via ``qasync``. Cookies (the
+``lai_session`` JWT set by /auth/login) persist on a shared
+``httpx.Cookies`` jar for the life of the process.
 """
 
 from __future__ import annotations
@@ -24,6 +24,9 @@ class BackendClient:
     def __init__(self, base_url: str, token: str | None = None, timeout: float = 60.0):
         self._base = base_url.rstrip("/")
         self._headers: dict[str, str] = {}
+        # Shared cookie jar — the session cookie set by /auth/login
+        # attaches automatically to every subsequent request.
+        self._cookies: httpx.Cookies = httpx.Cookies()
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
         self._timeout = timeout
@@ -36,37 +39,124 @@ class BackendClient:
         else:
             self._headers.pop("Authorization", None)
 
-    async def _client(self) -> httpx.AsyncClient:
+    def has_session(self) -> bool:
+        return any(c.name == "lai_session" for c in self._cookies.jar)
+
+    def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=self._base,
             headers=self._headers,
+            cookies=self._cookies,
             timeout=self._timeout,
         )
+
+    # ── Auth ──────────────────────────────────────────────────────────
+
+    async def login(self, username: str, password: str) -> dict:
+        async with self._client() as c:
+            r = await c.post(
+                "/auth/login",
+                json={"username": username, "password": password},
+            )
+            # Persist any cookies the server set.
+            self._cookies.update(r.cookies)
+            if r.status_code == 401:
+                raise ValueError("Invalid username or password")
+            r.raise_for_status()
+            return r.json()
+
+    async def logout(self) -> None:
+        async with self._client() as c:
+            try:
+                await c.post("/auth/logout")
+            except Exception:
+                pass
+        self._cookies.clear()
+
+    async def me(self) -> dict:
+        async with self._client() as c:
+            r = await c.get("/admin/me")
+            r.raise_for_status()
+            return r.json()
 
     # ── Read endpoints ─────────────────────────────────────────────────
 
     async def healthz(self) -> bool:
-        async with await self._client() as c:
+        async with self._client() as c:
             r = await c.get("/healthz")
             return r.status_code == 200
 
     async def list_models(self) -> list[dict]:
-        async with await self._client() as c:
+        async with self._client() as c:
             r = await c.get("/v1/models")
             r.raise_for_status()
             return (r.json() or {}).get("data", [])
 
     async def vram_status(self) -> dict:
-        async with await self._client() as c:
+        async with self._client() as c:
             r = await c.get("/vram")
             r.raise_for_status()
             return r.json()
 
     async def resolved_models(self) -> dict:
-        async with await self._client() as c:
+        async with self._client() as c:
             r = await c.get("/resolved-models")
             if r.status_code == 404:
                 return {}
+            r.raise_for_status()
+            return r.json()
+
+    async def airgap_state(self) -> dict:
+        async with self._client() as c:
+            r = await c.get("/api/airgap")
+            r.raise_for_status()
+            return r.json()
+
+    # ── Admin ─────────────────────────────────────────────────────────
+
+    async def admin_users(self) -> list[dict]:
+        async with self._client() as c:
+            r = await c.get("/admin/users")
+            r.raise_for_status()
+            return (r.json() or {}).get("data", [])
+
+    async def admin_create_user(
+        self, *, username: str, email: str, password: str, is_admin: bool = False,
+    ) -> dict:
+        async with self._client() as c:
+            r = await c.post("/admin/users", json={
+                "username": username, "email": email,
+                "password": password, "is_admin": is_admin,
+            })
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_patch_user(self, user_id: int, **fields) -> dict:
+        fields = {k: v for k, v in fields.items() if v is not None}
+        async with self._client() as c:
+            r = await c.patch(f"/admin/users/{user_id}", json=fields)
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_delete_user(self, user_id: int) -> None:
+        async with self._client() as c:
+            r = await c.delete(f"/admin/users/{user_id}")
+            r.raise_for_status()
+
+    async def admin_tools(self) -> list[dict]:
+        async with self._client() as c:
+            r = await c.get("/admin/tools")
+            r.raise_for_status()
+            return (r.json() or {}).get("data", [])
+
+    async def admin_set_tool_enabled(self, name: str, enabled: bool) -> None:
+        async with self._client() as c:
+            r = await c.patch(f"/admin/tools/{name}", json={"enabled": enabled})
+            r.raise_for_status()
+
+    async def admin_set_airgap(self, enabled: bool) -> dict:
+        async with self._client() as c:
+            r = await c.patch("/admin/airgap", json={"enabled": enabled})
             r.raise_for_status()
             return r.json()
 
@@ -87,7 +177,7 @@ class BackendClient:
         }
         if think is not None:
             payload["think"] = think
-        async with await self._client() as c:
+        async with self._client() as c:
             async with c.stream("POST", "/v1/chat/completions", json=payload) as r:
                 r.raise_for_status()
                 async for line in r.aiter_lines():
