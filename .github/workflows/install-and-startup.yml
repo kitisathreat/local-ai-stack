@@ -298,53 +298,58 @@ jobs:
           path: ci-logs/
           if-no-files-found: ignore
 
-      - name: Post failure details as PR comment
-        # The API-token MCP integration can't pull Actions logs/artifacts
-        # or check-run output; PR comments ARE readable through the MCP
-        # so the agent iterating on CI can see what failed.
-        if: failure() && github.event_name == 'pull_request'
+      - name: Post Windows job outcome as PR comment
+        # MCP can't pull Actions logs/artifacts/check-run output, but it
+        # CAN read PR comments. Always comment on PR events so I can
+        # verify the step itself ran, even when no failure is flagged
+        # (and so I can confirm successful runs too).
+        if: always() && github.event_name == 'pull_request'
         shell: pwsh
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
         run: |
-          $body = "## Windows — Install + Startup failed`n`n"
-          $body += "Run: $env:RUN_URL`n`n"
+          $ErrorActionPreference = 'Continue'
+          Write-Host "== Post PR comment step started =="
+          Write-Host "job.status = $env:JOB_STATUS"
+          Write-Host "pr = $env:PR_NUMBER"
+          Write-Host "run = $env:RUN_URL"
 
-          # $GITHUB_STEP_SUMMARY accumulates across all steps in the job —
-          # every earlier step's diagnostic output lives here, so it's
-          # the best signal for figuring out which step failed when
-          # setup.log isn't present.
-          if ($env:GITHUB_STEP_SUMMARY -and (Test-Path $env:GITHUB_STEP_SUMMARY)) {
-            $sum = Get-Content $env:GITHUB_STEP_SUMMARY -Raw
-            if ($sum) {
-              $body += "<details open><summary>step summary (all prior steps)</summary>`n`n$sum`n</details>`n`n"
-            }
-          }
-
-          if (Test-Path ci-logs/setup.log) {
-            $tail = Get-Content ci-logs/setup.log -Tail 120 -Raw
-            $body += "<details open><summary>setup.log (last 120 lines)</summary>`n`n``````text`n$tail`n```````n</details>`n`n"
+          $header = if ($env:JOB_STATUS -eq 'success') {
+            "## :white_check_mark: Windows — Install + Startup passed"
           } else {
-            $body += "_setup.log missing — failure was before the Setup step._`n`n"
+            "## :x: Windows — Install + Startup $($env:JOB_STATUS)"
           }
-          Get-ChildItem ci-logs -File -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -ne 'setup.log' } |
-              ForEach-Object {
-                $c = Get-Content $_.FullName -Tail 60 -Raw
-                if ($c) {
-                  $body += "<details><summary>$($_.Name) (last 60 lines)</summary>`n`n``````text`n$c`n```````n</details>`n`n"
-                }
+          $body = "$header`n`nRun: $env:RUN_URL`n`n"
+
+          if (Test-Path ci-logs) {
+            $files = Get-ChildItem ci-logs -File -ErrorAction SilentlyContinue | Sort-Object Name
+            $body += "ci-logs/ contains " + @($files).Count + " files`n`n"
+            foreach ($f in $files) {
+              $c = Get-Content $f.FullName -Tail 80 -Raw
+              if ($c) {
+                $open = if ($f.Name -eq 'setup.log' -or $f.Name -match 'runner|ollama|init') { 'open' } else { '' }
+                $body += "<details $open><summary>$($f.Name) (last 80 lines)</summary>`n`n``````text`n$c`n```````n</details>`n`n"
+              } else {
+                $body += "- $($f.Name) (empty)`n"
               }
+            }
+          } else {
+            $body += "_ci-logs/ dir does not exist — failure was before any step could write._`n`n"
+          }
+
           $file = Join-Path $env:RUNNER_TEMP 'pr-comment.md'
           Set-Content -Path $file -Value $body -Encoding utf8NoBOM
-          & gh pr comment $env:PR_NUMBER --body-file $file
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "gh comment failed ($LASTEXITCODE); body preview:"
-            Write-Host $body
-          }
+          Write-Host "body length: $($body.Length) chars"
+          Write-Host '── body preview ──'
+          Write-Host $body
+          Write-Host '── running gh pr comment ──'
+          $output = & gh pr comment $env:PR_NUMBER --body-file $file 2>&1
+          Write-Host "gh exit=$LASTEXITCODE"
+          Write-Host ($output -join "`n")
 
   # ── Linux fast-feedback: Python deps + backend boot + dry-run pull ──────────
   install-smoke-linux:
