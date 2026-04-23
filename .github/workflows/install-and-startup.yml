@@ -200,7 +200,15 @@ jobs:
           CHAT_HOSTNAME: localhost
           ADMIN_API_ALLOWED_HOSTS: "127.0.0.1,localhost"
           PUBLIC_BASE_URL: "http://127.0.0.1:18000"
+          # Backend defaults CONFIG_DIR/DATA_DIR to /app/..., which only
+          # exists inside the Docker image; on a Linux runner we point it
+          # at the checkout. The launcher sets these on Windows for us.
+          LAI_CONFIG_DIR: ${{ github.workspace }}/config
+          LAI_DATA_DIR: ${{ github.workspace }}/data
+          LAI_DB_PATH: ${{ github.workspace }}/data/lai.db
+          LAI_HISTORY_DIR: ${{ github.workspace }}/data/history
         run: |
+          mkdir -p data/history
           nohup .venv-backend/bin/python -m uvicorn backend.main:app \
             --host 127.0.0.1 --port 18000 > backend.log 2>&1 &
           echo $! > backend.pid

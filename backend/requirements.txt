@@ -29,7 +29,8 @@ redis[hiredis]==5.2.0
 
 # Web search — native mode replaces the SearXNG container with two
 # in-process providers. Brave is HTTP-only; ddgs is pure-Python.
-ddgs==6.3.0
+# ddgs 6.x was yanked from PyPI; 9.x keeps the DDGS().text() API we use.
+ddgs>=9.0.0,<10.0.0
 
 # Model version resolver — polls Hugging Face for the latest GGUF
 # revisions on startup and falls back to pinned versions on failure.
