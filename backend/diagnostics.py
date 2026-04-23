@@ -323,7 +323,7 @@ async def _http_get(url: str, timeout: float = 5.0) -> tuple[int, str]:
 
 async def check_ollama_reachable(url: str | None = None) -> CheckResult:
     name = "service.ollama"
-    base = (url or os.environ.get("OLLAMA_URL", "http://ollama:11434")).rstrip("/")
+    base = (url or os.environ.get("OLLAMA_URL", "http://localhost:11434")).rstrip("/")
     try:
         status, _ = await _http_get(f"{base}/api/tags")
         if status == 200:
@@ -335,7 +335,7 @@ async def check_ollama_reachable(url: str | None = None) -> CheckResult:
 
 async def check_llamacpp_reachable(url: str | None = None) -> CheckResult:
     name = "service.llamacpp"
-    base = (url or os.environ.get("LLAMACPP_URL", "http://llama-server:8001/v1")).rstrip("/")
+    base = (url or os.environ.get("LLAMACPP_URL", "http://localhost:8001/v1")).rstrip("/")
     try:
         status, _ = await _http_get(f"{base}/models")
         if status == 200:
@@ -347,7 +347,7 @@ async def check_llamacpp_reachable(url: str | None = None) -> CheckResult:
 
 async def check_qdrant_reachable(url: str | None = None) -> CheckResult:
     name = "service.qdrant"
-    base = (url or os.environ.get("QDRANT_URL", "http://qdrant:6333")).rstrip("/")
+    base = (url or os.environ.get("QDRANT_URL", "http://localhost:6333")).rstrip("/")
     try:
         status, _ = await _http_get(f"{base}/healthz")
         if status == 200:
@@ -374,16 +374,31 @@ async def check_redis_reachable(url: str | None = None) -> CheckResult:
         return _warn(name, f"Redis not reachable at {redis_url} — rate limiting degraded", str(exc))
 
 
-async def check_searxng_reachable(url: str | None = None) -> CheckResult:
-    name = "service.searxng"
-    base = (url or os.environ.get("SEARXNG_URL", "http://searxng:8080")).rstrip("/")
-    try:
-        status, _ = await _http_get(f"{base}/")
-        if status < 400:
-            return _ok(name, f"SearXNG reachable at {base}")
-        return _warn(name, f"SearXNG returned HTTP {status}", f"URL: {base}/")
-    except Exception as exc:
-        return _warn(name, f"SearXNG not reachable at {base} — web search will fail", str(exc))
+async def check_web_search_provider(provider: str | None = None) -> CheckResult:
+    """Validates the configured web-search provider.
+
+    Native mode has no SearXNG container. We pick one of:
+      * brave → requires BRAVE_API_KEY
+      * ddg   → pure-Python, no key required
+      * none  → web-search tools disabled
+    """
+    name = "service.web_search"
+    p = (provider or os.environ.get("WEB_SEARCH_PROVIDER") or "").strip().lower()
+    if not p:
+        p = "brave" if os.environ.get("BRAVE_API_KEY") else "ddg"
+    if p == "none":
+        return _ok(name, "Web search disabled (WEB_SEARCH_PROVIDER=none)")
+    if p == "brave":
+        if not os.environ.get("BRAVE_API_KEY"):
+            return _warn(name, "Brave provider selected but BRAVE_API_KEY is empty")
+        return _ok(name, "Brave web-search provider configured")
+    if p == "ddg":
+        try:
+            import ddgs  # noqa: F401
+        except ImportError as exc:
+            return _warn(name, "DuckDuckGo provider selected but 'ddgs' package not installed", str(exc))
+        return _ok(name, "DuckDuckGo web-search provider configured")
+    return _warn(name, f"Unknown WEB_SEARCH_PROVIDER={p!r} — expected brave|ddg|none")
 
 
 # ── Tool registry ─────────────────────────────────────────────────────────────
@@ -491,7 +506,7 @@ async def run_startup_diagnostics(
     llamacpp_url: str | None = None,
     qdrant_url: str | None = None,
     redis_url: str | None = None,
-    searxng_url: str | None = None,
+    web_search_provider: str | None = None,
 ) -> list[CheckResult]:
     """
     Run all diagnostic checks and log results.  Never raises.
@@ -537,7 +552,7 @@ async def run_startup_diagnostics(
         check_llamacpp_reachable(llamacpp_url),
         check_qdrant_reachable(qdrant_url),
         check_redis_reachable(redis_url),
-        check_searxng_reachable(searxng_url),
+        check_web_search_provider(web_search_provider),
     )
     results.extend(service_results)
 

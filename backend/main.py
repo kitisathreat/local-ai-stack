@@ -143,9 +143,11 @@ async def lifespan(app: FastAPI):
     state.tools = build_registry(tools_dir=tools_dir, config_dir=config_dir)
     logger.info("Tool registry ready: %d tools", len(state.tools.tools))
 
-    # Backend clients — endpoint overridable per-tier, these are fallbacks
-    default_ollama = os.getenv("OLLAMA_URL", "http://ollama:11434")
-    default_llama = os.getenv("LLAMACPP_URL", "http://llama-server:8001/v1")
+    # Backend clients — endpoint overridable per-tier, these are fallbacks.
+    # Defaults target native-mode localhost; the Docker path sets env vars
+    # explicitly in compose.
+    default_ollama = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    default_llama = os.getenv("LLAMACPP_URL", "http://localhost:8001/v1")
     state.ollama = OllamaClient(default_ollama)
     state.llama_cpp = LlamaCppClient(default_llama)
 
@@ -193,9 +195,9 @@ async def lifespan(app: FastAPI):
         registry=state.tools,
         ollama_url=default_ollama,
         llamacpp_url=default_llama,
-        qdrant_url=os.getenv("QDRANT_URL", "http://qdrant:6333"),
+        qdrant_url=os.getenv("QDRANT_URL", "http://localhost:6333"),
         redis_url=state.config.concurrency.redis_url,
-        searxng_url=os.getenv("SEARXNG_URL", "http://searxng:8080"),
+        web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "ddg"),
     )
 
     try:
@@ -274,6 +276,21 @@ async def list_models():
 @app.get("/vram")
 async def vram_status():
     return await state.scheduler.status()
+
+
+@app.get("/resolved-models")
+async def resolved_models():
+    """Returns data/resolved-models.json — written by backend.model_resolver
+    before each -Start. Native GUI reads this to show the tier status tab.
+    """
+    data_dir = Path(os.getenv("LAI_DATA_DIR", "/app/data"))
+    path = data_dir / "resolved-models.json"
+    if not path.exists():
+        return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
 
 
 def _read_meminfo() -> dict[str, int]:

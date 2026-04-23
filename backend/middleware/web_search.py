@@ -1,17 +1,25 @@
-"""Auto web-search via SearXNG.
+"""Auto web-search — in-process providers (no SearXNG dependency).
 
-Ported from pipelines/web_search_rag.py. When a user's latest message
-contains a "current info" trigger (date words, price/news keywords,
-etc.), we search SearXNG and append the top-K results to the user
-message before sending to the model.
+Native mode replaces the SearXNG container with two pure-Python
+providers selected via ``WEB_SEARCH_PROVIDER``:
+
+    brave → Brave Search API (requires ``BRAVE_API_KEY``)
+    ddg   → DuckDuckGo via the ``ddgs`` package (no key)
+    none  → web-search disabled
+
+When the user's latest message contains a "current info" trigger
+(date words, price/news keywords, etc.), we search via the selected
+provider and append the top-K results to the user message before
+sending to the model.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
-from typing import Iterable
+from typing import Protocol
 
 import httpx
 
@@ -22,9 +30,8 @@ from ..schemas import ChatMessage
 logger = logging.getLogger(__name__)
 
 
-SEARXNG_URL = os.getenv("SEARXNG_URL", "http://searxng:8080")
-MAX_RESULTS = int(os.getenv("SEARXNG_MAX_RESULTS", "3"))
-TIMEOUT = int(os.getenv("SEARXNG_TIMEOUT", "8"))
+MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", os.getenv("SEARXNG_MAX_RESULTS", "3")))
+TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", os.getenv("SEARXNG_TIMEOUT", "8")))
 
 
 TRIGGER_PATTERNS = [
@@ -44,19 +51,124 @@ def needs_search(message: str, always: bool = False) -> bool:
     return any(re.search(p, msg) for p in TRIGGER_PATTERNS)
 
 
-async def search(query: str) -> list[dict]:
-    params = {
-        "q": query,
-        "format": "json",
-        "engines": "google,bing,duckduckgo",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.get(f"{SEARXNG_URL.rstrip('/')}/search", params=params)
+# ── Provider protocol ─────────────────────────────────────────────────────
+
+class WebSearchProvider(Protocol):
+    name: str
+
+    async def search(self, query: str, max_results: int) -> list[dict]:
+        ...
+
+
+class BraveSearchProvider:
+    """Brave Search API — https://api.search.brave.com/res/v1/web/search
+
+    Free tier is generous (thousands of queries per month). Requires
+    ``BRAVE_API_KEY`` in the environment.
+    """
+
+    name = "brave"
+
+    def __init__(self, api_key: str, timeout: int = TIMEOUT):
+        self._api_key = api_key
+        self._timeout = timeout
+
+    async def search(self, query: str, max_results: int) -> list[dict]:
+        headers = {
+            "Accept": "application/json",
+            "X-Subscription-Token": self._api_key,
+        }
+        params = {"q": query, "count": max_results}
+        url = "https://api.search.brave.com/res/v1/web/search"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(url, headers=headers, params=params)
             resp.raise_for_status()
-            return (resp.json() or {}).get("results", [])[:MAX_RESULTS]
+            payload = resp.json() or {}
+        results = (payload.get("web") or {}).get("results") or []
+        return [
+            {
+                "title": r.get("title") or "",
+                "content": r.get("description") or r.get("snippet") or "",
+                "url": r.get("url") or "",
+            }
+            for r in results[:max_results]
+        ]
+
+
+class DuckDuckGoProvider:
+    """DuckDuckGo via the ``ddgs`` package. No API key required.
+
+    ``ddgs.DDGS().text()`` is synchronous; we run it in a thread so
+    it doesn't block the event loop.
+    """
+
+    name = "ddg"
+
+    def __init__(self, timeout: int = TIMEOUT):
+        self._timeout = timeout
+
+    async def search(self, query: str, max_results: int) -> list[dict]:
+        def _run() -> list[dict]:
+            from ddgs import DDGS
+            with DDGS(timeout=self._timeout) as ddg:
+                return list(ddg.text(query, max_results=max_results))
+        raw = await asyncio.to_thread(_run)
+        return [
+            {
+                "title": r.get("title") or "",
+                "content": r.get("body") or r.get("snippet") or "",
+                "url": r.get("href") or r.get("url") or "",
+            }
+            for r in raw[:max_results]
+        ]
+
+
+class NoneProvider:
+    name = "none"
+
+    async def search(self, query: str, max_results: int) -> list[dict]:
+        return []
+
+
+def _select_provider() -> WebSearchProvider:
+    explicit = (os.getenv("WEB_SEARCH_PROVIDER") or "").strip().lower()
+    brave_key = os.getenv("BRAVE_API_KEY") or ""
+    if explicit == "none":
+        return NoneProvider()
+    if explicit == "brave" or (not explicit and brave_key):
+        if not brave_key:
+            logger.warning("WEB_SEARCH_PROVIDER=brave but BRAVE_API_KEY is empty — disabling web search")
+            return NoneProvider()
+        return BraveSearchProvider(brave_key)
+    if explicit == "ddg" or not explicit:
+        try:
+            import ddgs  # noqa: F401
+        except ImportError:
+            logger.warning("DuckDuckGo provider requested but 'ddgs' package not installed — disabling web search")
+            return NoneProvider()
+        return DuckDuckGoProvider()
+    logger.warning("Unknown WEB_SEARCH_PROVIDER=%r — disabling web search", explicit)
+    return NoneProvider()
+
+
+_provider: WebSearchProvider | None = None
+
+
+def get_provider() -> WebSearchProvider:
+    global _provider
+    if _provider is None:
+        _provider = _select_provider()
+    return _provider
+
+
+async def search(query: str) -> list[dict]:
+    try:
+        return await get_provider().search(query, MAX_RESULTS)
     except httpx.HTTPError as e:
-        logger.warning("SearXNG query failed: %s", e)
+        logger.warning("Web-search HTTP error: %s", e)
+        return []
+    except Exception as e:  # pragma: no cover — defence against provider-specific failures
+        logger.warning("Web-search failed: %s", e)
         return []
 
 
@@ -82,10 +194,10 @@ async def inject_web_results(
     user message if trigger patterns match.
 
     Short-circuits to a no-op when airgap mode is on — the whole point
-    of airgap is that we never reach out to SearXNG (or anywhere else
-    off the box). Logged at INFO so operators can see the gate firing."""
+    of airgap is that we never reach out to the internet. Logged at
+    INFO so operators can see the gate firing."""
     if airgap.is_enabled():
-        logger.info("Airgap mode ON — skipping SearXNG injection")
+        logger.info("Airgap mode ON — skipping web-search injection")
         return messages
     last_user_idx: int | None = None
     last_user_text = ""
