@@ -2,8 +2,14 @@
 
 Uses the FastAPI TestClient against an in-process app bound to a
 temp SQLite file, with bcrypt cost forced to 4 for speed.
+
+Note: do NOT add `from __future__ import annotations` here — the
+nested FastAPI handler inside app_client() relies on live type
+annotations (LoginRequest) so FastAPI recognizes the parameter as
+a request body. Under PEP 563 stringified annotations, FastAPI
+falls back to treating the param as a query parameter and returns
+422 for every call.
 """
-from __future__ import annotations
 
 import os
 import sys

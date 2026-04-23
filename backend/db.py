@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+-- idx_users_username is created AFTER the v2->v3 column migration in
+-- init_db(); putting it here would fail on legacy DBs that still have
+-- only the pre-v3 users table.
 
 CREATE TABLE IF NOT EXISTS conversations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,6 +183,11 @@ async def init_db() -> None:
             c, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0",
         )
         await c.execute("DROP TABLE IF EXISTS magic_links")
+        # Safe to create the username index now — the column exists
+        # either from a fresh SCHEMA or from the migration above.
+        await c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)"
+        )
         await c.commit()
 
 
