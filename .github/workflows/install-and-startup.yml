@@ -34,35 +34,46 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType Directory -Path ci-logs -Force | Out-Null
 
-      - name: Runner diagnostics
+      - name: Runner diagnostics + write-test + PR comment
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           $log = Join-Path (Get-Location) 'ci-logs/01-runner-diagnostics.log'
-          $py = (Get-Command python -ErrorAction SilentlyContinue).Source
-          $git = (Get-Command git -ErrorAction SilentlyContinue).Source
-          $curlp = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
-          $tarp = (Get-Command tar.exe -ErrorAction SilentlyContinue).Source
-          $ghp = (Get-Command gh -ErrorAction SilentlyContinue).Source
-          $lines = @(
-            '### Windows runner diagnostics',
-            "- runner image: $($env:ImageOS) / $($env:ImageVersion)",
-            "- PSVersion: $($PSVersionTable.PSVersion)",
-            "- PSEdition: $($PSVersionTable.PSEdition)",
-            "- OS: $([System.Environment]::OSVersion.VersionString)",
-            "- pwd: $(Get-Location)",
-            "- python: $py",
-            "- git: $git",
-            "- curl.exe: $curlp",
-            "- tar.exe: $tarp",
-            "- gh: $ghp",
-            "- LocalAIStack.ps1 exists: $([bool](Test-Path LocalAIStack.ps1))",
-            "- log path (abs): $log"
-          )
-          $content = $lines -join "`n"
-          Write-Host $content
-          # Absolute path + Out-File — no pipeline weirdness.
-          $content | Out-File -FilePath $log -Encoding utf8
-          Write-Host "log size after write: $((Get-Item $log).Length) bytes"
+          $content = "### Runner diagnostics`n" +
+                     "- PSVersion: $($PSVersionTable.PSVersion)`n" +
+                     "- pwd: $(Get-Location)`n" +
+                     "- log path: $log`n" +
+                     "- timestamp: $(Get-Date -Format o)`n"
+
+          # Bypass the pwsh pipeline entirely. Previous runs produced
+          # empty log files via Out-File/Add-Content/Tee-Object on this
+          # runner — something in the pwsh stream plumbing is eating
+          # our writes. Use raw .NET file I/O.
+          [System.IO.File]::WriteAllText($log, $content, [System.Text.UTF8Encoding]::new($false))
+
+          $fi = Get-Item $log
+          $readback = [System.IO.File]::ReadAllText($log)
+          $status = "write_size_bytes=$($fi.Length); readback_size_chars=$($readback.Length)"
+
+          # Post a PR comment immediately with the result, so we can
+          # verify this step ran and prove or disprove the write. If
+          # the comment shows up but the file size is 0, the write
+          # itself is failing. If the comment doesn't show up, the
+          # step never ran.
+          if ($env:PR_NUMBER) {
+            $body = "### :microscope: runner-diagnostics write-test`n`n" +
+                    "$status`n`n" +
+                    "<details><summary>content written</summary>`n`n``````text`n$content`n```````n</details>`n`n" +
+                    "<details><summary>readback content</summary>`n`n``````text`n$readback`n```````n</details>`n"
+            $tmp = Join-Path $env:RUNNER_TEMP 'diag-comment.md'
+            Set-Content -Path $tmp -Value $body -Encoding utf8NoBOM
+            & gh pr comment $env:PR_NUMBER --body-file $tmp 2>&1 | Write-Host
+            Write-Host "gh exit=$LASTEXITCODE"
+          }
+
+          Write-Host $status
 
       - name: Pre-install Ollama (standalone zip, no installer)
         shell: pwsh
