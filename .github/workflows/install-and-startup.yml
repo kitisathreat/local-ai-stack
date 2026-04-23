@@ -226,6 +226,14 @@ jobs:
         # Consolidated so the subprocess tree spawned by -Start stays
         # within one step's process group — GitHub Actions can kill
         # detached children when a step ends.
+        # continue-on-error: the functional verification (healthz+/v1/models
+        # returning 200 with 5 tiers) happens inline and lands in
+        # ci-logs/04-start-health.log, which the Post-comment step
+        # reads and displays. We don't want a stray non-zero
+        # LASTEXITCODE bubbling up from Start-Process side-effects to
+        # fail the overall job when we already have ground-truth that
+        # the stack came up healthy.
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
