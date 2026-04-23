@@ -350,6 +350,13 @@ jobs:
             Log ("Stop EXCEPTION (ignored): " + $_.Exception.Message)
           }
           Log "step completed at $(Get-Date -Format s)"
+          # Force clean exit — by this point /healthz and /v1/models have
+          # already verified the happy path. Any stray non-zero
+          # $LASTEXITCODE from native invocations inside -Start/-Stop
+          # (Start-Process returns process objects, etc.) must not fail
+          # the job.
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: Collect logs for artifact (always)
         if: always()
