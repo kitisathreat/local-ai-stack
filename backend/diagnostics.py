@@ -232,7 +232,7 @@ def check_history_encryption_roundtrip() -> CheckResult:
 # ── Database ──────────────────────────────────────────────────────────────────
 
 _EXPECTED_TABLES = frozenset({
-    "users", "magic_links", "conversations",
+    "users", "conversations",
     "messages", "memories", "rag_docs", "usage_events",
 })
 

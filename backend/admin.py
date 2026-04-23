@@ -1,25 +1,30 @@
 """Admin dashboard API.
 
-Access model:
-    - ADMIN_EMAILS env var (comma-separated) lists users allowed to call
-      /admin/* endpoints. A signed-in user whose email matches gets through;
-      anyone else receives 403.
-    - If ADMIN_EMAILS is unset, admin endpoints are disabled (503).
+Access model (Phase 3, password auth):
+    - Users have an `is_admin` boolean column. The `require_admin`
+      dependency gates every /admin/* route by that flag.
+    - "Admin configured" means at least one is_admin=1 user exists.
+      If none do, the Qt admin window prompts for first-run creation
+      via `backend.seed_admin`.
 
 Endpoints mounted under /admin:
-    GET   /admin/me                  - {email, is_admin}
-    GET   /admin/overview            - counters + totals
-    GET   /admin/usage               - bucketed time series
-    GET   /admin/usage/by_tier
-    GET   /admin/usage/by_user
-    GET   /admin/errors              - recent error events
-    GET   /admin/users               - full user list
+    GET    /admin/me                 - {username, email, is_admin, admin_configured}
+    GET    /admin/overview           - counters + totals
+    GET    /admin/usage              - bucketed time series
+    GET    /admin/usage/by_tier
+    GET    /admin/usage/by_user
+    GET    /admin/errors             - recent error events
+    GET    /admin/users              - full user list
+    POST   /admin/users              - create a new user (admin-only)
+    PATCH  /admin/users/{id}         - edit username/email/password/is_admin
     DELETE /admin/users/{id}         - hard-delete a user (cascades)
-    GET   /admin/config              - current config snapshot (tweakable fields)
-    PATCH /admin/config              - apply patches, write YAML, hot-reload
-    GET   /admin/tools               - tool registry with enabled flags
-    PATCH /admin/tools/{name}        - enable/disable a tool (memory-only)
-    POST  /admin/reload              - force reload config from disk
+    GET    /admin/config             - current config snapshot
+    PATCH  /admin/config             - apply patches, write YAML, hot-reload
+    GET    /admin/tools              - tool registry with enabled flags
+    PATCH  /admin/tools/{name}       - enable/disable a tool (memory-only)
+    POST   /admin/reload             - force reload config from disk
+    GET    /admin/airgap             - airgap state
+    PATCH  /admin/airgap             - toggle airgap mode
 
 Config writes are guarded: only a whitelisted set of YAML paths can change,
 and each file is rewritten atomically (tmp-file + rename).
@@ -34,11 +39,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import airgap, auth, db, metrics
+from . import airgap, auth, db, metrics, passwords
 from .config import AppConfig, CONFIG_DIR
+from .schemas import CreateUserRequest, UpdateUserRequest
 
 
 logger = logging.getLogger(__name__)
@@ -48,26 +55,8 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 # ── Role gate ────────────────────────────────────────────────────────────
 
-def _admin_emails() -> set[str]:
-    raw = os.getenv("ADMIN_EMAILS", "")
-    return {e.strip().lower() for e in raw.split(",") if e.strip()}
-
-
-def is_admin_email(email: str | None) -> bool:
-    if not email:
-        return False
-    return email.lower() in _admin_emails()
-
-
 async def require_admin(user: dict = Depends(auth.current_user)) -> dict:
-    admins = _admin_emails()
-    if not admins:
-        raise HTTPException(
-            503,
-            "Admin dashboard is disabled. Set ADMIN_EMAILS env var (comma-"
-            "separated list of admin email addresses) to enable it.",
-        )
-    if (user.get("email") or "").lower() not in admins:
+    if not user.get("is_admin"):
         raise HTTPException(403, "Not an admin account")
     return user
 
@@ -76,10 +65,12 @@ async def require_admin(user: dict = Depends(auth.current_user)) -> dict:
 
 @router.get("/me")
 async def admin_me(user: dict = Depends(auth.current_user)):
+    admin_count = await db.count_admins()
     return {
+        "username": user.get("username", ""),
         "email": user["email"],
-        "is_admin": is_admin_email(user.get("email")),
-        "admin_configured": bool(_admin_emails()),
+        "is_admin": bool(user.get("is_admin")),
+        "admin_configured": admin_count > 0,
     }
 
 
@@ -126,28 +117,75 @@ async def errors(limit: int = 25, _: dict = Depends(require_admin)):
 async def users(_: dict = Depends(require_admin)):
     async with db.get_conn() as c:
         rows = await (await c.execute(
-            "SELECT u.id, u.email, u.created_at, u.last_login_at, "
+            "SELECT u.id, u.username, u.email, u.is_admin, u.created_at, u.last_login_at, "
             "       (SELECT COUNT(*) FROM conversations c WHERE c.user_id = u.id) AS conversations, "
             "       (SELECT COUNT(*) FROM memories m WHERE m.user_id = u.id) AS memories, "
             "       (SELECT COUNT(*) FROM rag_docs r WHERE r.user_id = u.id) AS rag_docs "
             "FROM users u ORDER BY u.last_login_at DESC NULLS LAST",
         )).fetchall()
-    admins = _admin_emails()
-    return {"data": [
-        {**dict(r), "is_admin": (r["email"] or "").lower() in admins}
-        for r in rows
-    ]}
+    data = []
+    for r in rows:
+        d = dict(r)
+        d["is_admin"] = bool(d.get("is_admin"))
+        data.append(d)
+    return {"data": data}
+
+
+@router.post("/users")
+async def create_user(body: CreateUserRequest, _: dict = Depends(require_admin)):
+    if not body.password or len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if not body.username.strip():
+        raise HTTPException(400, "Username must not be empty")
+    try:
+        user = await db.create_user(
+            username=body.username,
+            email=body.email,
+            password_hash=passwords.hash_password(body.password),
+            is_admin=body.is_admin,
+        )
+    except aiosqlite.IntegrityError:
+        raise HTTPException(409, "Username or email already exists")
+    # Strip the hash from the response.
+    user.pop("password_hash", None)
+    return user
+
+
+@router.patch("/users/{user_id}")
+async def patch_user(
+    user_id: int, body: UpdateUserRequest, actor: dict = Depends(require_admin),
+):
+    if user_id == actor["id"] and body.is_admin is False:
+        raise HTTPException(400, "Refusing to revoke your own admin privileges")
+    existing = await db.get_user(user_id)
+    if not existing:
+        raise HTTPException(404, "User not found")
+    if body.username is not None or body.email is not None:
+        try:
+            await db.update_user_fields(
+                user_id, username=body.username, email=body.email,
+            )
+        except aiosqlite.IntegrityError:
+            raise HTTPException(409, "Username or email already exists")
+    if body.password:
+        if len(body.password) < 8:
+            raise HTTPException(400, "Password must be at least 8 characters")
+        await db.set_user_password(user_id, passwords.hash_password(body.password))
+    if body.is_admin is not None:
+        await db.set_user_admin(user_id, body.is_admin)
+    user = await db.get_user(user_id)
+    if user:
+        user.pop("password_hash", None)
+    return user
 
 
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: int, actor: dict = Depends(require_admin)):
     if user_id == actor["id"]:
         raise HTTPException(400, "Refusing to delete your own admin account")
-    async with db.get_conn() as c:
-        cur = await c.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        await c.commit()
-        if cur.rowcount == 0:
-            raise HTTPException(404, "User not found")
+    ok = await db.delete_user(user_id)
+    if not ok:
+        raise HTTPException(404, "User not found")
     return {"ok": True}
 
 
@@ -253,10 +291,8 @@ async def get_config(_: dict = Depends(require_admin)):
             },
         },
         "auth": {
-            "magic_link_expiry_minutes": cfg.auth.magic_link.expiry_minutes,
             "allowed_email_domains": list(cfg.auth.allowed_email_domains),
             "rate_limits": {
-                "requests_per_hour_per_email": cfg.auth.rate_limits.requests_per_hour_per_email,
                 "requests_per_hour_per_ip": cfg.auth.rate_limits.requests_per_hour_per_ip,
                 "requests_per_minute_per_user": cfg.auth.rate_limits.requests_per_minute_per_user,
                 "requests_per_day_per_user": cfg.auth.rate_limits.requests_per_day_per_user,
@@ -400,9 +436,6 @@ def _patch_router(patch: dict, doc: dict) -> list[str]:
 
 def _patch_auth(patch: dict, doc: dict) -> list[str]:
     changes: list[str] = []
-    if "magic_link_expiry_minutes" in patch:
-        doc.setdefault("magic_link", {})["expiry_minutes"] = int(patch["magic_link_expiry_minutes"])
-        changes.append("auth.magic_link.expiry_minutes")
     if "allowed_email_domains" in patch:
         val = patch["allowed_email_domains"]
         if isinstance(val, str):
@@ -410,9 +443,6 @@ def _patch_auth(patch: dict, doc: dict) -> list[str]:
         doc["allowed_email_domains"] = [str(d).lower() for d in val]
         changes.append("auth.allowed_email_domains")
     rl = patch.get("rate_limits") or {}
-    if "requests_per_hour_per_email" in rl:
-        doc.setdefault("rate_limits", {})["requests_per_hour_per_email"] = int(rl["requests_per_hour_per_email"])
-        changes.append("auth.rate_limits.requests_per_hour_per_email")
     if "requests_per_hour_per_ip" in rl:
         doc.setdefault("rate_limits", {})["requests_per_hour_per_ip"] = int(rl["requests_per_hour_per_ip"])
         changes.append("auth.rate_limits.requests_per_hour_per_ip")

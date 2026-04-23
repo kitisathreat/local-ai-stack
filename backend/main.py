@@ -46,17 +46,20 @@ from .tools import executor as tool_executor
 from .tools.registry import ToolRegistry, build_registry
 from .schemas import (
     AgentEvent,
+    ChangePasswordRequest,
     ChatRequest,
     ConversationListResponse,
     ConversationSummary,
     ConversationUpdate,
     ConversationWithMessages,
-    MagicLinkRequest,
-    MagicLinkResponse,
+    CreateUserRequest,
+    LoginRequest,
+    LoginResponse,
     MeResponse,
     MessageOut,
     ModelsListResponse,
     TierInfo,
+    UpdateUserRequest,
 )
 from .diagnostics import run_startup_diagnostics
 from .vram_scheduler import QueueFull, QueueTimeout, VRAMScheduler, VRAMExhausted
@@ -214,6 +217,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
 app.include_router(admin.router)
 
+# Serve the minimal vanilla-JS chat UI at / so cloudflared fronting
+# chat.mylensandi.com lands on a real page. No build step; no SPA.
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+    @app.get("/", include_in_schema=False)
+    async def chat_index():
+        path = _static_dir / "chat.html"
+        if not path.exists():
+            return Response(status_code=404)
+        return FileResponse(str(path))
+
+
 # CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
 # Cloudflare Tunnel hostname is set via setup-cloudflared.sh. Local dev
 # defaults to wildcard. We warn if wildcard+credentials is configured since
@@ -234,6 +254,12 @@ app.add_middleware(
     expose_headers=["content-type"],
     max_age=600,
 )
+
+# Host-gate must be LAST-added so it's OUTERMOST (Starlette middleware
+# runs in reverse registration order). Rejections short-circuit before
+# CORS preflight and before any handler runs.
+from .middleware.host_gate import HostGateMiddleware  # noqa: E402
+app.add_middleware(HostGateMiddleware)
 
 
 @app.middleware("http")
@@ -283,7 +309,7 @@ async def resolved_models():
     """Returns data/resolved-models.json — written by backend.model_resolver
     before each -Start. Native GUI reads this to show the tier status tab.
     """
-    data_dir = Path(os.getenv("LAI_DATA_DIR", "/app/data"))
+    data_dir = Path(os.getenv("LAI_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
     path = data_dir / "resolved-models.json"
     if not path.exists():
         return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
@@ -849,44 +875,25 @@ async def _multi_agent_sse(
 
 # ── Auth routes ─────────────────────────────────────────────────────────
 
-@app.post("/auth/request", response_model=MagicLinkResponse)
-async def auth_request(req: MagicLinkRequest, request: Request):
+@app.post("/auth/login", response_model=LoginResponse)
+async def auth_login(body: LoginRequest, request: Request):
+    """Username + password login. Sets the `lai_session` JWT cookie.
+
+    Constant-time on failure (see `auth.authenticate`) so timing doesn't
+    leak whether the username exists.
+    """
     cfg = state.config.auth
-    email = req.email.lower().strip()
-    if not auth.valid_email(email, cfg):
-        raise HTTPException(400, "Invalid or disallowed email address")
-
-    await auth.check_rate_limits(email, cfg)
-
-    expiry_s = cfg.magic_link.expiry_minutes * 60
-    client_ip = request.headers.get("x-forwarded-for", "") or (request.client.host if request.client else "")
-    token = await db.create_magic_link(email, expiry_s, client_ip)
-
-    base = os.getenv("PUBLIC_BASE_URL", f"http://{request.url.hostname}:{request.url.port or 8000}")
-    verify_url = f"{base}/auth/verify?token={token}"
-    try:
-        await auth.send_magic_email(email, verify_url, cfg)
-    except Exception as e:
-        logger.exception("Failed to send magic-link email")
-        raise HTTPException(500, f"Failed to send email: {e}")
-
-    return MagicLinkResponse(ok=True, message="Check your inbox for a sign-in link.")
-
-
-@app.get("/auth/verify")
-async def auth_verify(token: str, request: Request):
-    cfg = state.config.auth
-    consumed = await db.consume_magic_link(token)
-    if not consumed:
-        raise HTTPException(400, "Magic link is invalid, expired, or already used")
-
-    user = await db.get_or_create_user(consumed["email"])
+    user = await auth.authenticate(body.username, body.password)
+    if not user:
+        raise HTTPException(401, "Invalid username or password")
     session_token = auth.issue_session_token(user["id"], cfg)
-
-    # Redirect to the app root with the session cookie set.
-    redirect_to = os.getenv("PUBLIC_BASE_URL", "/")
-    resp = Response(status_code=302)
-    resp.headers["Location"] = redirect_to
+    resp = JSONResponse(
+        LoginResponse(
+            ok=True,
+            is_admin=bool(user.get("is_admin")),
+            username=user["username"],
+        ).model_dump()
+    )
     resp.set_cookie(
         key=cfg.session.cookie_name,
         value=session_token,
@@ -905,6 +912,20 @@ async def auth_logout():
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(cfg.session.cookie_name, path="/")
     return resp
+
+
+@app.post("/auth/change-password")
+async def auth_change_password(
+    body: ChangePasswordRequest,
+    user: dict = Depends(auth.current_user),
+):
+    from . import passwords as _pw
+    if not _pw.verify_password(body.current_password, user.get("password_hash") or ""):
+        raise HTTPException(401, "Current password is incorrect")
+    if not body.new_password or len(body.new_password) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters")
+    await db.set_user_password(user["id"], _pw.hash_password(body.new_password))
+    return {"ok": True}
 
 
 @app.get("/me", response_model=MeResponse)

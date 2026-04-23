@@ -30,23 +30,18 @@ DB_PATH = Path(os.getenv("LAI_DB_PATH", "/app/data/lai.db"))
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE DEFAULT '',
     email         TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL DEFAULT '',
+    is_admin      INTEGER NOT NULL DEFAULT 0,
     created_at    REAL NOT NULL,
     last_login_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-
-CREATE TABLE IF NOT EXISTS magic_links (
-    token      TEXT PRIMARY KEY,
-    email      TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    expires_at REAL NOT NULL,
-    used_at    REAL,
-    ip         TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_magic_links_email ON magic_links(email, created_at);
+-- idx_users_username is created AFTER the v2->v3 column migration in
+-- init_db(); putting it here would fail on legacy DBs that still have
+-- only the pre-v3 users table.
 
 CREATE TABLE IF NOT EXISTS conversations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +171,23 @@ async def init_db() -> None:
         await _migrate_add_column(
             c, "memories", "airgap", "INTEGER NOT NULL DEFAULT 0",
         )
+        # Password-auth migration (Phase 3): add columns on pre-existing
+        # users tables, drop the magic_links table entirely.
+        await _migrate_add_column(
+            c, "users", "username", "TEXT NOT NULL DEFAULT ''",
+        )
+        await _migrate_add_column(
+            c, "users", "password_hash", "TEXT NOT NULL DEFAULT ''",
+        )
+        await _migrate_add_column(
+            c, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0",
+        )
+        await c.execute("DROP TABLE IF EXISTS magic_links")
+        # Safe to create the username index now — the column exists
+        # either from a fresh SCHEMA or from the migration above.
+        await c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)"
+        )
         await c.commit()
 
 
@@ -189,87 +201,139 @@ async def _migrate_add_column(
     await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_sql}")
 
 
-# ── Users ────────────────────────────────────────────────────────────────
+# ── Users (password auth) ───────────────────────────────────────────────
 
-async def get_or_create_user(email: str) -> dict[str, Any]:
+_USER_COLS = "id, username, email, password_hash, is_admin, created_at, last_login_at"
+
+
+def _user_row(row) -> dict | None:
+    if not row:
+        return None
+    d = dict(row)
+    d["is_admin"] = bool(d.get("is_admin"))
+    return d
+
+
+async def create_user(
+    *,
+    username: str,
+    email: str,
+    password_hash: str,
+    is_admin: bool = False,
+) -> dict:
+    """Insert a new user. Raises sqlite3.IntegrityError on duplicate
+    username or email; callers map that to HTTP 409."""
+    username = username.strip()
     email = email.lower().strip()
+    if not username:
+        raise ValueError("username must not be empty")
     now = time.time()
     async with get_conn() as c:
-        row = await (await c.execute(
-            "SELECT id, email, created_at, last_login_at FROM users WHERE email = ?",
-            (email,),
-        )).fetchone()
-        if row:
-            await c.execute(
-                "UPDATE users SET last_login_at = ? WHERE id = ?",
-                (now, row["id"]),
-            )
-            await c.commit()
-            return dict(row)
-        await c.execute(
-            "INSERT INTO users (email, created_at, last_login_at) VALUES (?, ?, ?)",
-            (email, now, now),
+        cur = await c.execute(
+            "INSERT INTO users (username, email, password_hash, is_admin, "
+            "created_at, last_login_at) VALUES (?, ?, ?, ?, ?, NULL)",
+            (username, email, password_hash, 1 if is_admin else 0, now),
         )
         await c.commit()
         row = await (await c.execute(
-            "SELECT id, email, created_at, last_login_at FROM users WHERE email = ?",
-            (email,),
+            f"SELECT {_USER_COLS} FROM users WHERE id = ?",
+            (cur.lastrowid,),
         )).fetchone()
-        return dict(row)
+        return _user_row(row)
 
 
 async def get_user(user_id: int) -> dict | None:
     async with get_conn() as c:
         row = await (await c.execute(
-            "SELECT id, email, created_at, last_login_at FROM users WHERE id = ?",
-            (user_id,),
+            f"SELECT {_USER_COLS} FROM users WHERE id = ?", (user_id,),
         )).fetchone()
-        return dict(row) if row else None
+        return _user_row(row)
 
 
-# ── Magic links ──────────────────────────────────────────────────────────
-
-async def create_magic_link(email: str, expiry_seconds: int, ip: str | None) -> str:
-    email = email.lower().strip()
-    token = secrets.token_urlsafe(32)
-    now = time.time()
-    async with get_conn() as c:
-        await c.execute(
-            "INSERT INTO magic_links (token, email, created_at, expires_at, ip) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (token, email, now, now + expiry_seconds, ip),
-        )
-        await c.commit()
-    return token
-
-
-async def count_recent_magic_links_for_email(email: str, window_seconds: int) -> int:
-    email = email.lower().strip()
-    since = time.time() - window_seconds
+async def get_user_by_username(username: str) -> dict | None:
+    username = username.strip()
+    if not username:
+        return None
     async with get_conn() as c:
         row = await (await c.execute(
-            "SELECT COUNT(*) AS n FROM magic_links WHERE email = ? AND created_at >= ?",
-            (email, since),
+            f"SELECT {_USER_COLS} FROM users WHERE username = ?",
+            (username,),
+        )).fetchone()
+        return _user_row(row)
+
+
+async def list_users() -> list[dict]:
+    async with get_conn() as c:
+        rows = await (await c.execute(
+            f"SELECT {_USER_COLS} FROM users ORDER BY created_at ASC"
+        )).fetchall()
+        return [_user_row(r) for r in rows]
+
+
+async def count_admins() -> int:
+    async with get_conn() as c:
+        row = await (await c.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE is_admin = 1"
         )).fetchone()
         return int(row["n"])
 
 
-async def consume_magic_link(token: str) -> dict | None:
-    """Verify + mark a magic-link token as used. Returns {email} on success,
-    None if missing, expired, or already consumed."""
-    now = time.time()
+async def mark_login(user_id: int) -> None:
     async with get_conn() as c:
-        row = await (await c.execute(
-            "SELECT token, email, expires_at, used_at FROM magic_links WHERE token = ?",
-            (token,),
-        )).fetchone()
-        if not row or row["used_at"] is not None or now > row["expires_at"]:
-            return None
         await c.execute(
-            "UPDATE magic_links SET used_at = ? WHERE token = ?", (now, token),
+            "UPDATE users SET last_login_at = ? WHERE id = ?",
+            (time.time(), user_id),
         )
         await c.commit()
-        return {"email": row["email"]}
+
+
+async def set_user_password(user_id: int, password_hash: str) -> bool:
+    async with get_conn() as c:
+        cur = await c.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (password_hash, user_id),
+        )
+        await c.commit()
+        return cur.rowcount > 0
+
+
+async def set_user_admin(user_id: int, is_admin: bool) -> bool:
+    async with get_conn() as c:
+        cur = await c.execute(
+            "UPDATE users SET is_admin = ? WHERE id = ?",
+            (1 if is_admin else 0, user_id),
+        )
+        await c.commit()
+        return cur.rowcount > 0
+
+
+async def update_user_fields(
+    user_id: int,
+    *,
+    username: str | None = None,
+    email: str | None = None,
+) -> bool:
+    sets, params = [], []
+    if username is not None:
+        sets.append("username = ?"); params.append(username.strip())
+    if email is not None:
+        sets.append("email = ?"); params.append(email.lower().strip())
+    if not sets:
+        return False
+    params.append(user_id)
+    async with get_conn() as c:
+        cur = await c.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE id = ?", params,
+        )
+        await c.commit()
+        return cur.rowcount > 0
+
+
+async def delete_user(user_id: int) -> bool:
+    async with get_conn() as c:
+        cur = await c.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        await c.commit()
+        return cur.rowcount > 0
 
 
 # ── Conversations ─────────────────────────────────────────────────────────

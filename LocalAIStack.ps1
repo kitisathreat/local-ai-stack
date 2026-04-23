@@ -28,6 +28,7 @@ param(
     [Parameter(ParameterSetName = 'Build')]        [switch]$Build,
     [Parameter(ParameterSetName = 'InitEnv')]      [switch]$InitEnv,
     [Parameter(ParameterSetName = 'CheckUpdates')] [switch]$CheckUpdates,
+    [Parameter(ParameterSetName = 'Admin')]        [switch]$Admin,
     [Parameter(ParameterSetName = 'Help')]         [switch]$Help,
 
     # Modifier flags (may combine with -Start)
@@ -50,8 +51,12 @@ $Script:LogsDir   = Join-Path $AppData 'logs'
 $Script:PidFile   = Join-Path $AppData 'pids.json'
 
 # ── Pinned third-party release tags (override with env vars) ────────────────
+# SHA256 hashes are for the Windows CUDA release assets; leave blank to skip
+# verification (dev only). Ship updated hashes when bumping versions.
 $Script:QdrantVersion    = if ($env:LAI_QDRANT_VERSION)    { $env:LAI_QDRANT_VERSION }    else { 'v1.12.4' }
+$Script:QdrantSha256     = if ($env:LAI_QDRANT_SHA256)     { $env:LAI_QDRANT_SHA256 }     else { '' }
 $Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b4404' }
+$Script:LlamaCppSha256   = if ($env:LAI_LLAMACPP_SHA256)   { $env:LAI_LLAMACPP_SHA256 }   else { '' }
 
 # ── Tiny helpers (dedupe pattern from setup.ps1/launcher) ────────────────────
 function Write-Step($msg)    { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -84,6 +89,14 @@ $Script:EnvTemplate = @'
 AUTH_SECRET_KEY=
 HISTORY_SECRET_KEY=
 
+# ── Chat subdomain gating ──────────────────────────────────────────────
+# Chat (POST /v1/chat/completions, /api/chats, /api/rag, /api/memory, /)
+# is only reachable via this hostname unless airgap mode is on, in which
+# case only loopback works.
+CHAT_HOSTNAME=chat.mylensandi.com
+ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost
+PUBLIC_BASE_URL=https://chat.mylensandi.com
+
 # ── Web search ─────────────────────────────────────────────────────────
 # Provider: brave | ddg | none   (default: brave if BRAVE_API_KEY set, else ddg)
 WEB_SEARCH_PROVIDER=ddg
@@ -93,11 +106,6 @@ BRAVE_API_KEY=
 MODEL_UPDATE_POLICY=prompt        # auto | prompt | skip
 HF_TOKEN=                         # optional, for gated/private HF repos
 OFFLINE=                          # 1 = never poll upstream registries
-
-# ── Optional SMTP for magic-link auth ──────────────────────────────────
-SMTP_HOST=
-SMTP_USER=
-SMTP_PASS=
 
 # ── Service URLs (leave blank to use native localhost defaults) ────────
 OLLAMA_URL=
@@ -162,9 +170,32 @@ First run
                                         create Python venvs, pull Ollama models.
   4. .\LocalAIStack.ps1 -Start          Launch. A native Qt window opens; no browser.
 
+What -Setup installs
+--------------------
+  Verified prerequisites (one-time UAC prompt per missing package):
+    Git.Git                      (for self-updates)
+    Python.Python.3.12           (backend + GUI + Jupyter venvs)
+    Microsoft.PowerShell         (PS 7 — recommended)
+    Ollama.Ollama                (local model serving)
+    Cloudflare.cloudflared       (HTTPS tunnel for chat.<your-domain>)
+
+  Detected (never auto-installed):
+    NVIDIA driver >= 550 (CUDA 12 runtime is bundled).
+    If missing, download: https://www.nvidia.com/Download/index.aspx
+
+  Downloaded + SHA256-verified:
+    vendor\qdrant\qdrant.exe             (pinned via LAI_QDRANT_VERSION)
+    vendor\llama-server\llama-server.exe (pinned via LAI_LLAMACPP_VERSION)
+
+  Python venvs created under vendor\:
+    venv-backend  ~250 MB
+    venv-gui      ~180 MB
+    venv-jupyter  ~400 MB
+
 Daily use
 ---------
   .\LocalAIStack.ps1                    = -Start
+  .\LocalAIStack.ps1 -Admin             Open the admin Qt window (login prompt).
   .\LocalAIStack.ps1 -Start -NoUpdateCheck
                                         Skip HF / Ollama-registry polling.
   .\LocalAIStack.ps1 -CheckUpdates      Re-poll, list pending updates.
@@ -174,10 +205,14 @@ Daily use
 Cloudflared
 -----------
 Native mode never starts cloudflared. Point your existing native cloudflared
-tunnel at the backend:
+tunnel at the backend. Chat is host-gated, so the subdomain in your ingress
+MUST match the CHAT_HOSTNAME env var (default: chat.mylensandi.com).
+
+IMPORTANT: list the chat hostname BEFORE any wildcard catch-all or
+`http_status:404` fallback — cloudflared evaluates rules top-to-bottom.
 
     ingress:
-      - hostname: ai.example.com
+      - hostname: chat.mylensandi.com
         service: http://localhost:18000
       - service: http_status:404
 
@@ -208,20 +243,53 @@ detected:
   prompt  GUI dialog asks the user (default)
   skip    note it, do not download until next -Setup
 
-Uninstall
----------
+Uninstall / reset
+-----------------
   .\LocalAIStack.ps1 -Stop
   Remove-Item -Recurse $env:APPDATA\LocalAIStack
   Remove-Item -Recurse .\vendor .\data
+  # .\data\lai.db holds users, chats, memories, and RAG metadata.
+  # Deleting it resets the install; re-run -Setup to re-seed an admin.
+  #
+  # The Phase 3 schema migration (v2 -> v3, magic-link -> password
+  # auth) is one-way. A manual downgrade would require
+  # `ALTER TABLE users DROP COLUMN username; ...` + recreating the
+  # magic_links table. In practice: blow away data/lai.db.
+
+Web-search providers
+--------------------
+  WEB_SEARCH_PROVIDER=ddg (default)     DuckDuckGo via ddgs pip package.
+                                        Rate-limits silently after a few
+                                        hundred queries/day; fine for
+                                        interactive use but switch to
+                                        Brave once you're past that.
+  WEB_SEARCH_PROVIDER=brave             Brave Search API. Free tier is
+                                        2000 queries/month — sign up at
+                                        https://api.search.brave.com/app/keys
+                                        and set BRAVE_API_KEY in .env.
+  WEB_SEARCH_PROVIDER=none              Disabled. Tools that call the
+                                        middleware return empty results.
 
 Disk and memory
 ---------------
   vendor\venv-backend   ~250 MB
   vendor\venv-gui       ~180 MB  (PySide6 + QtCharts)
+                                 Dropped to ~120 MB if you swap to
+                                 PySide6-Essentials (no multimedia, no
+                                 WebEngine).
   vendor\venv-jupyter   ~400 MB
   vendor\qdrant         ~40 MB
   vendor\llama-server   ~220 MB  (CUDA build)
   Ollama models         24 - 72 GB depending on tier group
+  Vision GGUF           ~25 GB  (optional; download offered during -Setup)
+
+Windows Developer Mode
+----------------------
+  Creating the data\models\vision.gguf symlink to the Hugging Face
+  download requires symlink privileges. On Windows 10/11 non-admin
+  accounts, enable Developer Mode (Settings -> Privacy & security ->
+  For developers). If disabled, model_resolver falls back to a full
+  file copy, wasting ~25 GB but still working.
 
 Full documentation of internals lives under docs\ (architecture, API,
 troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.
@@ -230,18 +298,13 @@ troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 function Invoke-Setup {
-    Write-Step 'Verifying prerequisites'
-    if (-not (Test-Command python)) {
-        throw 'Python 3.12 not found on PATH. Install via: winget install Python.Python.3.12'
+    # Consolidated prerequisite check (Windows build, NVIDIA driver,
+    # winget-installed tools). Idempotent — safe to call on every -Setup.
+    if (Get-Command Invoke-EnsurePrereqs -ErrorAction SilentlyContinue) {
+        Invoke-EnsurePrereqs
+    } else {
+        throw "scripts\steps\prereqs.ps1 missing — re-clone the repo."
     }
-    $pyv = (& python --version) 2>&1
-    Write-Ok  "Python: $pyv"
-
-    if (-not (Test-Command ollama)) {
-        Write-Warn2 'Ollama not found — installing via winget…'
-        & winget install --id=Ollama.Ollama --silent --accept-source-agreements --accept-package-agreements
-    }
-    Write-Ok "Ollama: $(& ollama --version 2>&1)"
 
     Ensure-Dir $VendorDir
     Ensure-Dir $DataDir
@@ -250,10 +313,10 @@ function Invoke-Setup {
     Ensure-Dir $LogsDir
 
     if (Get-Command Invoke-DownloadQdrant -ErrorAction SilentlyContinue) {
-        Invoke-DownloadQdrant -Version $QdrantVersion -Dest (Join-Path $VendorDir 'qdrant')
+        Invoke-DownloadQdrant -Version $QdrantVersion -Dest (Join-Path $VendorDir 'qdrant') -Sha256 $QdrantSha256
     }
     if (Get-Command Invoke-DownloadLlamaServer -ErrorAction SilentlyContinue) {
-        Invoke-DownloadLlamaServer -Version $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server')
+        Invoke-DownloadLlamaServer -Version $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server') -Sha256 $LlamaCppSha256
     }
     if (Get-Command Invoke-CreateVenvs -ErrorAction SilentlyContinue) {
         Invoke-CreateVenvs -Root $VendorDir -RepoRoot $RepoRoot
@@ -264,9 +327,29 @@ function Invoke-Setup {
     $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
     if (Test-Path $py) {
         & $py -m backend.model_resolver resolve --force --pull
+
+        # Optional HF pull: vision GGUF is ~25 GB so we confirm first.
+        $visionFile = Join-Path $DataDir 'models\vision.gguf'
+        if (-not (Test-Path $visionFile)) {
+            Write-Host ''
+            Write-Host 'Vision tier GGUF (~25 GB) is not on disk.' -ForegroundColor Cyan
+            $answer = Read-Host 'Download now from Hugging Face? [y/N]'
+            if ($answer -match '^(y|yes)$') {
+                & $py -m backend.model_resolver resolve --force --pull-hf
+            } else {
+                Write-Warn2 'Vision tier skipped — run `-CheckUpdates` or admin panel later.'
+            }
+        }
     } else {
         Write-Warn2 "Backend venv missing at $py — skipping model pull"
     }
+
+    # First-run admin bootstrap: prompt if no admin user exists yet.
+    if (Test-Path $py) {
+        Write-Step 'Checking for an admin user'
+        & $py -m backend.seed_admin --if-no-admins
+    }
+
     Write-Ok 'Setup complete.'
 }
 
@@ -304,16 +387,16 @@ function Invoke-Start {
 
     Write-Step 'Starting ollama serve'
     $Env:OLLAMA_HOST = '127.0.0.1:11434'
-    $pids['ollama'] = (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir).Id
+    $pids['ollama'] = Record-PidEntry (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir)
 
     Write-Step 'Starting qdrant'
     $qdrantBin = Join-Path $VendorDir 'qdrant\qdrant.exe'
     if (Test-Path $qdrantBin) {
         $qdrantStorage = Join-Path $DataDir 'qdrant'
         Ensure-Dir $qdrantStorage
-        $pids['qdrant'] = (Start-TrackedProcess -Name 'qdrant' -FilePath $qdrantBin `
+        $pids['qdrant'] = Record-PidEntry (Start-TrackedProcess -Name 'qdrant' -FilePath $qdrantBin `
             -Args @() -LogDir $LogsDir -WorkDir (Split-Path $qdrantBin) `
-            -Env @{ QDRANT__STORAGE__STORAGE_PATH = $qdrantStorage }).Id
+            -Env @{ QDRANT__STORAGE__STORAGE_PATH = $qdrantStorage })
     } else {
         Write-Warn2 "Qdrant binary missing at $qdrantBin — RAG features disabled"
     }
@@ -322,8 +405,8 @@ function Invoke-Start {
     $llamaBin = Join-Path $VendorDir 'llama-server\llama-server.exe'
     $visionGguf = Join-Path $DataDir 'models\vision.gguf'
     if ((Test-Path $llamaBin) -and (Test-Path $visionGguf)) {
-        $pids['llama-server'] = (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
-            -Args @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf) -LogDir $LogsDir).Id
+        $pids['llama-server'] = Record-PidEntry (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
+            -Args @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf) -LogDir $LogsDir)
     } else {
         Write-Warn2 "llama-server or vision GGUF missing — vision tier disabled"
     }
@@ -333,8 +416,8 @@ function Invoke-Start {
     if (Test-Path $jupyter) {
         $token = [Guid]::NewGuid().ToString('N')
         $Env:JUPYTER_TOKEN = $token
-        $pids['jupyter'] = (Start-TrackedProcess -Name 'jupyter' -FilePath $jupyter `
-            -Args @('--no-browser','--port','8888',"--ServerApp.token=$token") -LogDir $LogsDir).Id
+        $pids['jupyter'] = Record-PidEntry (Start-TrackedProcess -Name 'jupyter' -FilePath $jupyter `
+            -Args @('--no-browser','--port','8888',"--ServerApp.token=$token") -LogDir $LogsDir)
     } else {
         Write-Warn2 "Jupyter venv missing — code interpreter disabled"
     }
@@ -344,9 +427,9 @@ function Invoke-Start {
     if (-not (Test-Path $backendPy)) {
         throw "Backend venv missing at $backendPy — run -Setup."
     }
-    $pids['backend'] = (Start-TrackedProcess -Name 'backend' -FilePath $backendPy `
+    $pids['backend'] = Record-PidEntry (Start-TrackedProcess -Name 'backend' -FilePath $backendPy `
         -Args @('-m','uvicorn','backend.main:app','--host','127.0.0.1','--port','18000') `
-        -LogDir $LogsDir -WorkDir $RepoRoot).Id
+        -LogDir $LogsDir -WorkDir $RepoRoot)
 
     if (Get-Command Wait-HealthOk -ErrorAction SilentlyContinue) {
         Wait-HealthOk -Urls @(
@@ -359,9 +442,9 @@ function Invoke-Start {
     Write-Step 'Launching native GUI'
     $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
     if (Test-Path $guiPy) {
-        $pids['gui'] = (Start-TrackedProcess -Name 'gui' -FilePath $guiPy `
+        $pids['gui'] = Record-PidEntry (Start-TrackedProcess -Name 'gui' -FilePath $guiPy `
             -Args @((Join-Path $RepoRoot 'gui\main.py'), '--api', 'http://127.0.0.1:18000') `
-            -LogDir $LogsDir -WorkDir $RepoRoot).Id
+            -LogDir $LogsDir -WorkDir $RepoRoot)
     } else {
         Write-Warn2 "GUI venv missing — run -Setup or launch manually"
     }
@@ -374,6 +457,15 @@ function Invoke-Start {
 }
 
 # ── Stop ─────────────────────────────────────────────────────────────────────
+function Record-PidEntry([System.Diagnostics.Process]$Process) {
+    # Capture the process name at start time so -Stop can verify the PID
+    # hasn't been reused between runs (e.g. after a reboot).
+    return [pscustomobject]@{
+        pid         = $Process.Id
+        processName = $Process.ProcessName
+    }
+}
+
 function Invoke-Stop {
     if (-not (Test-Path $PidFile)) {
         Write-Warn2 "No pids.json at $PidFile — nothing to stop."
@@ -381,10 +473,25 @@ function Invoke-Stop {
     }
     $pids = Get-Content $PidFile -Raw | ConvertFrom-Json
     foreach ($name in $pids.PSObject.Properties.Name) {
-        $procId = [int]$pids.$name
+        $entry = $pids.$name
+        # Back-compat: older pids.json had `{name: pid}`; newer has `{name: {pid, processName}}`.
+        if ($entry -is [int] -or $entry -is [long]) {
+            $procId = [int]$entry
+            $expectedName = $null
+        } else {
+            $procId = [int]$entry.pid
+            $expectedName = $entry.processName
+        }
         try {
+            $proc = Get-Process -Id $procId -ErrorAction Stop
+            if ($expectedName -and $proc.ProcessName -ne $expectedName) {
+                Write-Warn2 "skipping $name (pid $procId): expected process '$expectedName' but PID owned by '$($proc.ProcessName)' — likely reused"
+                continue
+            }
             Stop-Process -Id $procId -Force -ErrorAction Stop
             Write-Ok "stopped $name (pid $procId)"
+        } catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+            Write-Warn2 "$name (pid $procId) already gone"
         } catch {
             Write-Warn2 "could not stop $name (pid $procId): $($_.Exception.Message)"
         }
@@ -401,17 +508,31 @@ function Invoke-Build {
     Import-Module ps2exe
     $icon = Join-Path $AssetsDir 'icon.ico'
     $out  = Join-Path $RepoRoot 'LocalAIStack.exe'
-    $args = @{
+    $splat = @{
         InputFile  = $MyInvocation.MyCommand.Path
         OutputFile = $out
         NoConsole  = $true
         Title      = 'Local AI Stack'
         Company    = 'Local AI Stack'
     }
-    if (Test-Path $icon) { $args['IconFile'] = $icon }
-    Invoke-PS2EXE @args
+    if (Test-Path $icon) { $splat['IconFile'] = $icon }
+    Invoke-ps2exe @splat
     Write-Ok "Built $out"
 }
+
+# ── Admin ────────────────────────────────────────────────────────────────────
+function Invoke-Admin {
+    # Spawn the GUI in admin-only mode. Requires the backend to already
+    # be running; fails fast if not.
+    Apply-Env (Read-EnvFile)
+    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
+    if (-not (Test-Path $guiPy)) {
+        throw "GUI venv missing at $guiPy — run -Setup first."
+    }
+    Write-Step 'Launching admin window'
+    & $guiPy (Join-Path $RepoRoot 'gui\main.py') '--mode' 'admin' '--api' 'http://127.0.0.1:18000'
+}
+
 
 # ── CheckUpdates ─────────────────────────────────────────────────────────────
 function Invoke-CheckUpdates {
@@ -430,6 +551,7 @@ if ($Setup)             { Invoke-Setup;        return }
 if ($Stop)              { Invoke-Stop;         return }
 if ($Build)             { Invoke-Build;        return }
 if ($CheckUpdates)      { Invoke-CheckUpdates; return }
+if ($Admin)             { Invoke-Admin;        return }
 
 # Default is -Start
 Invoke-Start
