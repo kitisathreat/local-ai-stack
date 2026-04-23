@@ -296,8 +296,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          $body = "## Windows — Install + Startup failed (run $env:RUN_ID)`n`n"
+          $body = "## Windows — Install + Startup failed`n`n"
+          $body += "Run: $env:RUN_URL`n`n"
+
+          # $GITHUB_STEP_SUMMARY accumulates across all steps in the job —
+          # every earlier step's diagnostic output lives here, so it's
+          # the best signal for figuring out which step failed when
+          # setup.log isn't present.
+          if ($env:GITHUB_STEP_SUMMARY -and (Test-Path $env:GITHUB_STEP_SUMMARY)) {
+            $sum = Get-Content $env:GITHUB_STEP_SUMMARY -Raw
+            if ($sum) {
+              $body += "<details open><summary>step summary (all prior steps)</summary>`n`n$sum`n</details>`n`n"
+            }
+          }
+
           if (Test-Path ci-logs/setup.log) {
             $tail = Get-Content ci-logs/setup.log -Tail 120 -Raw
             $body += "<details open><summary>setup.log (last 120 lines)</summary>`n`n``````text`n$tail`n```````n</details>`n`n"
