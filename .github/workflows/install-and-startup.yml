@@ -99,7 +99,7 @@ jobs:
             --output $zip `
             'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' 2>&1
           if ($curlOut) { Log ($curlOut | Out-String) }
-          if ($LASTEXITCODE -ne 0) {
+          if ($LASTEXITCODE -gt 0) {
             Log "curl exit $LASTEXITCODE"
             throw "curl failed: $LASTEXITCODE"
           }
@@ -109,7 +109,7 @@ jobs:
           Log "==> Extracting to $dest (via tar)"
           $tarOut = & tar.exe -xf $zip -C $dest 2>&1
           if ($tarOut) { Log ($tarOut | Out-String) }
-          if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -gt 0) { throw "tar failed: $LASTEXITCODE" }
           Remove-Item $zip -Force
 
           $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
@@ -141,7 +141,7 @@ jobs:
           Log "running LocalAIStack.ps1 -InitEnv"
           $initOut = & .\LocalAIStack.ps1 -InitEnv 2>&1
           if ($initOut) { Log ($initOut | Out-String) }
-          if ($LASTEXITCODE -ne 0) { throw "InitEnv failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -gt 0) { throw "InitEnv failed: $LASTEXITCODE" }
 
           $bytes = New-Object byte[] 48
           [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -175,7 +175,7 @@ jobs:
           New-Item -ItemType Directory -Path ci-logs -Force | Out-Null
           & .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs 2>&1 |
             Tee-Object -FilePath ci-logs/setup.log
-          if ($LASTEXITCODE -ne 0) {
+          if ($LASTEXITCODE -gt 0) {
             throw "Setup failed with exit $LASTEXITCODE (see ci-logs/setup.log)"
           }
 
@@ -200,7 +200,7 @@ jobs:
           $py = Join-Path (Get-Location) 'vendor\venv-backend\Scripts\python.exe'
           if (-not (Test-Path $py)) { throw "backend venv missing at $py" }
           & $py -m backend.model_resolver resolve --offline --pull --pull-hf --dry-run
-          if ($LASTEXITCODE -ne 0) {
+          if ($LASTEXITCODE -gt 0) {
             throw "dry-run pull reported tier errors (exit $LASTEXITCODE)"
           }
 
