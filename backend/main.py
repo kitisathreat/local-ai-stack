@@ -217,6 +217,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
 app.include_router(admin.router)
 
+# Serve the minimal vanilla-JS chat UI at / so cloudflared fronting
+# chat.mylensandi.com lands on a real page. No build step; no SPA.
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+    @app.get("/", include_in_schema=False)
+    async def chat_index():
+        path = _static_dir / "chat.html"
+        if not path.exists():
+            return Response(status_code=404)
+        return FileResponse(str(path))
+
+
 # CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
 # Cloudflare Tunnel hostname is set via setup-cloudflared.sh. Local dev
 # defaults to wildcard. We warn if wildcard+credentials is configured since
@@ -237,6 +254,12 @@ app.add_middleware(
     expose_headers=["content-type"],
     max_age=600,
 )
+
+# Host-gate must be LAST-added so it's OUTERMOST (Starlette middleware
+# runs in reverse registration order). Rejections short-circuit before
+# CORS preflight and before any handler runs.
+from .middleware.host_gate import HostGateMiddleware  # noqa: E402
+app.add_middleware(HostGateMiddleware)
 
 
 @app.middleware("http")

@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Local AI Stack — Chat</title>
+  <style>
+    :root {
+      --bg: #0f1014;
+      --panel: #181a21;
+      --fg: #e8e8e8;
+      --muted: #888;
+      --border: #2a2d36;
+      --accent: #3794ff;
+      --danger: #c44;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      display: flex; flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header .brand { font-weight: 600; }
+    header select, header button {
+      background: #22252e; color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px;
+      font: inherit;
+    }
+    header button { cursor: pointer; }
+    header button:hover { background: #2a2d36; }
+    header .spacer { flex: 1; }
+    #main { flex: 1; display: flex; overflow: hidden; }
+    #log { flex: 1; overflow: auto; padding: 16px; max-width: 860px; margin: 0 auto; width: 100%; }
+    .msg { margin: 0 0 16px 0; line-height: 1.5; }
+    .msg.user { color: #d0e4ff; }
+    .msg.assistant { color: var(--fg); }
+    .msg pre {
+      background: #1a1b20; border: 1px solid var(--border);
+      border-radius: 6px; padding: 10px; overflow-x: auto;
+      font-family: 'Cascadia Code', Consolas, monospace; font-size: 12.5px;
+    }
+    .msg code { background: #22252e; padding: 1px 4px; border-radius: 3px; }
+    .msg a { color: var(--accent); }
+    .role { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    footer {
+      border-top: 1px solid var(--border); padding: 10px 16px;
+      background: var(--panel); display: flex; gap: 8px;
+      max-width: 960px; margin: 0 auto; width: 100%;
+    }
+    #composer {
+      flex: 1; resize: none; background: #22252e; color: var(--fg);
+      border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+      font: inherit; min-height: 44px; max-height: 200px;
+    }
+    #send {
+      background: var(--accent); color: white; border: 0;
+      border-radius: 6px; padding: 0 18px; cursor: pointer;
+      font: inherit;
+    }
+    #send:disabled { opacity: 0.6; cursor: not-allowed; }
+    #signin {
+      max-width: 360px; margin: 10vh auto; padding: 24px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    }
+    #signin h1 { font-size: 18px; margin: 0 0 16px 0; }
+    #signin label { display: block; font-size: 12px; color: var(--muted); margin-top: 10px; }
+    #signin input {
+      width: 100%; background: #22252e; color: var(--fg);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; font: inherit; margin-top: 4px;
+    }
+    #signin button {
+      width: 100%; margin-top: 16px; background: var(--accent);
+      color: white; border: 0; border-radius: 6px; padding: 10px;
+      font: inherit; cursor: pointer;
+    }
+    #signin-err { color: var(--danger); margin-top: 10px; font-size: 13px; min-height: 18px; }
+    .hidden { display: none !important; }
+    @media (max-width: 640px) {
+      #log, footer { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="signin">
+    <h1>Local AI Stack</h1>
+    <form id="signin-form">
+      <label for="username">Username</label>
+      <input id="username" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+      <div id="signin-err"></div>
+    </form>
+  </div>
+
+  <div id="chatapp" class="hidden" style="display:flex; flex-direction:column; flex:1; width:100%;">
+    <header>
+      <span class="brand">Local AI Stack</span>
+      <select id="model"></select>
+      <label><input type="checkbox" id="think"> Think</label>
+      <span class="spacer"></span>
+      <span id="who" style="color:var(--muted);"></span>
+      <button id="newchat">New</button>
+      <button id="logout">Sign out</button>
+    </header>
+    <div id="main"><div id="log"></div></div>
+    <footer>
+      <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
+      <button id="send">Send</button>
+    </footer>
+  </div>
+
+  <script>
+    // Minimal markdown renderer — escapes HTML, handles fenced code,
+    // inline code, bold, italic, links, line breaks. Avoids a CDN
+    // dependency; good enough for chat output.
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+    function renderMarkdown(src) {
+      let out = '';
+      const fenceRe = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
+      let last = 0, m;
+      while ((m = fenceRe.exec(src))) {
+        out += inline(src.slice(last, m.index));
+        out += '<pre><code>' + escapeHtml(m[2]) + '</code></pre>';
+        last = fenceRe.lastIndex;
+      }
+      out += inline(src.slice(last));
+      return out;
+    }
+    function inline(s) {
+      s = escapeHtml(s);
+      s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      s = s.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(?<!\w)\*([^\*\n]+)\*(?!\w)/g, '<em>$1</em>');
+      s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      s = s.replace(/\n/g, '<br>');
+      return s;
+    }
+
+    const $ = id => document.getElementById(id);
+    const logEl = $('log');
+    const modelEl = $('model');
+    const thinkEl = $('think');
+    const composerEl = $('composer');
+    const sendEl = $('send');
+    const whoEl = $('who');
+    const signinBox = $('signin');
+    const app = $('chatapp');
+    const history = [];
+
+    async function api(path, opts = {}) {
+      opts.credentials = 'include';
+      opts.headers = Object.assign({ 'content-type': 'application/json' }, opts.headers || {});
+      const r = await fetch(path, opts);
+      return r;
+    }
+
+    async function bootstrap() {
+      try {
+        const r = await api('/admin/me');
+        if (r.ok) {
+          const me = await r.json();
+          whoEl.textContent = me.username;
+          await loadModels();
+          signinBox.classList.add('hidden');
+          app.classList.remove('hidden');
+        }
+      } catch (_) {}
+    }
+
+    $('signin-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const err = $('signin-err');
+      err.textContent = 'Signing in…';
+      const r = await api('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: $('username').value.trim(),
+          password: $('password').value,
+        }),
+      });
+      if (!r.ok) {
+        err.textContent = 'Invalid username or password.';
+        return;
+      }
+      const info = await r.json();
+      whoEl.textContent = info.username;
+      await loadModels();
+      err.textContent = '';
+      signinBox.classList.add('hidden');
+      app.classList.remove('hidden');
+    });
+
+    $('logout').addEventListener('click', async () => {
+      await api('/auth/logout', { method: 'POST' });
+      history.length = 0;
+      logEl.innerHTML = '';
+      app.classList.add('hidden');
+      signinBox.classList.remove('hidden');
+    });
+
+    $('newchat').addEventListener('click', () => {
+      history.length = 0;
+      logEl.innerHTML = '';
+    });
+
+    async function loadModels() {
+      try {
+        const r = await api('/v1/models');
+        const { data } = await r.json();
+        modelEl.innerHTML = '';
+        (data || []).forEach(m => {
+          const o = document.createElement('option');
+          o.value = m.id;
+          o.textContent = (m.owned_by ? m.owned_by + ' — ' : '') + m.id;
+          modelEl.appendChild(o);
+        });
+      } catch (_) {}
+    }
+
+    function appendMsg(role, text) {
+      const box = document.createElement('div');
+      box.className = 'msg ' + role;
+      box.innerHTML = `<div class="role">${role}</div><div class="body">${renderMarkdown(text)}</div>`;
+      logEl.appendChild(box);
+      logEl.scrollTop = logEl.scrollHeight;
+      return box.querySelector('.body');
+    }
+
+    composerEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    sendEl.addEventListener('click', sendMessage);
+
+    let streaming = false;
+    async function sendMessage() {
+      if (streaming) return;
+      const text = composerEl.value.trim();
+      if (!text) return;
+      composerEl.value = '';
+      history.push({ role: 'user', content: text });
+      appendMsg('user', text);
+      const targetBody = appendMsg('assistant', '');
+      streaming = true;
+      sendEl.disabled = true;
+      let buffered = '';
+      try {
+        const r = await fetch('/v1/chat/completions', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'content-type': 'application/json', 'accept': 'text/event-stream' },
+          body: JSON.stringify({
+            model: modelEl.value,
+            stream: true,
+            messages: history,
+            think: thinkEl.checked || undefined,
+          }),
+        });
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let carry = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          carry += dec.decode(value, { stream: true });
+          const lines = carry.split('\n');
+          carry = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            const body = line.slice(5).trim();
+            if (body === '[DONE]') continue;
+            try {
+              const chunk = JSON.parse(body);
+              for (const ch of (chunk.choices || [])) {
+                const delta = (ch.delta || {}).content;
+                if (delta) {
+                  buffered += delta;
+                  targetBody.innerHTML = renderMarkdown(buffered);
+                  logEl.scrollTop = logEl.scrollHeight;
+                }
+              }
+            } catch (_) {}
+          }
+        }
+        history.push({ role: 'assistant', content: buffered });
+      } catch (err) {
+        targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(String(err)) + '</em>';
+      } finally {
+        streaming = false;
+        sendEl.disabled = false;
+      }
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>

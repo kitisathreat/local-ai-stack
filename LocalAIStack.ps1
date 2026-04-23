@@ -89,6 +89,14 @@ $Script:EnvTemplate = @'
 AUTH_SECRET_KEY=
 HISTORY_SECRET_KEY=
 
+# ── Chat subdomain gating ──────────────────────────────────────────────
+# Chat (POST /v1/chat/completions, /api/chats, /api/rag, /api/memory, /)
+# is only reachable via this hostname unless airgap mode is on, in which
+# case only loopback works.
+CHAT_HOSTNAME=chat.mylensandi.com
+ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost
+PUBLIC_BASE_URL=https://chat.mylensandi.com
+
 # ── Web search ─────────────────────────────────────────────────────────
 # Provider: brave | ddg | none   (default: brave if BRAVE_API_KEY set, else ddg)
 WEB_SEARCH_PROVIDER=ddg
@@ -197,10 +205,14 @@ Daily use
 Cloudflared
 -----------
 Native mode never starts cloudflared. Point your existing native cloudflared
-tunnel at the backend:
+tunnel at the backend. Chat is host-gated, so the subdomain in your ingress
+MUST match the CHAT_HOSTNAME env var (default: chat.mylensandi.com).
+
+IMPORTANT: list the chat hostname BEFORE any wildcard catch-all or
+`http_status:404` fallback — cloudflared evaluates rules top-to-bottom.
 
     ingress:
-      - hostname: ai.example.com
+      - hostname: chat.mylensandi.com
         service: http://localhost:18000
       - service: http_status:404
 
