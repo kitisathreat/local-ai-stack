@@ -138,3 +138,116 @@ build` anywhere. If it does, replace with a plain `pip install -r
 backend/requirements.txt` + `pytest`.
 
 ---
+
+## Phase 2 — First-run setup wizard
+
+Replace the dumb `-InitEnv` template-writer with a real PySide6 `QWizard`
+that collects every value the stack needs and writes a fully-populated
+`.env` (mode 600). The user never opens `.env` themselves.
+
+### 2.1 Where it lives
+
+New module `gui/windows/setup_wizard.py`. Reuses the existing GUI venv
+(`vendor\venv-gui`) and the existing `gui/api_client.py` for the final
+"register admin" call. Spawned by the launcher when:
+
+```
+LocalAIStack.ps1 -Setup    # always run; idempotent
+LocalAIStack.ps1 -Start    # only if .env is missing OR no admin user exists
+```
+
+The launcher decides whether to spawn the wizard via a fast SQLite check
+in `backend/seed_admin.py --check-only` (already exists; widen its
+contract to also report "no admin user").
+
+### 2.2 Wizard pages
+
+Each page is a `QWizardPage` with field validation; `Next` is disabled
+until the page is valid. Pages 4 and 5 are skippable.
+
+1. **Welcome** — one-paragraph explanation, no fields. Detects whether
+   prereqs (Ollama, Python, NVIDIA driver, cloudflared) are installed
+   and shows green/red icons. "Install missing" button shells out to
+   `LocalAIStack.ps1 -Setup -SkipModels` in a worker thread with a
+   progress log streamed via `QPlainTextEdit`.
+
+2. **Admin account**
+   - Email (`QLineEdit`, regex-validated)
+   - Password (`QLineEdit` with `setEchoMode(Password)`, min 12 chars,
+     zxcvbn score ≥ 3 — vendored copy in `vendor\venv-gui` from the
+     `zxcvbn` PyPI package; falls back to a length+entropy heuristic
+     if the import fails)
+   - Confirm password
+   - The only output of this page is two strings held in
+     `wizard.field("admin_email")` and `wizard.field("admin_password")`.
+     Nothing is written to disk yet.
+
+3. **Secrets (no user input)**
+   - Generates `AUTH_SECRET_KEY` and `HISTORY_SECRET_KEY` via
+     `secrets.token_urlsafe(48)`.
+   - Page renders as "Generating cryptographic keys… ✓" with a 200 ms
+     fake delay so the user sees what's happening.
+   - Values are held in wizard fields; not yet persisted.
+
+4. **Public access (Cloudflare Tunnel) — skippable**
+   - Radio buttons: "Local-only" / "Public via Cloudflare Tunnel".
+   - "Public" reveals two fields: domain (e.g. `mylensandi.com`) and
+     desired chat hostname (default `chat.<domain>`).
+   - "Connect to Cloudflare" button kicks off the flow described in
+     Phase 3. Wizard cannot advance until the flow either succeeds,
+     errors out, or the user reverts to "Local-only".
+
+5. **Email delivery (SMTP) — skippable**
+   - Used only for magic-link emails to *non-admin* users. The admin
+     user already has a password and never needs SMTP.
+   - Default state: skip (radio "Skip — print magic links to logs").
+   - Optional fields: SMTP host/port/user/pass/from-address/STARTTLS.
+   - If skipped, sets `SMTP_HOST=` (empty) in `.env`; backend already
+     handles this by logging links instead.
+
+6. **Models — skippable but recommended**
+   - List of tier groups from `config/model-sources.yaml` with size
+     estimates and checkboxes (`minimal` ≈ 7 GB, `tiers` ≈ 60 GB,
+     `vision` ≈ 25 GB).
+   - "Download now" runs `python -m backend.model_resolver resolve
+     --pull` in a worker thread; progress shown live.
+   - Skipping is fine — the user can re-run from the admin panel later.
+
+7. **Finish**
+   - Atomically writes `.env` (write to `.env.tmp`, `os.replace`).
+   - Calls `python -m backend.seed_admin --email --password --admin`
+     to insert the admin row with `passlib`-hashed password.
+   - Closes wizard; launcher continues into `-Start`.
+
+### 2.3 Where values land
+
+The wizard writes a single `.env` file at the repo root (or
+`%LOCALAPPDATA%\LocalAIStack\.env` once Phase 5 splits user data — see
+S5). Contents after a successful run:
+
+```
+AUTH_SECRET_KEY=<48-char base64>           # auto-generated
+HISTORY_SECRET_KEY=<48-char base64>        # auto-generated
+PUBLIC_BASE_URL=https://chat.<domain>      # or http://localhost:18000
+CHAT_HOSTNAME=chat.<domain>                # or localhost
+ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost
+WEB_SEARCH_PROVIDER=ddg                    # or brave if BRAVE_API_KEY supplied
+BRAVE_API_KEY=<optional>
+HF_TOKEN=<optional>
+SMTP_HOST=...                              # blank if skipped
+CLOUDFLARE_TUNNEL_ID=<uuid>                # written by Phase 3 flow
+CLOUDFLARE_TUNNEL_NAME=local-ai-stack
+MODEL_UPDATE_POLICY=prompt
+```
+
+Admin email + password go to **SQLite** (`users` table), not `.env`.
+
+### 2.4 Re-running the wizard
+
+`LocalAIStack.ps1 -Setup` always re-runs the wizard, but each page reads
+its current value from `.env` / SQLite and pre-fills. The user can step
+through to change a single field (e.g. rotate the Cloudflare tunnel) and
+the rest are no-ops. This is the supported "edit env" UX — there is no
+file the user is expected to open in a text editor.
+
+---
