@@ -258,6 +258,126 @@ Admin email + password go to **SQLite** (`users` table), not `.env`.
   for CI.
 - New dep in `backend/requirements.txt`: `passlib[bcrypt]==1.7.4`.
 
+---
+
+## Phase 3 — Cloudflare auto-provisioning
+
+The user's requirement: the wizard launches a browser to the Cloudflare
+dashboard, the user logs in, and the wizard then auto-creates the tunnel.
+This is the **only** browser launch in the entire app; everything else is
+native Qt.
+
+### 3.1 Why a browser is unavoidable here
+
+Cloudflare's `cloudflared tunnel login` flow uses OAuth. There is no
+machine-to-machine alternative for free-tier users (the API-token path
+exists but requires the user to provision the token in the dashboard
+first, which still puts them in a browser). Embedding the OAuth dance
+in our own Qt window via `QtWebEngine` would technically work but
+violates the "no embedded browser engine" decision in the PR (PySide6
+ships without WebEngine to keep the venv at ~120 MB). So: shell out to
+the system default browser exactly once, and only for Cloudflare.
+
+### 3.2 The flow
+
+Lives in a new helper `gui/cloudflare_setup.py`, called from
+`gui/windows/setup_wizard.py` page 4.
+
+1. **Pre-check.** If `%USERPROFILE%\.cloudflared\cert.pem` exists and is
+   under 90 days old, jump to step 4 (the user already authorized us
+   on a previous run). Otherwise continue.
+
+2. **Spawn `cloudflared tunnel login`.** Worker thread runs:
+   ```
+   vendor\cloudflared\cloudflared.exe tunnel login
+   ```
+   `cloudflared` prints a URL to stdout and opens it in the system
+   default browser automatically. We capture stdout and *also* show the
+   URL inside the wizard ("If your browser didn't open, click here") via
+   a `QLabel` with `setOpenExternalLinks(True)` — never as an embedded
+   page.
+
+3. **Poll for `cert.pem`.** While the worker thread waits on
+   `cloudflared`, the wizard shows a `QProgressIndicator` with
+   "Waiting for Cloudflare login… (you can close the browser tab once
+   you see 'Tunnel certificate written')". A `QFileSystemWatcher` on
+   `%USERPROFILE%\.cloudflared\` fires when `cert.pem` lands;
+   `cloudflared` exits 0 shortly after.
+
+4. **List zones.** With the cert in hand, hit
+   `GET https://api.cloudflare.com/client/v4/zones` using the cert as
+   bearer (`cloudflared` writes a JSON-encoded API token to the cert
+   file; reuse it). Show the user a `QComboBox` of their zones; default
+   to the one matching the domain they entered on page 4.
+
+5. **Create the tunnel.** Worker thread runs:
+   ```
+   cloudflared.exe tunnel create local-ai-stack-<hostname-slug>
+   ```
+   This writes `<UUID>.json` (the credentials file) into
+   `%USERPROFILE%\.cloudflared\` and prints the tunnel UUID. Capture
+   the UUID.
+
+6. **Route DNS.** Worker thread runs:
+   ```
+   cloudflared.exe tunnel route dns <UUID> chat.<domain>
+   ```
+   This is the moment the chat hostname becomes resolvable.
+
+7. **Write `config.yml`.** Generate
+   `%USERPROFILE%\.cloudflared\config.yml`:
+   ```yaml
+   tunnel: <UUID>
+   credentials-file: C:\Users\<user>\.cloudflared\<UUID>.json
+   ingress:
+     - hostname: chat.<domain>
+       service: http://localhost:18000
+     - service: http_status:404
+   ```
+   The 404 fallback is critical — listed *after* the chat hostname so
+   the host-gating order in `LocalAIStack.ps1 -Help` is preserved.
+
+8. **Persist to `.env`.** The wizard sets:
+   ```
+   CLOUDFLARE_TUNNEL_ID=<UUID>
+   CLOUDFLARE_TUNNEL_NAME=local-ai-stack-<slug>
+   CHAT_HOSTNAME=chat.<domain>
+   PUBLIC_BASE_URL=https://chat.<domain>
+   ```
+
+9. **Register cloudflared as a Windows service.** Worker thread runs:
+   ```
+   cloudflared.exe service install
+   ```
+   This makes the tunnel survive reboots without keeping
+   `LocalAIStack.exe` open. Service runs as `LocalSystem`, which is
+   required for the Windows service installer; document this in
+   `-Help`. Add a `LocalAIStack.ps1 -DisableTunnel` subcommand that
+   runs `cloudflared.exe service uninstall` for users who want to
+   revert.
+
+### 3.3 Failure & retry
+
+- Network failure during steps 2/4/5/6 → wizard surfaces the captured
+  stderr in a `QPlainTextEdit`, offers "Retry" and "Skip (local-only)".
+- Step 9 fails (UAC declined) → wizard warns that the tunnel won't
+  auto-start on boot; the user can finish setup and run `-DisableTunnel`
+  / `-EnableTunnel` later.
+- Existing `cloudflared` service from a previous install (S3) →
+  detect via `Get-Service cloudflared`, offer "Adopt existing",
+  "Replace", or "Cancel".
+
+### 3.4 What never happens
+
+- We never ask the user for a Cloudflare API key.
+- We never embed `dash.cloudflare.com` in a Qt webview.
+- We never write the tunnel token (the long opaque string from the
+  legacy `--token` flow) anywhere — the credentials file is the
+  modern equivalent and `cloudflared` reads it from
+  `%USERPROFILE%\.cloudflared\` on its own.
+
+---
+
 ### 2.4 Re-running the wizard
 
 `LocalAIStack.ps1 -Setup` always re-runs the wizard, but each page reads
