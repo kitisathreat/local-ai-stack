@@ -8,17 +8,22 @@ need to do before the code will actually run.
 ## TL;DR — the five things you still need to do
 
 1. **Create `.env.local`** with at minimum a generated `AUTH_SECRET_KEY` (and
-   probably `ADMIN_EMAILS`, `HISTORY_SECRET_KEY`).
-2. **Install Docker Desktop** and make sure it's running with the WSL 2
-   backend + NVIDIA Container Toolkit (for GPU passthrough).
+   probably `ADMIN_EMAILS`, `HISTORY_SECRET_KEY`, `JUPYTER_TOKEN`).
+2. **Provision Docker.**
+   - **Windows:** run `setup.ps1`, which installs Docker Engine inside a
+     WSL2 Ubuntu distro plus the NVIDIA Container Toolkit. **Do not install
+     Docker Desktop** — it isn't used by the stack.
+   - **Linux/macOS:** install Docker Engine (or Colima/OrbStack on macOS)
+     plus the NVIDIA Container Toolkit if you have an NVIDIA GPU.
 3. **Pull the Ollama tier models** via `bash scripts/setup-models.sh` — this is
-   a 60+ GB download.
+   a 60+ GB download. Bring up Ollama first (`docker compose up -d ollama`)
+   since the script talks to it over HTTP.
 4. *(Optional)* **Download the vision GGUFs** (`qwen3.6-35b-a3b-Q4_K_M.gguf`
    and `mmproj-qwen3.6-35b-F16.gguf`) into `models/` — or skip the vision tier
    entirely.
 5. **Run** `docker compose up -d` (or `bash scripts/start.sh`).
 
-After that, `curl http://localhost:8000/healthz` should return `{"ok": true}`.
+After that, `curl http://localhost:18000/healthz` should return `{"ok": true}`.
 
 ---
 
@@ -30,8 +35,10 @@ After that, `curl http://localhost:8000/healthz` should return `{"ok": true}`.
 - **~120 GB free disk** for model weights + volumes.
 
 ### Software
-- **Docker Desktop** with the WSL 2 backend (Windows) or a Docker Engine
-  install (Linux/macOS).
+- **Windows:** Docker Engine inside a WSL2 Ubuntu distro (installed by
+  `setup.ps1`). **Not** Docker Desktop — the stack moved off Docker Desktop in
+  PR #94 because of its AF_UNIX-reparse-point socket bugs on Windows.
+- **Linux/macOS:** a Docker Engine install (or Colima/OrbStack on macOS).
 - **NVIDIA Container Toolkit** — without it, `docker compose up` will fail on
   the `deploy.resources.reservations.devices[driver=nvidia]` blocks. Verify
   with:
@@ -140,7 +147,7 @@ docker compose up -d
 
 | Service | Port | Purpose |
 |---|---|---|
-| `backend` | 8000 | FastAPI — the thing you're starting |
+| `backend` | 18000 | FastAPI — published on host 18000 → container 8000 |
 | `frontend` | 3000 | Preact SPA (nginx) |
 | `ollama` | 11434 | Primary inference |
 | `llama-server` | 8001 | Vision tier (fails silently if GGUFs missing) |
@@ -153,10 +160,17 @@ docker compose up -d
 
 ### Verify
 
+The backend is published on host port **18000** (compose maps `18000:8000`
+because IncrediBuild's Coordinator squats on `:8000` on Windows). Direct curls
+hit the FastAPI app, which has **no `/api/` prefix** — that prefix only exists
+when traffic flows through the frontend's nginx, which strips it.
+
 ```bash
-curl http://localhost:8000/healthz          # → {"ok": true}
-curl http://localhost:8000/v1/models        # → tier list
-curl http://localhost:8000/api/vram         # → residency snapshot
+curl http://localhost:18000/healthz          # → {"ok": true}
+curl http://localhost:18000/v1/models        # → tier list
+curl http://localhost:18000/vram             # → residency snapshot
+# Through the frontend nginx (port 3000), the same routes have an /api/ prefix:
+curl http://localhost:3000/api/vram          # → same JSON, via nginx proxy
 ```
 
 Backend logs: `docker compose logs -f backend`
@@ -183,16 +197,20 @@ If you want to iterate on `backend/*.py` without a full container rebuild:
 # Ollama + Qdrant + Redis still need to be up — keep those in compose
 docker compose up -d ollama qdrant redis searxng
 
-# Then run the backend on the host
+# Then run the backend on the host. backend/main.py uses package-relative
+# imports, so it must be loaded as `backend.main` from the repo root —
+# `uv run --directory backend uvicorn main:app …` fails with
+# "attempted relative import with no known parent package".
 export AUTH_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')
 export OLLAMA_URL=http://localhost:11434
 export LAI_CONFIG_DIR=$(pwd)/config
 
-uv run --directory backend uvicorn main:app --reload --port 8000
+uv run --with-requirements backend/requirements.txt \
+    uvicorn backend.main:app --reload --port 18000
 ```
 
 `--reload` picks up file changes; the compose `backend` service should be
-stopped first (`docker compose stop backend`) to free port 8000.
+stopped first (`docker compose stop backend`) to free host port 18000.
 
 ---
 
@@ -202,7 +220,10 @@ stopped first (`docker compose stop backend`) to free port 8000.
 - **Backend container keeps restarting** — `docker compose logs backend`.
   Usually a missing env var or an unreachable Ollama.
 - **`nvidia-smi` fails inside containers** — NVIDIA Container Toolkit isn't
-  installed / Docker Desktop GPU support isn't enabled.
+  installed. On Windows, re-run `setup.ps1` after installing the WSL CUDA
+  driver (`https://developer.nvidia.com/cuda/wsl`); on Linux, install
+  `nvidia-container-toolkit` and run `sudo nvidia-ctk runtime configure
+  --runtime=docker && sudo systemctl restart docker`.
 - **`llama-server` won't stay up** — vision GGUFs missing from `models/`.
   Either download them (step 4) or remove the service.
 - **Chat returns 503 / router errors** — the tier's model isn't in Ollama yet.

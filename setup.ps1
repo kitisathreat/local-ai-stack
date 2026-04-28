@@ -4,7 +4,7 @@
 .DESCRIPTION
     Installs all prerequisites on a fresh Windows system, configures the
     project environment, and compiles the LocalAIStack.exe / AirgapChat.exe
-    / gpu-agent.exe launcher files.
+    launcher files.
 
     Uses Docker Engine inside a WSL2 Ubuntu distro rather than Docker Desktop.
     Docker Desktop is NOT required and (if installed) is left untouched.
@@ -594,12 +594,12 @@ if (-not $NoBuild) {
         2>&1 | ForEach-Object { Write-Info $_ }
 
     $buildScript = Join-Path $root "launcher\build.ps1"
-    Write-Step "Compiling LocalAIStack.exe, AirgapChat.exe, gpu-agent.exe..."
+    Write-Step "Compiling LocalAIStack.exe, AirgapChat.exe..."
     & $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $buildScript `
         2>&1 | ForEach-Object { Write-Info $_ }
 
     $distDir = Join-Path $root "launcher\dist"
-    foreach ($exe in @("LocalAIStack.exe", "AirgapChat.exe", "gpu-agent.exe")) {
+    foreach ($exe in @("LocalAIStack.exe", "AirgapChat.exe")) {
         $exePath = Join-Path $distDir $exe
         if (Test-Path $exePath) {
             Write-OK "launcher\dist\$exe"
