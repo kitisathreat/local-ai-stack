@@ -438,6 +438,152 @@ returning the same `lai_session` JWT cookie.
 
 ---
 
+## Phase 5 — Installable `.exe` with install wizard
+
+End state: a single `LocalAIStackInstaller-<version>.exe` the user
+double-clicks. It installs the app under `%PROGRAMFILES%\LocalAIStack\`,
+creates Start Menu + Desktop shortcuts, and on first launch runs the
+Phase 2 setup wizard.
+
+### 5.1 Installer toolchain
+
+Use **Inno Setup 6** (free, MIT-style license, scriptable, native
+Windows look-and-feel, signed-installer support). Reasons over
+alternatives:
+
+- **NSIS**: more painful scripting, weaker UAC handling.
+- **MSIX/WiX**: enterprise-grade but overkill; needs MSI authoring
+  expertise we don't have.
+- **PyInstaller alone**: produces an `.exe` but no installer, no Start
+  Menu integration, no UAC elevation, no service registration.
+
+Inno Setup script lives at `installer\LocalAIStack.iss`. Build via a
+new launcher subcommand:
+
+```
+LocalAIStack.ps1 -BuildInstaller    # produces dist\LocalAIStackInstaller-<ver>.exe
+```
+
+That subcommand:
+1. Runs `-Build` (ps2exe → `LocalAIStack.exe`).
+2. Runs the Phase 2 GUI freezer (PyInstaller one-folder mode → `dist\gui\`).
+3. Invokes `iscc.exe installer\LocalAIStack.iss` (Inno Setup compiler,
+   bundled in `vendor\inno-setup\` so CI doesn't need a global install).
+
+### 5.2 What the installer ships
+
+**Bundled (~600 MB compressed):**
+- `LocalAIStack.exe` (ps2exe-compiled launcher)
+- `gui\` (PyInstaller-frozen PySide6 app, ~250 MB)
+- `backend\` (Python source, run via the venv-backend interpreter we
+  install at runtime — keeps installer small)
+- `tools\`, `config\` (data files, ~5 MB)
+- `vendor\python-3.12-embed\` (~30 MB; embeddable Python distro,
+  used to bootstrap the venvs without requiring a system Python)
+- `vendor\qdrant\qdrant.exe` (~40 MB)
+- `vendor\llama-server\llama-server.exe` (~220 MB)
+- `vendor\cloudflared\cloudflared.exe` (~30 MB)
+- `assets\icon.ico`, license, README
+
+**Downloaded post-install (during Setup wizard):**
+- Ollama (winget; ~150 MB)
+- Ollama models (24–72 GB)
+- Vision GGUF (~25 GB, optional)
+- `passlib`, `httpx`, `fastapi`, etc. into `venv-backend` (~250 MB)
+- PySide6 deps not already frozen (none if PyInstaller mode is used)
+
+This split keeps the installer at ~600 MB instead of ~80 GB.
+
+### 5.3 Inno Setup script outline
+
+```
+[Setup]
+AppId={{LOCAL-AI-STACK-GUID}}
+AppName=Local AI Stack
+AppVersion=#{Version}
+DefaultDirName={pf}\LocalAIStack
+DefaultGroupName=Local AI Stack
+PrivilegesRequired=admin
+ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64
+OutputBaseFilename=LocalAIStackInstaller-#{Version}
+
+[Files]
+Source: "dist\LocalAIStack.exe"; DestDir: "{app}"
+Source: "dist\gui\*"; DestDir: "{app}\gui"; Flags: recursesubdirs
+Source: "backend\*"; DestDir: "{app}\backend"; Flags: recursesubdirs
+Source: "tools\*"; DestDir: "{app}\tools"; Flags: recursesubdirs
+Source: "config\*"; DestDir: "{app}\config"; Flags: recursesubdirs
+Source: "vendor\*"; DestDir: "{app}\vendor"; Flags: recursesubdirs
+Source: "assets\icon.ico"; DestDir: "{app}\assets"
+
+[Icons]
+Name: "{group}\Local AI Stack"; Filename: "{app}\LocalAIStack.exe"; \
+    IconFilename: "{app}\assets\icon.ico"
+Name: "{group}\Stop Local AI Stack"; Filename: "{app}\LocalAIStack.exe"; \
+    Parameters: "-Stop"
+Name: "{commondesktop}\Local AI Stack"; Filename: "{app}\LocalAIStack.exe"; \
+    Tasks: desktopicon
+
+[Tasks]
+Name: desktopicon; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
+
+[Run]
+; Run -Setup -SkipModels at the end so prereq installs + venv creation
+; happen as admin, then the wizard launches at first user logon.
+Filename: "{app}\LocalAIStack.exe"; \
+    Parameters: "-Setup -SkipModels"; \
+    StatusMsg: "Installing prerequisites and creating Python environments..."; \
+    Flags: runhidden waituntilterminated
+
+[UninstallRun]
+Filename: "{app}\LocalAIStack.exe"; Parameters: "-Stop"; Flags: runhidden
+Filename: "{app}\vendor\cloudflared\cloudflared.exe"; \
+    Parameters: "service uninstall"; Flags: runhidden skipifdoesntexist
+
+[Code]
+function InitializeSetup(): Boolean;
+begin
+  // Refuse to run on non-x64 / non-Windows-10+
+  Result := IsWin64 and (GetWindowsVersion >= $0A000000);
+  if not Result then
+    MsgBox('Local AI Stack requires 64-bit Windows 10 or newer.', mbError, MB_OK);
+end;
+```
+
+### 5.4 Per-user vs. per-machine layout
+
+Installer (per-machine, admin-required):
+
+- `%PROGRAMFILES%\LocalAIStack\` — code, vendored binaries (read-only)
+
+Runtime (per-user, no admin):
+
+- `%LOCALAPPDATA%\LocalAIStack\` — `.env`, `data\lai.db`, `data\history\`,
+  `data\qdrant\`, `data\models\`, `logs\`, `pids.json`
+
+The launcher honors `$env:LAI_INSTALLED='1'` (set by an installer-written
+registry key) to switch path resolution between dev (repo-root) and
+installed (split) layouts. This is the change called out as **S5** in
+Phase 1.
+
+### 5.5 Code-signing (optional, do later)
+
+Unsigned `.exe`s trigger SmartScreen on every download. Signing requires
+either an EV cert (~$300/yr, no warm-up) or a standard cert (~$80/yr,
+multi-month SmartScreen warm-up). Defer until the installer flow is
+stable. Document the SmartScreen "More info → Run anyway" workaround
+in the README.
+
+### 5.6 Auto-update
+
+Out of scope for the first installer release. Document a manual
+"download new installer, run, it overwrites in place" path; Inno Setup
+handles upgrade detection via `AppId`. Persistent data in
+`%LOCALAPPDATA%` is untouched on upgrade.
+
+---
+
 ### 2.4 Re-running the wizard
 
 `LocalAIStack.ps1 -Setup` always re-runs the wizard, but each page reads
