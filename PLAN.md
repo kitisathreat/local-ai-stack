@@ -378,6 +378,66 @@ Lives in a new helper `gui/cloudflare_setup.py`, called from
 
 ---
 
+## Phase 4 — Native admin GUI write parity
+
+`gui/windows/admin.py` currently ships read-only (per PR #96 follow-ups).
+The old Preact admin panel (`frontend/src/admin.tsx`, deleted) had write
+parity; we must rebuild that in PySide6 so admins never need a browser.
+
+### 4.1 Sections to port
+
+Each becomes a `QTabWidget` page in `admin.py`. All edits hit existing
+backend routes (`/admin/config/*`) — no new HTTP surface.
+
+| Tab | Backing route | Widget |
+|-----|---------------|--------|
+| Models & tiers | `GET/PATCH /admin/config/models` | `QTableView` over `config/models.yaml` with inline aliases editor |
+| Router | `GET/PATCH /admin/config/router` | Form: regex list, keyword counts, token thresholds |
+| VRAM scheduler | `GET/PATCH /admin/config/vram` | Numeric spinboxes for headroom, eviction, pinning |
+| Auth | `GET/PATCH /admin/config/auth` | Magic-link TTL, cookie TTL, allowed domains, rate limits |
+| Tools | `GET/PATCH /admin/config/tools` | Two-column list: enabled / available, drag to enable |
+| Users | `GET /admin/users`, `PATCH /admin/users/{id}` | Table with admin toggle, password reset trigger |
+| Errors | `GET /admin/errors` | Read-only table of recent backend errors |
+| Multi-agent test | `POST /admin/test/multi_agent` | Same SSE stream the old admin panel had, rendered with `QTextBrowser` |
+| Live metrics | reuses `gui/windows/metrics.py` | Already done; embed as a tab here too |
+
+### 4.2 Patterns
+
+- Every tab has a **Reload** and **Save** button. Save is disabled until
+  any field changes (Qt's `dataChanged` signal).
+- Saves run through a single `gui/api_client.py::patch_config(section,
+  payload)` helper with optimistic UI + rollback on HTTP error.
+- Hot-reload: backend already supports YAML hot-reload on PATCH (see
+  `backend/admin.py::_set_deep`). Confirm via a "Config reloaded ✓"
+  toast in the status bar.
+- Restart-required fields (`BACKEND_WORKERS`, `REDIS_URL`) get a yellow
+  badge and a "Restart required" line under the field. Saving them
+  flips the launcher tray icon to amber until the user clicks
+  "Restart services" (which runs `LocalAIStack.ps1 -Stop` + `-Start`
+  in a worker process).
+
+### 4.3 What is **not** ported
+
+- The old web admin had a "Run multi-agent benchmark" button that
+  streamed events. Keep it functionally, but in Qt — `QTextBrowser`
+  appending lines from an `httpx.AsyncClient.stream` reader. No
+  embedded browser.
+- The old web admin embedded a Grafana iframe for long-range metrics.
+  Replace with QtCharts time-series in the metrics tab; if a user
+  *really* wants Grafana, document that they can run it standalone
+  and we'll surface a configurable URL field that opens in the system
+  browser (one-shot, like the Cloudflare login).
+
+### 4.4 Auth gate
+
+`-Admin` already spawns the GUI in admin-only mode. Update
+`gui/windows/login.py` to default to password mode when the target
+user has `password_required=True` (admins do), and fall back to
+magic-link otherwise. Backend route: new `POST /auth/password`
+returning the same `lai_session` JWT cookie.
+
+---
+
 ### 2.4 Re-running the wizard
 
 `LocalAIStack.ps1 -Setup` always re-runs the wizard, but each page reads
