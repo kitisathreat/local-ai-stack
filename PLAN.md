@@ -242,6 +242,22 @@ MODEL_UPDATE_POLICY=prompt
 
 Admin email + password go to **SQLite** (`users` table), not `.env`.
 
+### 2.5 Backend changes required
+
+- `backend/db.py::_migrate_*` — schema bump v3 → v4, adds
+  `password_hash TEXT NULL` and `is_admin INTEGER NOT NULL DEFAULT 0`
+  to `users`.
+- `backend/auth.py` — new `verify_password()` and
+  `POST /auth/password` route. Magic-link routes stay as-is for
+  non-admin users. Add a `password_required` flag on the user row;
+  admins are required to use a password, end-users still magic-link.
+- `backend/seed_admin.py` — accept `--email`, `--password`, `--admin`
+  flags; idempotent (`INSERT … ON CONFLICT DO UPDATE`).
+- `backend/admin.py::is_admin_email` → renamed to `is_admin_user`,
+  reads `is_admin` from SQLite first, falls back to `ADMIN_EMAILS` env
+  for CI.
+- New dep in `backend/requirements.txt`: `passlib[bcrypt]==1.7.4`.
+
 ### 2.4 Re-running the wizard
 
 `LocalAIStack.ps1 -Setup` always re-runs the wizard, but each page reads
