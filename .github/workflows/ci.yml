@@ -120,7 +120,6 @@ jobs:
           $expected = @(
             "launcher/LocalAIStack.ps1",
             "launcher/build.ps1",
-            "launcher/gpu-agent.ps1",
             "launcher/steps/_common.ps1",
             "launcher/steps/ensure-docker.ps1",
             "launcher/steps/ensure-lmstudio.ps1",

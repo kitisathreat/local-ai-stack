@@ -62,7 +62,7 @@ Code: `MultiAgentTab` in [`frontend/src/admin.tsx`](frontend/src/admin.tsx); orc
 
 ### Windows launcher (`LocalAIStack.exe`)
 
-PowerShell + WinForms one-shot orchestrator. Starts Docker Desktop, brings the compose stack up, and exposes a tray icon with *Open Chat · View Logs · Restart · Stop & Exit*. Compiled from [`launcher/LocalAIStack.ps1`](launcher/LocalAIStack.ps1) via [`launcher/build.ps1`](launcher/build.ps1).
+PowerShell + WinForms one-shot orchestrator. Starts Docker Engine inside the WSL2 Ubuntu distro, brings the compose stack up, and exposes a tray icon with *Open Chat · View Logs · Restart · Stop & Exit*. Compiled from [`launcher/LocalAIStack.ps1`](launcher/LocalAIStack.ps1) via [`launcher/build.ps1`](launcher/build.ps1).
 
 ![Launcher window mockup](docs/images/launcher-window.svg)
 
@@ -80,13 +80,29 @@ All five tiers are defined in [`config/models.yaml`](config/models.yaml) and add
 
 ## Quick start
 
+### Windows
+
+```powershell
+git clone https://github.com/kitisathreat/local-ai-stack
+cd local-ai-stack
+powershell -ExecutionPolicy Bypass -File setup.ps1 -Interactive -PullModels
+launcher\dist\LocalAIStack.exe
+```
+
+`setup.ps1` installs WSL2 + Ubuntu + Docker Engine (inside WSL — **not** Docker Desktop), generates all required secrets in `.env.local`, pulls the Ollama tier models, and builds the launcher EXEs. `LocalAIStack.exe` then brings the stack up and opens the chat in your browser.
+
+### Linux / macOS
+
 ```bash
 git clone https://github.com/kitisathreat/local-ai-stack
 cd local-ai-stack
 cp .env.example .env.local
-python -c 'import secrets; print(secrets.token_urlsafe(48))' >> .env.local   # set AUTH_SECRET_KEY
-bash scripts/setup-models.sh        # pull Ollama tags + optionally download vision GGUFs
-docker compose up -d
+# Set AUTH_SECRET_KEY in-place (don't append — needs the AUTH_SECRET_KEY= prefix)
+SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')
+sed -i.bak "s|^AUTH_SECRET_KEY=.*|AUTH_SECRET_KEY=$SECRET|" .env.local && rm .env.local.bak
+docker compose up -d ollama        # bring up Ollama before pulling models
+bash scripts/setup-models.sh       # pull Ollama tags + optionally download vision GGUFs
+docker compose up -d               # start the rest of the stack
 ```
 
 Then open http://localhost:3000.
@@ -97,7 +113,7 @@ Then open http://localhost:3000.
 
 | Service | Port | Purpose |
 |---|---|---|
-| `backend` | 8000 | FastAPI — router, auth, RAG, memory, admin |
+| `backend` | 18000 | FastAPI — router, auth, RAG, memory, admin (host 18000 → container 8000) |
 | `frontend` | 3000 | Preact SPA served by nginx |
 | `ollama` | 11434 | Primary inference backend |
 | `llama-server` | 8001 | Vision-tier inference (llama.cpp, optional) |
@@ -124,27 +140,32 @@ Several operationally-meaningful values are still hardcoded in `backend/*.py` �
 
 ## API endpoints
 
+Routes live on the FastAPI app at `http://localhost:18000`. The frontend at `:3000` proxies `/api/*` to the backend (with the `/api/` prefix stripped) — so browser calls use `/api/...` while direct backend calls drop the prefix.
+
 ```
-GET  /healthz                     → {ok: true}
-GET  /v1/models                   → OpenAI-compatible tier list
-POST /v1/chat/completions         → SSE streaming chat (OpenAI-compatible)
-POST /auth/request                → Send magic link
-GET  /auth/verify?token=...       → Exchange for session cookie
-GET  /me                          → Current user
-GET  /api/memory                  → List distilled memories
-DELETE /api/memory/{id}           → Forget a memory
-POST /api/rag/upload              → Upload a document into per-user RAG
-GET  /api/rag/docs                → List uploaded documents
-GET  /api/vram                    → Current tier residency snapshot
-GET  /chats                       → List conversations
-GET  /chats/{id}                  → Conversation history
+GET    /healthz                     → {ok: true}
+GET    /v1/models                   → OpenAI-compatible tier list
+POST   /v1/chat/completions         → SSE streaming chat (OpenAI-compatible)
+POST   /auth/request                → Send magic link
+GET    /auth/verify?token=...       → Exchange for session cookie
+GET    /me                          → Current user
+GET    /memory                      → List distilled memories
+DELETE /memory/{id}                 → Forget a memory
+POST   /rag/upload                  → Upload a document into per-user RAG
+GET    /rag/docs                    → List uploaded documents
+GET    /vram                        → Current tier residency snapshot
+GET    /chats                       → List conversations
+GET    /chats/{id}                  → Conversation history
 ```
 
 ## Development
 
 ```bash
-# Run backend locally (requires Ollama/Qdrant up)
-uv run --directory backend uvicorn main:app --reload
+# Run backend locally from the repo root (requires Ollama/Qdrant up).
+# backend/main.py uses package-relative imports, so it must be loaded as
+# `backend.main` from the repo root — `uv run --directory backend …` fails.
+uv run --with-requirements backend/requirements.txt \
+    uvicorn backend.main:app --reload --port 18000
 
 # Frontend dev server
 cd frontend && npm run dev

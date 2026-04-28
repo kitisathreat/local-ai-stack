@@ -165,7 +165,7 @@ services:
     image: quay.io/jupyter/pytorch-notebook:latest
     container_name: jupyter
     environment:
-      - JUPYTER_TOKEN=local-ai-stack-token
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-local-ai-stack-token}
       - JUPYTER_ENABLE_LAB=yes
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

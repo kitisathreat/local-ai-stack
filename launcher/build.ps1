@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build LocalAIStack.exe and gpu-agent.exe via ps2exe.
+    Build LocalAIStack.exe and AirgapChat.exe via ps2exe.
 .DESCRIPTION
     Requires: Install-Module -Name ps2exe -Scope CurrentUser
 .EXAMPLE
@@ -37,12 +37,6 @@ Invoke-PS2EXE `
     -OutputFile (Join-Path $distDir "LocalAIStack.exe") `
     -noConsole -title "LocalAIStack" -product "LocalAIStack" `
     -company "kitisathreat" `
-    @iconArgs
-
-Invoke-PS2EXE `
-    -InputFile  (Join-Path $PSScriptRoot "gpu-agent.ps1") `
-    -OutputFile (Join-Path $distDir "gpu-agent.exe") `
-    -noConsole -title "LocalAIStack GPU Agent" `
     @iconArgs
 
 Invoke-PS2EXE `

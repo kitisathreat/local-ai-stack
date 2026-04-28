@@ -582,15 +582,16 @@ class TestDockerComposeIntegration:
         )
 
     def test_backend_healthz_via_docker(self):
-        assert _wait_for_http("http://127.0.0.1:8000/healthz", timeout=30), (
+        # Compose publishes the backend on host port 18000 (container 8000).
+        assert _wait_for_http("http://127.0.0.1:18000/healthz", timeout=30), (
             "Backend /healthz did not return 200 within 30 s after docker compose up"
         )
-        status, body = _http_get("http://127.0.0.1:8000/healthz")
+        status, body = _http_get("http://127.0.0.1:18000/healthz")
         assert status == 200
         assert body == {"ok": True}
 
     def test_backend_models_list_via_docker(self):
-        _, body = _http_get("http://127.0.0.1:8000/v1/models")
+        _, body = _http_get("http://127.0.0.1:18000/v1/models")
         ids = {m["id"] for m in body.get("data", [])}
         assert "tier.versatile" in ids
 
