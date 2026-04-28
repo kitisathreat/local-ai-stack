@@ -336,14 +336,21 @@ def pull_missing_hf_files(
     result: ResolveResult,
     *,
     model_dir: Path | None = None,
+    dry_run: bool = False,
 ) -> list[str]:
     """For every Hugging-Face-sourced tier whose resolved file isn't on
     disk, download it via ``hf_hub_download``. Returns the list of tier
-    names that were pulled.
+    names that were pulled (or would be pulled if ``dry_run=True``).
 
     Errors are logged and don't raise — the launcher continues with the
     files it was able to fetch; `llama-server` skips the vision tier if
     `data/models/vision.gguf` isn't present.
+
+    ``dry_run`` walks the same resolution logic (import huggingface_hub,
+    compute repo/filename/revision, decide which tiers are missing on
+    disk) but skips the actual ``hf_hub_download`` call. CI uses this to
+    prove the pull machinery is wired without downloading ~25 GB of
+    weights.
     """
     try:
         from huggingface_hub import hf_hub_download
@@ -371,6 +378,18 @@ def pull_missing_hf_files(
         filename = "/".join(parts[2:])
         revision = r.revision or "main"
 
+        target_path = target_root / filename
+        if target_path.exists():
+            continue
+
+        if dry_run:
+            logger.info(
+                "would-pull HF for tier %s: %s@%s %s -> %s",
+                tier, repo_id, revision, filename, target_path,
+            )
+            pulled.append(tier)
+            continue
+
         logger.info("Pulling HF file for tier %s: %s@%s %s",
                     tier, repo_id, revision, filename)
         try:
@@ -392,15 +411,34 @@ def pull_missing_hf_files(
     return pulled
 
 
-def pull_missing_ollama_tags(result: ResolveResult) -> list[str]:
+def pull_missing_ollama_tags(
+    result: ResolveResult,
+    *,
+    dry_run: bool = False,
+) -> list[str]:
     """For every Ollama tier whose resolved tag isn't local, run
-    `ollama pull <tag>`. Returns the list of tags that were pulled.
+    ``ollama pull <tag>``. Returns the list of tags that were pulled
+    (or would be pulled if ``dry_run=True``).
+
+    ``dry_run`` iterates the same tiers and probes local availability
+    via ``_probe_ollama_local`` so CI can verify the pull decision is
+    correct, but does not invoke the ``ollama`` binary. If the binary
+    is missing in dry-run mode the tier is still reported as would-pull;
+    the launcher surface-level prereq check is what guarantees ollama
+    is installed.
     """
     pulled: list[str] = []
     for tier, r in result.resolved.items():
         if r.source != "ollama" or r.error:
             continue
         if _probe_ollama_local(r.identifier):
+            continue
+        if dry_run:
+            logger.info(
+                "would-pull Ollama for tier %s: ollama pull %s",
+                tier, r.identifier,
+            )
+            pulled.append(r.identifier)
             continue
         logger.info("Pulling missing Ollama tag for tier %s: %s", tier, r.identifier)
         try:
@@ -430,6 +468,11 @@ def _main() -> int:
     r.add_argument("--offline", action="store_true", help="skip polling, use pinned")
     r.add_argument("--pull", action="store_true", help="pull missing Ollama tags after resolution")
     r.add_argument("--pull-hf", action="store_true", help="pull missing Hugging Face files after resolution")
+    r.add_argument(
+        "--dry-run", action="store_true",
+        help="with --pull/--pull-hf, enumerate would-be-pulled tiers without downloading. "
+             "Exits non-zero if any tier resolved with an error.",
+    )
     args = parser.parse_args()
 
     if args.cmd == "resolve":
@@ -439,13 +482,20 @@ def _main() -> int:
             err = f"  ERROR: {info.error}" if info.error else ""
             print(f"  {tier:20s} {info.source:12s} {info.identifier}{flag}{err}")
         if args.pull:
-            pulled = pull_missing_ollama_tags(result)
+            pulled = pull_missing_ollama_tags(result, dry_run=args.dry_run)
             if pulled:
-                print(f"Ollama pulled: {', '.join(pulled)}")
+                prefix = "Ollama would-pull" if args.dry_run else "Ollama pulled"
+                print(f"{prefix}: {', '.join(pulled)}")
         if args.pull_hf:
-            pulled = pull_missing_hf_files(result)
+            pulled = pull_missing_hf_files(result, dry_run=args.dry_run)
             if pulled:
-                print(f"HF pulled: {', '.join(pulled)}")
+                prefix = "HF would-pull" if args.dry_run else "HF pulled"
+                print(f"{prefix}: {', '.join(pulled)}")
+        if args.dry_run:
+            errored = [t for t, r in result.resolved.items() if r.error]
+            if errored:
+                print(f"Tier errors in dry-run: {', '.join(errored)}")
+                return 1
     return 0
 
 

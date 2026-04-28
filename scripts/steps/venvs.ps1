@@ -19,14 +19,26 @@ function Invoke-CreateVenvs {
         if (-not (Test-Path $py)) {
             Write-Host "==> Creating $($s.Name)" -ForegroundColor Cyan
             & python -m venv $path
+            if ($LASTEXITCODE -ne 0) {
+                throw "python -m venv $path failed (exit $LASTEXITCODE)"
+            }
         } else {
             Write-Host "   ok $($s.Name) already exists" -ForegroundColor Green
         }
         & $py -m pip install --upgrade pip
+        if ($LASTEXITCODE -ne 0) {
+            throw "pip upgrade failed in $($s.Name) (exit $LASTEXITCODE)"
+        }
         if ($s.Reqs -and (Test-Path $s.Reqs)) {
             & $py -m pip install -r $s.Reqs
+            if ($LASTEXITCODE -ne 0) {
+                throw "pip install -r $($s.Reqs) failed in $($s.Name) (exit $LASTEXITCODE)"
+            }
         } elseif ($s.Pip) {
             & $py -m pip install @($s.Pip)
+            if ($LASTEXITCODE -ne 0) {
+                throw "pip install $($s.Pip -join ' ') failed in $($s.Name) (exit $LASTEXITCODE)"
+            }
         }
     }
 }

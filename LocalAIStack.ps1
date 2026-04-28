@@ -33,7 +33,18 @@ param(
 
     # Modifier flags (may combine with -Start)
     [Parameter(ParameterSetName = 'Start')] [switch]$NoUpdateCheck,
-    [Parameter(ParameterSetName = 'Start')] [switch]$Offline
+    [Parameter(ParameterSetName = 'Start')] [switch]$Offline,
+    [Parameter(ParameterSetName = 'Start')] [switch]$NoGui,
+
+    # Modifier flag for -Setup: runs the resolver in dry-run pull mode
+    # instead of actually pulling multi-GB Ollama models and the vision
+    # GGUF. Also skips the interactive admin seeding. Used by CI.
+    [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipModels,
+
+    # Modifier flag for -Setup: skip Invoke-EnsurePrereqs (the winget
+    # tool install pass). Use when the caller has already provisioned
+    # the binaries — e.g. CI where winget is flaky.
+    [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipPrereqs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,12 +83,11 @@ function Ensure-Dir($path) {
     if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
 }
 
-function Import-Steps {
-    if (-not (Test-Path $StepsDir)) { return }
-    Get-ChildItem -Path $StepsDir -Filter *.ps1 -File | ForEach-Object {
-        . $_.FullName
-    }
-}
+# NOTE: step files must be dot-sourced at script scope (see bottom of
+# this file). Dot-sourcing inside a function or ForEach-Object block
+# puts the imported functions in that inner scope and they disappear
+# when the block returns — so Get-Command Invoke-DownloadQdrant / …
+# inside Invoke-Setup silently fails and Setup does nothing.
 
 # ── Env file support ─────────────────────────────────────────────────────────
 $Script:EnvTemplate = @'
@@ -300,7 +310,9 @@ troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.
 function Invoke-Setup {
     # Consolidated prerequisite check (Windows build, NVIDIA driver,
     # winget-installed tools). Idempotent — safe to call on every -Setup.
-    if (Get-Command Invoke-EnsurePrereqs -ErrorAction SilentlyContinue) {
+    if ($SkipPrereqs) {
+        Write-Warn2 'Skipping prereq check (-SkipPrereqs).'
+    } elseif (Get-Command Invoke-EnsurePrereqs -ErrorAction SilentlyContinue) {
         Invoke-EnsurePrereqs
     } else {
         throw "scripts\steps\prereqs.ps1 missing — re-clone the repo."
@@ -322,32 +334,46 @@ function Invoke-Setup {
         Invoke-CreateVenvs -Root $VendorDir -RepoRoot $RepoRoot
     }
 
-    Write-Step 'Pulling Ollama model tiers'
     Apply-Env (Read-EnvFile)
     $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
-    if (Test-Path $py) {
-        & $py -m backend.model_resolver resolve --force --pull
 
-        # Optional HF pull: vision GGUF is ~25 GB so we confirm first.
-        $visionFile = Join-Path $DataDir 'models\vision.gguf'
-        if (-not (Test-Path $visionFile)) {
-            Write-Host ''
-            Write-Host 'Vision tier GGUF (~25 GB) is not on disk.' -ForegroundColor Cyan
-            $answer = Read-Host 'Download now from Hugging Face? [y/N]'
-            if ($answer -match '^(y|yes)$') {
-                & $py -m backend.model_resolver resolve --force --pull-hf
-            } else {
-                Write-Warn2 'Vision tier skipped — run `-CheckUpdates` or admin panel later.'
+    if ($SkipModels) {
+        Write-Step 'Resolving tiers + dry-run pull (no downloads)'
+        if (Test-Path $py) {
+            & $py -m backend.model_resolver resolve --force --pull --pull-hf --dry-run --offline
+            if ($LASTEXITCODE -ne 0) {
+                throw "model_resolver dry-run exited with code $LASTEXITCODE"
             }
+        } else {
+            Write-Warn2 "Backend venv missing at $py — skipping dry-run"
         }
+        Write-Warn2 'Skipping actual model pulls and admin seed (-SkipModels).'
     } else {
-        Write-Warn2 "Backend venv missing at $py — skipping model pull"
-    }
+        Write-Step 'Pulling Ollama model tiers'
+        if (Test-Path $py) {
+            & $py -m backend.model_resolver resolve --force --pull
 
-    # First-run admin bootstrap: prompt if no admin user exists yet.
-    if (Test-Path $py) {
-        Write-Step 'Checking for an admin user'
-        & $py -m backend.seed_admin --if-no-admins
+            # Optional HF pull: vision GGUF is ~25 GB so we confirm first.
+            $visionFile = Join-Path $DataDir 'models\vision.gguf'
+            if (-not (Test-Path $visionFile)) {
+                Write-Host ''
+                Write-Host 'Vision tier GGUF (~25 GB) is not on disk.' -ForegroundColor Cyan
+                $answer = Read-Host 'Download now from Hugging Face? [y/N]'
+                if ($answer -match '^(y|yes)$') {
+                    & $py -m backend.model_resolver resolve --force --pull-hf
+                } else {
+                    Write-Warn2 'Vision tier skipped — run `-CheckUpdates` or admin panel later.'
+                }
+            }
+        } else {
+            Write-Warn2 "Backend venv missing at $py — skipping model pull"
+        }
+
+        # First-run admin bootstrap: prompt if no admin user exists yet.
+        if (Test-Path $py) {
+            Write-Step 'Checking for an admin user'
+            & $py -m backend.seed_admin --if-no-admins
+        }
     }
 
     Write-Ok 'Setup complete.'
@@ -387,7 +413,11 @@ function Invoke-Start {
 
     Write-Step 'Starting ollama serve'
     $Env:OLLAMA_HOST = '127.0.0.1:11434'
-    $pids['ollama'] = Record-PidEntry (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir)
+    if (Get-Command ollama -ErrorAction SilentlyContinue) {
+        $pids['ollama'] = Record-PidEntry (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir)
+    } else {
+        Write-Warn2 "ollama binary not found on PATH — Ollama-backed tiers will be unavailable this run"
+    }
 
     Write-Step 'Starting qdrant'
     $qdrantBin = Join-Path $VendorDir 'qdrant\qdrant.exe'
@@ -439,14 +469,18 @@ function Invoke-Start {
         ) -TimeoutSeconds 120
     }
 
-    Write-Step 'Launching native GUI'
-    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
-    if (Test-Path $guiPy) {
-        $pids['gui'] = Record-PidEntry (Start-TrackedProcess -Name 'gui' -FilePath $guiPy `
-            -Args @((Join-Path $RepoRoot 'gui\main.py'), '--api', 'http://127.0.0.1:18000') `
-            -LogDir $LogsDir -WorkDir $RepoRoot)
+    if ($NoGui) {
+        Write-Warn2 'Skipping GUI spawn (-NoGui).'
     } else {
-        Write-Warn2 "GUI venv missing — run -Setup or launch manually"
+        Write-Step 'Launching native GUI'
+        $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
+        if (Test-Path $guiPy) {
+            $pids['gui'] = Record-PidEntry (Start-TrackedProcess -Name 'gui' -FilePath $guiPy `
+                -Args @((Join-Path $RepoRoot 'gui\main.py'), '--api', 'http://127.0.0.1:18000') `
+                -LogDir $LogsDir -WorkDir $RepoRoot)
+        } else {
+            Write-Warn2 "GUI venv missing — run -Setup or launch manually"
+        }
     }
 
     ($pids | ConvertTo-Json) | Out-File -FilePath $PidFile -Encoding utf8NoBOM
@@ -543,7 +577,14 @@ function Invoke-CheckUpdates {
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
-Import-Steps
+if (Test-Path $StepsDir) {
+    # `foreach` (language keyword) runs at script scope; ForEach-Object
+    # creates a per-iteration scope that would swallow the dot-sourced
+    # function definitions.
+    foreach ($f in Get-ChildItem -Path $StepsDir -Filter *.ps1 -File) {
+        . $f.FullName
+    }
+}
 
 if ($Help)              { Invoke-Help;         return }
 if ($InitEnv)           { Invoke-InitEnv;      return }

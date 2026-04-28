@@ -79,7 +79,7 @@ function Invoke-DownloadLlamaServer {
         return
     }
     if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest -Force | Out-Null }
-    $asset = "llama-$Version-bin-win-cuda-x64.zip"
+    $asset = "llama-$Version-bin-win-cuda-cu12.4-x64.zip"
     $url = "https://github.com/ggml-org/llama.cpp/releases/download/$Version/$asset"
     $zip = Join-Path $Dest 'llama.zip'
     Write-Host "==> Downloading llama.cpp $Version from $url" -ForegroundColor Cyan
