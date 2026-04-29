@@ -9,9 +9,9 @@ tools:
   # ── Search & Research ─────────────────────────────────────────────────────────
   web_search:
     file: tools/web_search.py
-    title: "Web Search (SearXNG)"
-    description: "Search the web in real time via local SearXNG. Gives models access to current events and live data."
-    requires_service: searxng
+    title: "Web Search"
+    description: "Search the web in real time via the configured provider (Brave or DuckDuckGo). Gives models access to current events and live data."
+    requires_service: null
     default_enabled: true
 
   wikipedia:

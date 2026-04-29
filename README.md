@@ -1,153 +1,85 @@
-# local-ai-stack
+# Local AI Stack — native mode
 
-Self-hosted multi-model LLM workflow. A FastAPI backend routes each chat request to one of five GPU-resident model tiers, with a VRAM-aware scheduler, a multi-agent orchestrator, per-user RAG + memory, and an OpenAI-compatible SSE endpoint. Ships as a single `docker compose up`.
+A self-hosted multi-model LLM workflow that runs entirely on your Windows
+machine. No Docker, no browser.
 
-## What it does
+## Quickstart
 
-- **Tier routing.** Every request is classified and dispatched to a specific model tier — images go to the vision tier, code blocks to the coding tier, ambiguous questions to the Versatile MoE default. Users can override with slash commands (`/tier`, `/think`, `/solo`, `/swarm`).
-- **VRAM scheduling.** A reference-counted scheduler with LRU eviction and observed-cost tracking keeps multiple tiers co-resident on a single GPU, evicting idle models when headroom is needed.
-- **Multi-agent orchestration.** For complex prompts, the Versatile tier acts as an orchestrator, decomposing the request into 2–5 parallel subtasks run on the Fast tier, then synthesizing. Workers can call tools. Two interaction modes: **independent** (classic parallel) and **collaborative** (workers see each other's drafts and refine over N rounds before synthesis). All knobs — worker count, tier, reasoning, mode, refinement rounds — are tunable globally from the admin dashboard and per-chat by elevated users without persisting.
-- **Tools + RAG + memory.** 100+ discoverable tools (web search, finance, science, data repos), per-user Qdrant RAG over uploaded documents, and memory distillation that extracts durable facts from chat history every Nth turn.
-- **Public access.** OpenAI-compatible `/v1/chat/completions` endpoint (works with Open WebUI, Cline, etc.) plus an opt-in Cloudflare Tunnel profile for HTTPS exposure without opening router ports.
-
-## Architecture
-
-```
-                      ┌───────────────────┐
-User ──► Frontend ──► │   FastAPI         │ ──► Router + middleware
-                      │   backend         │
-                      │                   │ ──► VRAM scheduler ──► Ollama
-                      │                   │                    └── llama.cpp (vision)
-                      │                   │
-                      │                   │ ──► Orchestrator ──► N × Fast workers
-                      │                   │
-                      │                   │ ──► Tool executor ──► 100+ tools
-                      │                   │                       (Jupyter, SearXNG, APIs)
-                      │                   │
-                      │                   │ ──► Qdrant ──► per-user RAG + memory
-                      │                   │
-                      │                   │ ──► SQLite ──► chats, memories, users
-                      └───────────────────┘
+```powershell
+.\LocalAIStack.ps1 -InitEnv     # write a default .env (edit it: secrets, optional Brave key)
+.\LocalAIStack.ps1 -Setup       # install prereqs, download binaries, create venvs, pull models
+.\LocalAIStack.ps1              # start everything and open the native Qt GUI
 ```
 
-## Interfaces
+All operator instructions — daily commands, cloudflared ingress snippet,
+log locations, model update policy, uninstall — live in:
 
-Three GUIs ship with the stack. The chat SPA and admin dashboard are the same Preact bundle; the launcher is a separate Windows orchestrator.
+```powershell
+.\LocalAIStack.ps1 -Help
+```
 
-> The chat and admin mockups below are **animated SVGs** — GitHub renders them inline like GIFs, no binary assets required. They show the live agent step panel, worker cards transitioning through states, and the streaming event timeline as they actually appear during a multi-agent run.
+## What's here
 
-### Chat (Preact SPA, `:3000`)
+- `LocalAIStack.ps1` — setup + launcher + build + help, all in one file.
+- `.env` — single environment file (created by `-InitEnv`).
+- `backend/` — FastAPI API server (localhost:18000).
+- `gui/` — PySide6 native desktop app (chat + admin + QtCharts metrics).
+- `config/` — tier and tool YAML (`model-sources.yaml` drives the
+  Hugging Face / Ollama registry resolver on every start).
+- `scripts/steps/` — helpers dot-sourced by `LocalAIStack.ps1`.
+- `vendor/` — created by `-Setup`: pinned Qdrant + llama-server binaries
+  and three Python venvs (backend, gui, jupyter).
+- `data/` — SQLite, encrypted histories, Qdrant storage, resolved-model cache.
+- `docs/` — architecture overview, API reference, troubleshooting.
 
-User-facing chat at `http://localhost:3000`. The sidebar lists conversations; the header hosts the tier picker, reasoning toggle, **response-mode picker** (Immediate · Plan first · Clarify · Step approval · My plan), and — for users in `ADMIN_EMAILS` — a **🤝 multi-agent** pill that opens a per-chat overrides panel (workers, worker tier, orchestrator tier, reasoning, interaction mode, refinement rounds). Per-chat tweaks reset on every chat switch and never persist. The composer has 📎 upload and 🧰 tool-picker buttons; a collapsible telemetry strip above it shows ping, tokens/sec, VRAM, RAM, and context-window fill.
+## Why native?
 
-![Chat UI animated mockup](docs/images/frontend-chat.svg)
+Docker and the Preact SPA have been removed in favour of a fully native Windows
+stack. Services that used to run in containers now run as tracked subprocesses:
 
-Code: [`frontend/src/app.tsx`](frontend/src/app.tsx). Theme tokens in [`frontend/src/styles.css`](frontend/src/styles.css); light mode auto-engages via `prefers-color-scheme`. Response modes are steered server-side by [`backend/middleware/response_mode.py`](backend/middleware/response_mode.py); the multi-agent panel posts `multi_agent_options` on `/v1/chat/completions` (handled in [`backend/orchestrator.py`](backend/orchestrator.py)).
-
-### Admin dashboard (`#/admin`)
-
-Same bundle, gated by the `ADMIN_EMAILS` env var. Tabs for live usage (requests, tokens, latency, error sparklines), by-tier and by-user breakdowns, users, VRAM residency, and editable config (models · router · **multi-agent** · VRAM · auth · tools). Saves write back to `config/*.yaml` atomically and hot-reload without a restart.
-
-![Admin dashboard mockup](docs/images/admin-dashboard.svg)
-
-Code: [`frontend/src/admin.tsx`](frontend/src/admin.tsx) · [`backend/admin.py`](backend/admin.py) · [`backend/metrics.py`](backend/metrics.py).
-
-#### Multi-agent tab
-
-Dedicated tab for visualizing and tuning the orchestrator → workers → synthesis pipeline. Three sections: a **workflow diagram** rendered live from the unsaved draft (so admins can preview a tweak before saving), the **defaults form** (min/max workers, worker + orchestrator tier dropdowns, reasoning, interaction mode, refinement rounds), and a **live test runner** that submits a prompt with the draft settings and animates one card per worker as it runs — pending → running → done/error, with `round N` tags during collaborative refinement. A relative-timestamped event log streams every plan / workers_start / refine_start / worker_done / synthesis SSE event side-by-side. Doesn't pollute any conversation.
-
-![Admin Multi-agent tab animated mockup](docs/images/admin-multi-agent.svg)
-
-Code: `MultiAgentTab` in [`frontend/src/admin.tsx`](frontend/src/admin.tsx); orchestrator collaborative mode in [`backend/orchestrator.py`](backend/orchestrator.py); per-request schema in [`backend/schemas.py`](backend/schemas.py) (`MultiAgentOptions`).
-
-### Windows launcher (`LocalAIStack.exe`)
-
-PowerShell + WinForms one-shot orchestrator. Starts Docker Engine inside the WSL2 Ubuntu distro, brings the compose stack up, and exposes a tray icon with *Open Chat · View Logs · Restart · Stop & Exit*. Compiled from [`launcher/LocalAIStack.ps1`](launcher/LocalAIStack.ps1) via [`launcher/build.ps1`](launcher/build.ps1).
-
-![Launcher window mockup](docs/images/launcher-window.svg)
+| Service | Port | How it runs |
+|---|---|---|
+| `backend` | 18000 | FastAPI via uvicorn (venv-backend) |
+| `ollama` | 11434 | Native Windows install via winget |
+| `llama-server` | 8001 | Vendored binary (`vendor/llama-server/`) |
+| `qdrant` | 6333 | Vendored binary (`vendor/qdrant/`) |
+| `jupyter` | 8888 | venv-jupyter subprocess |
+| `cloudflared` | — | Windows service (installed by wizard) |
 
 ## Tiers
 
-All five tiers are defined in [`config/models.yaml`](config/models.yaml) and addressable as `tier.<name>` virtual model ids.
+All five tiers are defined in [`config/models.yaml`](config/models.yaml).
 
 | Tier | Model | Backend | VRAM | Role |
 |---|---|---|---|---|
-| `highest_quality` | Qwen3 72B | Ollama | ~24 GB | Hardest reasoning, slow. |
-| `versatile` | Qwen3.6 35B-A3B (MoE) | Ollama | ~21 GB | Default + multi-agent orchestrator. |
-| `fast` | Qwen3.5 9B | Ollama | ~7 GB | Multi-agent workers (3× parallel fit on 24 GB). |
-| `coding` | Qwen3-Coder-Next 80B-A3B | Ollama | ~24 GB | SWE-bench trained, native tool use. |
-| `vision` | Qwen3.6 35B + mmproj | llama.cpp | ~21 GB | Images, charts, screenshots. Pinned. |
-
-## Quick start
-
-### Windows
-
-```powershell
-git clone https://github.com/kitisathreat/local-ai-stack
-cd local-ai-stack
-powershell -ExecutionPolicy Bypass -File setup.ps1 -Interactive -PullModels
-launcher\dist\LocalAIStack.exe
-```
-
-`setup.ps1` installs WSL2 + Ubuntu + Docker Engine (inside WSL — **not** Docker Desktop), generates all required secrets in `.env.local`, pulls the Ollama tier models, and builds the launcher EXEs. `LocalAIStack.exe` then brings the stack up and opens the chat in your browser.
-
-### Linux / macOS
-
-```bash
-git clone https://github.com/kitisathreat/local-ai-stack
-cd local-ai-stack
-cp .env.example .env.local
-# Set AUTH_SECRET_KEY in-place (don't append — needs the AUTH_SECRET_KEY= prefix)
-SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')
-sed -i.bak "s|^AUTH_SECRET_KEY=.*|AUTH_SECRET_KEY=$SECRET|" .env.local && rm .env.local.bak
-docker compose up -d ollama        # bring up Ollama before pulling models
-bash scripts/setup-models.sh       # pull Ollama tags + optionally download vision GGUFs
-docker compose up -d               # start the rest of the stack
-```
-
-Then open http://localhost:3000.
-
-**Hardware minimums:** NVIDIA GPU with 24 GB VRAM (RTX 3090 / 4090 / A5000). CPU-only works but the 35B+ tiers will be unusably slow. Vision tier can be skipped by removing GGUF files from `models/`.
-
-## Services (docker-compose.yml)
-
-| Service | Port | Purpose |
-|---|---|---|
-| `backend` | 18000 | FastAPI — router, auth, RAG, memory, admin (host 18000 → container 8000) |
-| `frontend` | 3000 | Preact SPA served by nginx |
-| `ollama` | 11434 | Primary inference backend |
-| `llama-server` | 8001 | Vision-tier inference (llama.cpp, optional) |
-| `qdrant` | 6333 | Vector DB for RAG + memory |
-| `searxng` | 4000 | Meta-search backing the web-search middleware |
-| `jupyter` | 8888 | Code interpreter tool sandbox |
-| `n8n` | 5678 | Workflow automation (optional) |
-| `cloudflared` | — | Public HTTPS tunnel (opt-in via `--profile public`) |
+| `highest_quality` | Qwen3 72B | Ollama | ~24 GB | Hardest reasoning |
+| `versatile` | Qwen3.6 35B-A3B (MoE) | Ollama | ~21 GB | Default + orchestrator |
+| `fast` | Qwen3.5 9B | Ollama | ~7 GB | Multi-agent workers |
+| `coding` | Qwen3-Coder-Next 80B-A3B | Ollama | ~24 GB | SWE-bench trained |
+| `vision` | Qwen3.6 35B + mmproj | llama.cpp | ~21 GB | Images / charts |
 
 ## Configuration
 
 All runtime config lives in [`config/`](config/):
 
 - [`models.yaml`](config/models.yaml) — tier definitions + aliases
-- [`router.yaml`](config/router.yaml) — auto-thinking / multi-agent / specialist regex rules
+- [`model-sources.yaml`](config/model-sources.yaml) — HuggingFace / Ollama registry resolver
+- [`router.yaml`](config/router.yaml) — auto-thinking / multi-agent / specialist rules
 - [`vram.yaml`](config/vram.yaml) — scheduler policy (headroom, eviction, pinning)
 - [`auth.yaml`](config/auth.yaml) — magic-link TTL, allowed domains, rate limits
 - [`tools.yaml`](config/tools.yaml) — tool manifest + default-enabled set
-- [`ollama-models.yaml`](config/ollama-models.yaml) — what `scripts/setup-models.sh` pulls
 
-Secrets go in `.env.local` (gitignored). See [`.env.example`](.env.example) for the full list.
-
-Several operationally-meaningful values are still hardcoded in `backend/*.py` — tracked by [#29](https://github.com/kitisathreat/local-ai-stack/issues/29).
+Secrets live in `data/.env` (written by the setup wizard; never committed).
 
 ## API endpoints
 
-Routes live on the FastAPI app at `http://localhost:18000`. The frontend at `:3000` proxies `/api/*` to the backend (with the `/api/` prefix stripped) — so browser calls use `/api/...` while direct backend calls drop the prefix.
-
 ```
-GET    /healthz                     → {ok: true}
+GET    /healthz                     → {status: "ok"|"degraded"}
 GET    /v1/models                   → OpenAI-compatible tier list
 POST   /v1/chat/completions         → SSE streaming chat (OpenAI-compatible)
 POST   /auth/request                → Send magic link
 GET    /auth/verify?token=...       → Exchange for session cookie
+POST   /auth/password               → Admin password login
 GET    /me                          → Current user
 GET    /memory                      → List distilled memories
 DELETE /memory/{id}                 → Forget a memory
@@ -160,72 +92,59 @@ GET    /chats/{id}                  → Conversation history
 
 ## Development
 
-```bash
-# Run backend locally from the repo root (requires Ollama/Qdrant up).
-# backend/main.py uses package-relative imports, so it must be loaded as
-# `backend.main` from the repo root — `uv run --directory backend …` fails.
-uv run --with-requirements backend/requirements.txt \
-    uvicorn backend.main:app --reload --port 18000
+```powershell
+# Start backend in reload mode (requires Ollama + Qdrant running)
+.\LocalAIStack.ps1 -Start -NoGui
 
-# Frontend dev server
-cd frontend && npm run dev
+# Run tests (Linux CI — no GPU required)
+python -m pytest tests/
 
-# Run tests
-uv run pytest
-# Live-backend tests (gated — requires compose up)
-LIVE_BACKEND_TESTS=1 uv run pytest tests/test_backends_live.py    # planned, see #22
+# Local health check (on the actual machine after setup)
+.\LocalAIStack.ps1 -Test
 ```
 
 ### Project layout
 
 ```
+LocalAIStack.ps1      Root launcher (setup / start / stop / build / test)
 backend/              FastAPI app
   main.py             Endpoints, SSE producers, middleware pipeline
   router.py           Tier selection + slash commands
-  vram_scheduler.py   GPU residency manager (LRU + refcount + pinning)
+  vram_scheduler.py   GPU residency manager
   orchestrator.py     Multi-agent plan/synthesize
   rag.py              Per-user Qdrant retrieval
   memory.py           Distillation + injection
-  auth.py             Magic-link + JWT cookies
-  backends/           ollama.py, llama_cpp.py
-  middleware/         context, clarification, web_search, rate_limit
-  tools/              registry, executor
-frontend/             Preact SPA
-config/               YAML-driven tier + router + vram + auth + tools config
-tests/                Pytest suite
-scripts/              setup-models.sh, setup-cloudflared.sh, code_assist.py, ...
-tools/                Discoverable tools (one file per tool; auto-registered)
+  auth.py             Magic-link + password auth + JWT cookies
+  model_resolver.py   HF / Ollama registry resolver
+gui/                  PySide6 native desktop app
+  windows/            chat.py, admin.py, login.py, diagnostics.py, setup_wizard.py
+  widgets/            tray.py, markdown_view.py
+  cloudflare_setup.py Tunnel provisioning helpers
+config/               YAML-driven configuration
+installer/            Inno Setup script + PyInstaller spec
+scripts/steps/        Dot-sourced helpers for the launcher
+tests/                Pytest suite + local health-check areas
+tools/                Discoverable tools (one file per tool)
+vendor/               Created by -Setup: binaries + Python venvs
+data/                 SQLite, histories, Qdrant storage (gitignored)
 ```
 
 ## Roadmap + contributing
 
-Work is organized as **epics** (tracking issues with child issues linked as sub-issues) grouped by theme:
-
-- [#34 Admin platform & config](https://github.com/kitisathreat/local-ai-stack/issues/34) — live parameter tuning GUI, per-user preferences, config externalization
-- [#35 Frontend UX polish](https://github.com/kitisathreat/local-ai-stack/issues/35) — `conversation_id` plumbing, tool-call cards, richer memory UI
-- [#36 Scaling & performance](https://github.com/kitisathreat/local-ai-stack/issues/36) — Redis rate limiter, lazy tool-registry load
-- [#37 Tooling quality & tests](https://github.com/kitisathreat/local-ai-stack/issues/37) — multi-agent tool tests, live-backend tests, vision-tier tools
-- [#38 Docs & security](https://github.com/kitisathreat/local-ai-stack/issues/38) — user-facing docs, Cloudflare hardening
-- [#39 Stability & correctness](https://github.com/kitisathreat/local-ai-stack/issues/39) — verified-bug backlog
-
-A living catalog of current / deprecated / anticipated features lives in [#33](https://github.com/kitisathreat/local-ai-stack/issues/33).
-
-### Labels
-
-- **Priority:** `p0` (urgent) → `p3` (nice-to-have)
-- **Group:** `group:admin-platform`, `group:user-polish`, `group:scaling`, `group:tooling-quality`, `group:docs-security`, `group:correctness`
-- **Status:** `status:ready` (pick it up), `status:blocked` (waiting on another issue), `status:needs-design` (scoping required)
-- **Type:** `bug`, `enhancement`, `refactor`, `documentation`, `tests`, `security`, `performance`, `observability`, `configuration`, `epic`
-
-Before closing an epic, confirm its "Review gate before closing" checklist is satisfied (every epic body has one).
+- [#34 Admin platform & config](https://github.com/kitisathreat/local-ai-stack/issues/34)
+- [#36 Scaling & performance](https://github.com/kitisathreat/local-ai-stack/issues/36)
+- [#37 Tooling quality & tests](https://github.com/kitisathreat/local-ai-stack/issues/37)
+- [#38 Docs & security](https://github.com/kitisathreat/local-ai-stack/issues/38)
+- [#39 Stability & correctness](https://github.com/kitisathreat/local-ai-stack/issues/39)
 
 ## Phase history
 
-- **Phase 0** — Docker compose scaffolding, Ollama + Qdrant + SearXNG + Jupyter + n8n services
+- **Phase 0** — Docker compose scaffolding, Ollama + Qdrant + SearXNG + Jupyter services
 - **Phase 1** — Backend-agnostic tier router + VRAM scheduler + multi-agent orchestrator
 - **Phase 4** — Custom Preact frontend, magic-link auth, per-user storage
 - **Phase 5** — Tool registry, per-user RAG, memory distillation
-- **Phase 6** — Cloudflare Tunnel, middleware migration, tools-through-workers
+- **Phase 6** — Cloudflare Tunnel, middleware migration
+- **Phase 7** — Native Windows migration (this branch): no Docker, PySide6 GUI, setup wizard, Inno Setup installer, local health-check suite
 
 ## License
 

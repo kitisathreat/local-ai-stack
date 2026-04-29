@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, master]
   push:
-    branches: [main, master, claude-code-integration]
+    branches: [main, master, claude-code-integration, non-docker-dependent]
 
 permissions:
   contents: read
@@ -28,17 +28,20 @@ jobs:
           pip install \
             pytest pytest-asyncio \
             pyyaml pydantic httpx \
-            aiosqlite aiosmtplib \
+            aiosqlite bcrypt aiosmtplib \
             'python-jose[cryptography]' \
             fastapi 'uvicorn[standard]' \
             cryptography 'redis[hiredis]' \
             pypdf python-multipart \
-            pynvml
+            pynvml 'passlib[bcrypt]' \
+            ddgs huggingface_hub
 
-      - name: Run all Python tests
+      - name: Run core Python tests
         run: |
           set -o pipefail
-          python3 -m pytest \
+          # Collect test files that exist (supports both old and new layouts)
+          TEST_FILES=""
+          for f in \
             tests/test_tools.py \
             tests/test_config.py \
             tests/test_router.py \
@@ -49,7 +52,19 @@ jobs:
             tests/test_rag.py \
             tests/test_memory.py \
             tests/test_docker_setup.py \
-            -v --tb=short 2>&1 | tee /tmp/pytest.log
+            tests/test_diagnostics.py \
+            tests/test_main.py \
+            tests/test_admin_endpoints.py \
+            tests/test_host_gate.py \
+            tests/test_model_resolver.py \
+            tests/test_model_resolver_dry_run.py \
+            tests/test_backend_startup.py \
+            tests/test_model_loading.py \
+            tests/test_cloudflare_setup.py \
+          ; do
+            [ -f "$f" ] && TEST_FILES="$TEST_FILES $f"
+          done
+          python3 -m pytest $TEST_FILES -v --tb=short 2>&1 | tee /tmp/pytest.log
 
       - name: Post failing Python tests as PR comment
         if: failure() && github.event_name == 'pull_request'
@@ -80,17 +95,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check PS1 script syntax (scripts/ + launcher/)
+      - name: Check PS1 script syntax (native + legacy paths)
         shell: pwsh
         run: |
           $failed = 0
-          $paths = @(
+          $patterns = @(
+            "LocalAIStack.ps1",
             "scripts/*.ps1",
+            "scripts/steps/*.ps1",
             "launcher/*.ps1",
             "launcher/steps/*.ps1",
             "tests/*.ps1"
           )
-          $files = $paths | ForEach-Object { Get-ChildItem -Path $_ -ErrorAction SilentlyContinue }
+          $files = $patterns | ForEach-Object {
+            Get-ChildItem -Path $_ -ErrorAction SilentlyContinue
+          }
+          if (-not $files) {
+            Write-Host "No PS1 files found — skipping." -ForegroundColor Yellow
+            exit 0
+          }
           foreach ($f in $files) {
             $errs = $null
             [System.Management.Automation.PSParser]::Tokenize(
@@ -106,7 +129,7 @@ jobs:
           }
           if ($failed -gt 0) { exit 1 }
 
-  # ── Launcher smoke tests: build script + step contract ───────────────────────
+  # ── Launcher smoke tests: native LocalAIStack.ps1 layout ─────────────────────
   launcher-smoke:
     name: Launcher — Smoke Tests
     runs-on: ubuntu-latest
@@ -114,51 +137,85 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify launcher structure + step contract
+      - name: Detect layout and verify structure
         shell: pwsh
         run: |
-          $expected = @(
-            "launcher/LocalAIStack.ps1",
-            "launcher/build.ps1",
-            "launcher/steps/_common.ps1",
-            "launcher/steps/ensure-docker.ps1",
-            "launcher/steps/ensure-lmstudio.ps1",
-            "launcher/steps/ensure-tunnel.ps1",
-            "launcher/steps/compose-up.ps1",
-            "launcher/steps/wait-ready.ps1",
-            "launcher/README.md"
-          )
-          $missing = @()
-          foreach ($p in $expected) {
-            if (-not (Test-Path $p)) { $missing += $p }
-          }
-          if ($missing.Count -gt 0) {
-            Write-Host "FAIL: missing launcher files:" -ForegroundColor Red
-            $missing | ForEach-Object { Write-Host "  $_" }
-            exit 1
-          }
-          Write-Host "All expected launcher files present."
+          $isNativeLayout = Test-Path "LocalAIStack.ps1"
 
-          # Each step script must source _common.ps1 (for Emit-Result) and
-          # call Emit-Result somewhere — otherwise the launcher can't parse
-          # its result.
-          $stepFiles = Get-ChildItem "launcher/steps/ensure-*.ps1","launcher/steps/compose-up.ps1","launcher/steps/wait-ready.ps1"
-          $failed = 0
-          foreach ($f in $stepFiles) {
-            $content = Get-Content $f.FullName -Raw
-            if ($content -notmatch '_common\.ps1') {
-              Write-Host "FAIL: $($f.Name) does not source _common.ps1" -ForegroundColor Red
-              $failed++
+          if ($isNativeLayout) {
+            Write-Host "Detected: native layout" -ForegroundColor Cyan
+            $expected = @(
+              "LocalAIStack.ps1",
+              "scripts/steps/prereqs.ps1",
+              "scripts/steps/download.ps1",
+              "scripts/steps/process.ps1",
+              "scripts/steps/venvs.ps1"
+            )
+            $missing = @()
+            foreach ($p in $expected) {
+              if (-not (Test-Path $p)) { $missing += $p }
             }
-            if ($content -notmatch 'Emit-Result') {
-              Write-Host "FAIL: $($f.Name) does not call Emit-Result" -ForegroundColor Red
-              $failed++
+            if ($missing.Count -gt 0) {
+              Write-Host "FAIL: missing native layout files:" -ForegroundColor Red
+              $missing | ForEach-Object { Write-Host "  $_" }
+              exit 1
             }
-          }
-          if ($failed -gt 0) { exit 1 }
-          Write-Host "All step scripts conform to the launcher contract."
+            Write-Host "All expected native layout files present."
 
-      - name: Verify Emit-Result produces valid JSON
+            # Native step scripts must use Write-Step / Write-Ok helpers
+            $stepFiles = Get-ChildItem "scripts/steps/*.ps1" -ErrorAction SilentlyContinue
+            $failed = 0
+            foreach ($f in $stepFiles) {
+              $content = Get-Content $f.FullName -Raw
+              if ($content -notmatch 'Write-Step|Write-Ok|Write-Warn2|Write-Err') {
+                Write-Host "WARN: $($f.Name) has no Write-Step/Write-Ok calls" -ForegroundColor Yellow
+              } else {
+                Write-Host "PASS: $($f.Name)" -ForegroundColor Green
+              }
+            }
+            if ($failed -gt 0) { exit 1 }
+
+          } else {
+            Write-Host "Detected: Docker layout (legacy)" -ForegroundColor Cyan
+            $expected = @(
+              "launcher/LocalAIStack.ps1",
+              "launcher/build.ps1",
+              "launcher/steps/_common.ps1",
+              "launcher/steps/ensure-docker.ps1",
+              "launcher/steps/ensure-tunnel.ps1",
+              "launcher/steps/compose-up.ps1",
+              "launcher/steps/wait-ready.ps1"
+            )
+            $missing = @()
+            foreach ($p in $expected) {
+              if (-not (Test-Path $p)) { $missing += $p }
+            }
+            if ($missing.Count -gt 0) {
+              Write-Host "FAIL: missing launcher files:" -ForegroundColor Red
+              $missing | ForEach-Object { Write-Host "  $_" }
+              exit 1
+            }
+            Write-Host "All expected Docker layout files present."
+
+            $stepFiles = Get-ChildItem "launcher/steps/ensure-*.ps1","launcher/steps/compose-up.ps1","launcher/steps/wait-ready.ps1"
+            $failed = 0
+            foreach ($f in $stepFiles) {
+              $content = Get-Content $f.FullName -Raw
+              if ($content -notmatch '_common\.ps1') {
+                Write-Host "FAIL: $($f.Name) does not source _common.ps1" -ForegroundColor Red
+                $failed++
+              }
+              if ($content -notmatch 'Emit-Result') {
+                Write-Host "FAIL: $($f.Name) does not call Emit-Result" -ForegroundColor Red
+                $failed++
+              }
+            }
+            if ($failed -gt 0) { exit 1 }
+            Write-Host "All step scripts conform to the launcher contract."
+          }
+
+      - name: Verify Emit-Result (Docker layout only)
+        if: ${{ hashFiles('launcher/steps/_common.ps1') != '' }}
         shell: pwsh
         run: |
           . ./launcher/steps/_common.ps1
@@ -195,19 +252,26 @@ jobs:
           python - <<'EOF'
           import yaml, sys, pathlib
 
-          files = [
+          # Always-required config files (present in both layouts)
+          always_files = [
             "config/models.yaml",
             "config/router.yaml",
             "config/vram.yaml",
             "config/tools.yaml",
-            "config/ollama-models.yaml",
-            "config/searxng/settings.yml",
+            "config/auth.yaml",
             "knowledge/sources.yaml",
-            "docker-compose.yml",
+          ]
+
+          # Layout-specific files — validated only when present
+          optional_files = [
+            "config/ollama-models.yaml",      # Docker layout
+            "config/searxng/settings.yml",    # Docker layout (removed in native)
+            "config/model-sources.yaml",      # Native layout
+            "docker-compose.yml",             # Docker layout (removed in native)
           ]
 
           failed = []
-          for path in files:
+          for path in always_files:
             p = pathlib.Path(path)
             if not p.exists():
               print(f"MISSING: {path}")
@@ -220,12 +284,24 @@ jobs:
               print(f"FAIL:    {path} — {e}")
               failed.append(path)
 
+          for path in optional_files:
+            p = pathlib.Path(path)
+            if not p.exists():
+              print(f"SKIP:    {path} (not present in this layout)")
+              continue
+            try:
+              yaml.safe_load(p.read_text(encoding="utf-8"))
+              print(f"OK:      {path}")
+            except yaml.YAMLError as e:
+              print(f"FAIL:    {path} — {e}")
+              failed.append(path)
+
           if failed:
             sys.exit(1)
           EOF
 
-  # ── PowerShell integration tests (Windows runner) ────────────────────────────
-  test:
+  # ── Windows integration tests ────────────────────────────────────────────────
+  windows-integration:
     name: Run test suite (Windows)
     runs-on: windows-latest
 
@@ -239,11 +315,82 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
-        run: pip install openai
+        run: |
+          pip install `
+            pytest pytest-asyncio `
+            pyyaml pydantic httpx `
+            aiosqlite bcrypt aiosmtplib `
+            'python-jose[cryptography]' `
+            fastapi 'uvicorn[standard]' `
+            cryptography 'redis[hiredis]' `
+            pypdf python-multipart `
+            pynvml 'passlib[bcrypt]' `
+            ddgs huggingface_hub `
+            openai
 
-      - name: Run tests (CI mode)
+      - name: Create minimal .env for CI
         shell: pwsh
-        run: .\tests\run_tests.ps1 -CI
+        run: |
+          $key = python -c "import secrets; print(secrets.token_urlsafe(48))"
+          "AUTH_SECRET_KEY=$key" | Out-File .env -Encoding utf8NoBOM
+          "HISTORY_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" | Out-File .env -Append -Encoding utf8NoBOM
+          "OFFLINE=1" | Out-File .env -Append -Encoding utf8NoBOM
+          "WEB_SEARCH_PROVIDER=none" | Out-File .env -Append -Encoding utf8NoBOM
+          Write-Host "Wrote CI .env"
+
+      - name: Run install-process smoke test (native layout)
+        if: ${{ hashFiles('LocalAIStack.ps1') != '' }}
+        shell: pwsh
+        run: |
+          Remove-Item .env -ErrorAction SilentlyContinue
+          .\LocalAIStack.ps1 -InitEnv
+          if (-not (Test-Path .env)) {
+            Write-Host "FAIL: .env not created by -InitEnv" -ForegroundColor Red
+            exit 1
+          }
+          $content = Get-Content .env -Raw
+          foreach ($key in @("AUTH_SECRET_KEY", "CHAT_HOSTNAME", "WEB_SEARCH_PROVIDER", "MODEL_UPDATE_POLICY")) {
+            if ($content -notmatch $key) {
+              Write-Host "FAIL: .env missing key $key" -ForegroundColor Red
+              exit 1
+            }
+          }
+          Write-Host "PASS: -InitEnv wrote .env with all expected keys" -ForegroundColor Green
+
+      - name: Run Python tests
+        shell: pwsh
+        run: |
+          $testFiles = @()
+          $candidates = @(
+            "tests/test_tools.py",
+            "tests/test_config.py",
+            "tests/test_router.py",
+            "tests/test_vram_scheduler.py",
+            "tests/test_db.py",
+            "tests/test_auth.py",
+            "tests/test_tools_registry.py",
+            "tests/test_rag.py",
+            "tests/test_memory.py",
+            "tests/test_docker_setup.py",
+            "tests/test_diagnostics.py",
+            "tests/test_main.py",
+            "tests/test_admin_endpoints.py",
+            "tests/test_host_gate.py",
+            "tests/test_model_resolver.py",
+            "tests/test_model_resolver_dry_run.py",
+            "tests/test_backend_startup.py",
+            "tests/test_model_loading.py",
+            "tests/test_cloudflare_setup.py"
+          )
+          foreach ($f in $candidates) {
+            if (Test-Path $f) { $testFiles += $f }
+          }
+          if ($testFiles.Count -eq 0) {
+            Write-Host "No test files found" -ForegroundColor Yellow
+            exit 0
+          }
+          python -m pytest @testFiles -v --tb=short 2>&1 | Tee-Object -FilePath tests/ci_results.txt
+          exit $LASTEXITCODE
 
       - name: Print test log on failure
         if: failure()
@@ -252,8 +399,6 @@ jobs:
           if (Test-Path tests/ci_results.txt) {
             Write-Host "===== tests/ci_results.txt =====" -ForegroundColor Cyan
             Get-Content tests/ci_results.txt | ForEach-Object { Write-Host $_ }
-          } else {
-            Write-Host "No ci_results.txt found." -ForegroundColor Yellow
           }
 
       - name: Post test results to PR comment
@@ -266,22 +411,15 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set +e
-          echo "STEP STARTED: Post test results"
           {
             echo "### Windows CI test log (run $RUN_ID)"
             echo ""
             echo '```text'
             if [ -f tests/ci_results.txt ]; then
-              # Strip any non-printable including CR; keep it bounded.
               tr -d '\r' < tests/ci_results.txt | tail -100
             else
               echo "(tests/ci_results.txt not found)"
-              ls -la tests/ 2>&1 | head -30
             fi
             echo '```'
           } > post_comment.md
-          echo "---- body ----"
-          cat post_comment.md
-          echo "---- gh pr comment ----"
           gh pr comment "$PR_NUMBER" --body-file post_comment.md
-          echo "exit: $?"

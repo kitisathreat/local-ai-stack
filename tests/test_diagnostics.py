@@ -5,7 +5,7 @@ Every check function is exercised with happy-path and failure-path inputs.
 No running services required — HTTP calls are monkeypatched.
 
 Live-service tests are skipped unless the corresponding env var is set:
-    LIVE_OLLAMA_URL, LIVE_QDRANT_URL, LIVE_REDIS_URL, LIVE_SEARXNG_URL
+    LIVE_OLLAMA_URL, LIVE_QDRANT_URL, LIVE_REDIS_URL
 
 Run:
     pytest tests/test_diagnostics.py -v
@@ -44,7 +44,7 @@ from backend.diagnostics import (
     check_ollama_reachable,
     check_qdrant_reachable,
     check_redis_reachable,
-    check_searxng_reachable,
+    check_web_search_provider,
     check_tool_registry,
     check_vram_budget,
     run_startup_diagnostics,
@@ -75,7 +75,7 @@ async def _make_db(path: Path) -> str:
     async with aiosqlite.connect(db_path) as conn:
         await conn.execute("PRAGMA journal_mode=WAL")
         for table in (
-            "users", "magic_links", "conversations",
+            "users", "conversations",
             "messages", "memories", "rag_docs", "usage_events",
         ):
             await conn.execute(
@@ -486,15 +486,21 @@ class TestServiceConnectivityMocked:
         self._patch_get_raise(monkeypatch, httpx.ConnectError("refused"))
         assert run(check_qdrant_reachable("http://localhost:6333")).severity == Severity.WARN
 
-    # SearXNG
-    def test_searxng_ok(self, monkeypatch):
-        self._patch_get(monkeypatch, 200, "<html>SearXNG</html>")
-        assert run(check_searxng_reachable("http://localhost:8080")).severity == Severity.OK
+    # Web search provider (native mode — no SearXNG container)
+    def test_web_search_none_is_ok(self, monkeypatch):
+        monkeypatch.setenv("WEB_SEARCH_PROVIDER", "none")
+        monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+        assert run(check_web_search_provider(None)).severity == Severity.OK
 
-    def test_searxng_unreachable_is_warn(self, monkeypatch):
-        import httpx
-        self._patch_get_raise(monkeypatch, httpx.ConnectError("refused"))
-        assert run(check_searxng_reachable("http://localhost:8080")).severity == Severity.WARN
+    def test_web_search_brave_without_key_warns(self, monkeypatch):
+        monkeypatch.setenv("WEB_SEARCH_PROVIDER", "brave")
+        monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+        assert run(check_web_search_provider(None)).severity == Severity.WARN
+
+    def test_web_search_brave_with_key_is_ok(self, monkeypatch):
+        monkeypatch.setenv("WEB_SEARCH_PROVIDER", "brave")
+        monkeypatch.setenv("BRAVE_API_KEY", "test-key")
+        assert run(check_web_search_provider(None)).severity == Severity.OK
 
     # Redis
     def test_redis_no_url_is_ok(self, monkeypatch):
@@ -603,7 +609,3 @@ def test_live_redis():
     assert r.severity == Severity.OK, r.message
 
 
-@pytest.mark.skipif(not os.getenv("LIVE_SEARXNG_URL"), reason="set LIVE_SEARXNG_URL to run")
-def test_live_searxng():
-    r = run(check_searxng_reachable(os.environ["LIVE_SEARXNG_URL"]))
-    assert r.severity == Severity.OK, r.message

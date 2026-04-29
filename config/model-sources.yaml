@@ -1,0 +1,68 @@
+# Model source tracking for native mode
+#
+# On every `LocalAIStack.exe -Start`, backend.model_resolver polls the
+# upstream registry (Hugging Face or Ollama) for each tier declared
+# below, picks the version to load, and writes data/resolved-models.json
+# for the backend to consume.
+#
+# Fields:
+#   source   huggingface | ollama — which registry to query
+#   repo     (HF) repository id, e.g. "bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF"
+#   name     (Ollama) model:tag, e.g. "qwen3.5:9b"
+#   file     (HF, optional) preferred GGUF filename pattern, e.g. "*Q4_K_XL.gguf"
+#   tracking latest | pinned — when "pinned", the pinned revision/digest is
+#            always used; when "latest", the resolver polls and falls back
+#            to pinned on any network failure, rate-limit, or validation
+#            failure.
+#   pinned   fallback spec used when tracking=pinned OR upstream unreachable
+#
+# Resolution policy:
+#   - Results are cached for 24 h in data/model-cache.json. `-Setup` and
+#     `-CheckUpdates` force a refresh.
+#   - MODEL_UPDATE_POLICY (env) controls what happens when an update is
+#     detected:
+#       auto    → download immediately
+#       prompt  → native GUI shows a "new revision available — download N GB?" dialog
+#       skip    → detected-but-not-downloaded updates stay queued until next -Setup
+#   - OFFLINE=1 (env) skips all polling and uses pinned versions only.
+#
+# Tiers omitted from this file fall back to the tag declared in
+# config/models.yaml without any update polling.
+
+tiers:
+  highest_quality:
+    source: ollama
+    name: "qwen3:72b-q3_k_m"
+    tracking: latest
+    pinned:
+      name: "qwen3:72b-q3_k_m"
+
+  versatile:
+    source: ollama
+    name: "qwen3.6:35b-a3b"
+    tracking: latest
+    pinned:
+      name: "qwen3.6:35b-a3b"
+
+  fast:
+    source: ollama
+    name: "qwen3.5:9b"
+    tracking: latest
+    pinned:
+      name: "qwen3.5:9b"
+
+  coding:
+    source: ollama
+    name: "hf.co/bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF:Q4_K_XL"
+    tracking: latest
+    pinned:
+      name: "qwen2.5-coder:32b"                       # fallback_tag in models.yaml
+
+  vision:
+    source: huggingface
+    repo: "Qwen/Qwen2-VL-72B-Instruct-GGUF"
+    file: "*Q4_K_M.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "Qwen2-VL-72B-Instruct-Q4_K_M.gguf"

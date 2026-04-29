@@ -19,7 +19,12 @@ import yaml
 from pydantic import BaseModel, Field
 
 
-CONFIG_DIR = Path(os.getenv("LAI_CONFIG_DIR", "/app/config"))
+# Prefer explicit override; otherwise auto-detect relative to this file so
+# native mode (no Docker, no LAI_CONFIG_DIR) finds config/ at the repo root.
+CONFIG_DIR = Path(
+    os.getenv("LAI_CONFIG_DIR")
+    or (Path(__file__).parent.parent / "config")
+)
 
 
 class TierConfig(BaseModel):
@@ -185,13 +190,6 @@ class VRAMConfig(BaseModel):
     residency: ResidencyPolicyConfig = Field(default_factory=ResidencyPolicyConfig)
 
 
-class MagicLinkConfig(BaseModel):
-    expiry_minutes: int = 15
-    email_subject: str = "Sign in to Local AI Stack"
-    email_from: str = "noreply@localaistack.local"
-    email_body_template: str = ""
-
-
 class SessionCookieConfig(BaseModel):
     cookie_name: str = "lai_session"
     cookie_ttl_days: int = 30
@@ -201,7 +199,7 @@ class SessionCookieConfig(BaseModel):
 
 
 class AuthRateLimits(BaseModel):
-    requests_per_hour_per_email: int = 5
+    # Password-login rate limits (replacing the old magic-link throttle).
     requests_per_hour_per_ip: int = 30
     # Chat-endpoint throttles applied per authenticated user (or per IP for
     # anonymous callers). 0 disables the window.
@@ -210,7 +208,6 @@ class AuthRateLimits(BaseModel):
 
 
 class AuthConfig(BaseModel):
-    magic_link: MagicLinkConfig = Field(default_factory=MagicLinkConfig)
     session: SessionCookieConfig = Field(default_factory=SessionCookieConfig)
     allowed_email_domains: list[str] = Field(default_factory=list)
     rate_limits: AuthRateLimits = Field(default_factory=AuthRateLimits)
