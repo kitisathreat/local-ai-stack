@@ -165,28 +165,34 @@ def test_chat_completions_returns_503_when_all_tiers_down(monkeypatch):
     """
     POST /v1/chat/completions must return 503 (not 500) when all inference
     backends are unreachable.  A 500 indicates an unhandled exception.
-    The host-gate middleware passes because CHAT_HOSTNAME=testclient matches
-    the TestClient default Host header.
+
+    The lifespan startup must complete (state.config initialised) before we
+    patch httpx — otherwise startup connectivity probes raise ConnectError
+    and leave the app in a half-initialised state.  Using TestClient as a
+    context manager triggers lifespan.__aenter__ immediately on entry,
+    before any monkeypatching is applied.
     """
     import httpx as _httpx
-
-    async def _unavailable(*a, **kw):
-        raise _httpx.ConnectError("simulated: all tiers down")
-
-    monkeypatch.setattr(_httpx.AsyncClient, "post", _unavailable, raising=False)
-    monkeypatch.setattr(_httpx.AsyncClient, "stream", _unavailable, raising=False)
 
     from fastapi.testclient import TestClient
     from backend.main import app
 
-    # base_url must match CHAT_HOSTNAME so the host-gate middleware passes.
-    client = TestClient(app, base_url="http://testclient", raise_server_exceptions=False)
-    payload = {
-        "model": "versatile",
-        "messages": [{"role": "user", "content": "ping"}],
-        "stream": False,
-    }
-    r = client.post("/v1/chat/completions", json=payload)
+    # Enter the context so lifespan startup runs with un-patched httpx,
+    # then patch so the actual chat request hits ConnectError on every tier.
+    with TestClient(app, base_url="http://testclient", raise_server_exceptions=False) as client:
+        async def _unavailable(*a, **kw):
+            raise _httpx.ConnectError("simulated: all tiers down")
+
+        monkeypatch.setattr(_httpx.AsyncClient, "post", _unavailable, raising=False)
+        monkeypatch.setattr(_httpx.AsyncClient, "stream", _unavailable, raising=False)
+
+        payload = {
+            "model": "versatile",
+            "messages": [{"role": "user", "content": "ping"}],
+            "stream": False,
+        }
+        r = client.post("/v1/chat/completions", json=payload)
+
     assert r.status_code in (401, 503), (
         f"Expected 401 (no auth) or 503 (tier down), got {r.status_code}: {r.text[:200]}"
     )
