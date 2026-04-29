@@ -96,7 +96,10 @@ def test_list_and_delete_memory(db_path, monkeypatch):
     from backend import memory
 
     # Seed a memory directly via SQLite (bypasses Qdrant).
-    uid = run(db_mod.get_or_create_user("mem@x.io"))["id"]
+    uid = run(db_mod.create_user(
+        username="mem", email="mem@x.io",
+        password_hash="$2b$04$stub",
+    ))["id"]
 
     async def seed():
         async with db_mod.get_conn() as c:

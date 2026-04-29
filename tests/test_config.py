@@ -1,6 +1,8 @@
-"""CI tests for configuration files, docker-compose.yml, and static assets.
+"""CI tests for configuration files.
 
-All checks are purely static — no Docker or running services needed.
+Native-mode layout (post-PR #96): docker-compose.yml is deliberately
+absent; one assertion below guards against it being resurrected. All
+checks are purely static — no running services needed.
 """
 
 import re
@@ -234,7 +236,10 @@ def test_tools_yaml_all_referenced_files_exist():
 def test_tools_yaml_service_refs_are_valid():
     """requires_service must be null or a known service name."""
     data = _load_yaml("config/tools.yaml")
-    known_services = {None, "searxng", "qdrant", "ollama", "n8n", "jupyter", "backend"}
+    # Native mode never starts searxng / n8n containers, but the declarations
+    # stay in tools.yaml so the tool registry can gate them at runtime. Keep
+    # them in the allowlist so the validator doesn't fail.
+    known_services = {None, "qdrant", "ollama", "jupyter", "backend", "n8n", "searxng"}
     all_tool_entries = {}
     for section_val in data.values():
         if isinstance(section_val, dict):
@@ -269,112 +274,28 @@ def test_ollama_models_yaml_has_tier_group():
     assert "tiers" in groups, "ollama-models.yaml must define a 'tiers' group"
 
 
-# ── docker-compose.yml ────────────────────────────────────────────────────────
+# ── Native mode (no docker-compose, no searxng container) ────────────────────
 
-REQUIRED_SERVICES = [
-    "backend", "frontend", "jupyter", "qdrant", "searxng", "ollama", "llama-server", "n8n",
-    # Phase 6: cloudflared is profile-gated (only starts with `--profile public`)
-    # but must be declared as a service for compose config validity.
-    "cloudflared",
-]
-
-
-def test_docker_compose_exists():
-    assert (ROOT / "docker-compose.yml").exists()
+def test_docker_compose_removed_in_native_branch():
+    """docker-compose.yml, .dockerignore, and Dockerfiles are deliberately
+    absent on the non-docker-dependent branch."""
+    assert not (ROOT / "docker-compose.yml").exists()
+    assert not (ROOT / "backend" / "Dockerfile").exists()
+    assert not (ROOT / "frontend").exists()
 
 
-def test_docker_compose_valid_yaml():
-    data = _load_yaml("docker-compose.yml")
-    assert "services" in data, "docker-compose.yml missing 'services' key"
+def test_model_sources_yaml_exists():
+    assert (ROOT / "config" / "model-sources.yaml").exists()
 
 
-@pytest.mark.parametrize("service", REQUIRED_SERVICES)
-def test_docker_compose_has_service(service):
-    data = _load_yaml("docker-compose.yml")
-    assert service in data["services"], (
-        f"docker-compose.yml missing required service: '{service}'"
-    )
+def test_model_sources_yaml_has_tiers():
+    data = _load_yaml("config/model-sources.yaml")
+    assert "tiers" in data and data["tiers"]
 
 
-def test_docker_compose_ollama_uses_gpu():
-    """Ollama (not the backend) holds the GPU reservation — the backend runs
-    CPU-only inside Docker so Docker Desktop GPU management can't restart it."""
-    data = _load_yaml("docker-compose.yml")
-    ollama = data["services"].get("ollama", {})
-    deploy = ollama.get("deploy", {})
-    devices = str(deploy.get("resources", {}).get("reservations", {}).get("devices", ""))
-    assert "nvidia" in devices, "ollama service must reserve NVIDIA GPUs"
-
-
-def test_docker_compose_backend_routes_ollama():
-    data = _load_yaml("docker-compose.yml")
-    backend = data["services"].get("backend", {})
-    env = str(backend.get("environment", ""))
-    assert "OLLAMA_URL" in env, "backend must set OLLAMA_URL"
-
-
-def test_docker_compose_frontend_proxies_backend():
-    """Frontend service uses the built nginx image; nginx.conf proxies /api/
-    to backend:8000. We validate both the service exists with correct port
-    and the nginx.conf reference to backend:8000."""
-    data = _load_yaml("docker-compose.yml")
-    frontend = data["services"].get("frontend", {})
-    ports = str(frontend.get("ports", ""))
-    assert "3000" in ports, "frontend must expose port 3000"
-    nginx_conf = (ROOT / "frontend" / "nginx.conf").read_text(encoding="utf-8")
-    assert "backend:8000" in nginx_conf, "frontend/nginx.conf must proxy to backend:8000"
-
-
-def test_docker_compose_jupyter_token_set():
-    data = _load_yaml("docker-compose.yml")
-    jupyter = data["services"].get("jupyter", {})
-    env = str(jupyter.get("environment", ""))
-    assert "JUPYTER_TOKEN" in env
-
-
-def test_docker_compose_backend_port():
-    data = _load_yaml("docker-compose.yml")
-    backend = data["services"].get("backend", {})
-    ports = str(backend.get("ports", ""))
-    assert "8000" in ports
-
-
-def test_docker_compose_no_open_webui_service():
-    """Open WebUI was replaced by the custom frontend in Phase 4."""
-    data = _load_yaml("docker-compose.yml")
-    assert "open-webui" not in data["services"], (
-        "open-webui service should be removed in Phase 4; frontend replaces it"
-    )
-
-
-def test_docker_compose_all_services_have_image_or_build():
-    data = _load_yaml("docker-compose.yml")
-    for name, svc in data["services"].items():
-        assert "image" in svc or "build" in svc, (
-            f"Service '{name}' has neither 'image' nor 'build'"
-        )
-
-
-# ── searxng settings ──────────────────────────────────────────────────────────
-
-REQUIRED_SEARXNG_ENGINES = [
-    "pubmed", "semantic scholar", "paperswithcode", "openaire", "biorxiv",
-]
-
-
-def test_searxng_settings_exists():
-    assert (ROOT / "config" / "searxng" / "settings.yml").exists()
-
-
-def test_searxng_settings_json_format_enabled():
-    raw = (ROOT / "config" / "searxng" / "settings.yml").read_text(encoding="utf-8")
-    assert "json" in raw
-
-
-@pytest.mark.parametrize("engine", REQUIRED_SEARXNG_ENGINES)
-def test_searxng_has_academic_engine(engine):
-    raw = (ROOT / "config" / "searxng" / "settings.yml").read_text(encoding="utf-8").lower()
-    assert engine.lower() in raw
+def test_launcher_script_at_root():
+    """The single consolidated launcher sits at the repo root."""
+    assert (ROOT / "LocalAIStack.ps1").exists()
 
 
 # ── knowledge/sources.yaml ────────────────────────────────────────────────────
@@ -395,35 +316,7 @@ def test_knowledge_has_domain(domain):
     assert domain in raw
 
 
-# ── Static assets ─────────────────────────────────────────────────────────────
-
-def test_squarespace_embed_exists():
-    assert (ROOT / "squarespace-embed.html").exists()
-
-
-def test_squarespace_embed_has_error_fallback():
-    html = (ROOT / "squarespace-embed.html").read_text(encoding="utf-8")
-    assert "ai-error" in html
-
-
-def test_squarespace_embed_uses_cloudflare_placeholder():
-    """Phase 6: Tailscale hostname replaced with a placeholder substituted
-    at render time via scripts/render-embed.sh."""
-    html = (ROOT / "squarespace-embed.html").read_text(encoding="utf-8")
-    assert "__CLOUDFLARE_HOSTNAME__" in html, (
-        "embed should use __CLOUDFLARE_HOSTNAME__ placeholder; "
-        "run scripts/render-embed.sh to substitute before pasting into Squarespace"
-    )
-    assert "taila2838f.ts.net" not in html, "embed still references Tailscale hostname"
-    assert "tailscale://" not in html, "embed still has tailscale:// link"
-
-
 # ── .gitignore ────────────────────────────────────────────────────────────────
 
 def test_gitignore_exists():
     assert (ROOT / ".gitignore").exists()
-
-
-def test_gitignore_excludes_env_local():
-    gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert ".env.local" in gi

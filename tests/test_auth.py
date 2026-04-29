@@ -1,12 +1,15 @@
-"""Unit tests for backend/auth.py — email validation, token issue/decode,
-rate limits. SMTP send is NOT tested live (stub when no SMTP env)."""
+"""Unit tests for backend/auth.py + backend/passwords.py.
+
+Phase 3: magic-link replaced with bcrypt username/password. These tests
+exercise the password round-trip, JWT session tokens, and the
+constant-time `authenticate` helper.
+"""
+from __future__ import annotations
 
 import asyncio
 import os
 import sys
-import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -19,6 +22,8 @@ def db_path(tmp_path, monkeypatch):
     p = tmp_path / "auth_test.db"
     monkeypatch.setenv("LAI_DB_PATH", str(p))
     monkeypatch.setenv("AUTH_SECRET_KEY", "test-secret-key-at-least-32-bytes-long-xxxx")
+    # Use the minimum bcrypt cost so tests run quickly.
+    monkeypatch.setenv("BCRYPT_ROUNDS", "4")
     import importlib
     from backend import db as db_mod
     importlib.reload(db_mod)
@@ -37,27 +42,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-# ── Email validation ────────────────────────────────────────────────────
-
-def test_valid_email_accepts_basic(auth_cfg):
-    from backend.auth import valid_email
-    assert valid_email("alice@example.com", auth_cfg) is True
-
-
-@pytest.mark.parametrize("bad", ["", "no-at-sign", "a@", "@b.io", "a b@c.io"])
-def test_valid_email_rejects_malformed(bad, auth_cfg):
-    from backend.auth import valid_email
-    assert valid_email(bad, auth_cfg) is False
-
-
-def test_domain_restriction(auth_cfg):
-    from backend.auth import valid_email
-    restricted = auth_cfg.model_copy(update={"allowed_email_domains": ["mydomain.tld"]})
-    assert valid_email("a@mydomain.tld", restricted) is True
-    assert valid_email("a@other.io", restricted) is False
-
-
-# ── Session tokens ───────────────────────────────────────────────────────
+# ── Session tokens (JWT) ────────────────────────────────────────────────
 
 def test_session_token_roundtrip(auth_cfg, db_path):
     from backend.auth import issue_session_token, decode_session_token
@@ -78,43 +63,91 @@ def test_session_token_wrong_key(auth_cfg, db_path, monkeypatch):
     assert decode_session_token(tok, auth_cfg) is None
 
 
-# ── SMTP stub ───────────────────────────────────────────────────────────
+# ── Password hashing ────────────────────────────────────────────────────
 
-def test_send_magic_email_no_smtp_env_logs_and_returns(auth_cfg, caplog, monkeypatch):
-    """With SMTP env unset, send_magic_email should log and not raise."""
-    for k in ("SMTP_HOST", "SMTP_USER", "SMTP_PASS"):
-        monkeypatch.delenv(k, raising=False)
-    from backend.auth import send_magic_email
-    import logging
-    caplog.set_level(logging.INFO)
-    run(send_magic_email("a@x.io", "http://link/verify?token=xxx", auth_cfg))
-    assert any("SMTP not configured" in r.message or "would have emailed" in r.message
-               for r in caplog.records)
+def test_password_hash_roundtrip(monkeypatch):
+    monkeypatch.setenv("BCRYPT_ROUNDS", "4")
+    from backend.passwords import hash_password, verify_password
+    h = hash_password("correct horse battery staple")
+    assert h.startswith("$2") and len(h) > 50
+    assert verify_password("correct horse battery staple", h) is True
+    assert verify_password("wrong", h) is False
 
 
-# ── Rate limit ──────────────────────────────────────────────────────────
+def test_password_hash_rejects_empty(monkeypatch):
+    monkeypatch.setenv("BCRYPT_ROUNDS", "4")
+    from backend.passwords import hash_password, verify_password
+    with pytest.raises(ValueError):
+        hash_password("")
+    assert verify_password("anything", "") is False
+    assert verify_password("", "$2b$04$xxxxxxxxxx") is False
 
-def test_rate_limit_triggers(auth_cfg, db_path):
+
+def test_password_hash_survives_malformed():
+    from backend.passwords import verify_password
+    assert verify_password("foo", "not-a-bcrypt-hash") is False
+
+
+def test_bcrypt_rounds_env_respected(monkeypatch):
+    """BCRYPT_ROUNDS=4 (min) should verify faster than 12 (default).
+    Doesn't assert exact timing — just that the cost factor is being
+    read and the hash encodes the lower cost."""
+    monkeypatch.setenv("BCRYPT_ROUNDS", "4")
+    from backend.passwords import hash_password
+    h = hash_password("test")
+    # bcrypt encodes cost as two digits after the algo tag: $2b$04$...
+    assert "$04$" in h
+
+
+# ── authenticate() ──────────────────────────────────────────────────────
+
+def test_authenticate_happy_path(db_path):
     from backend import db as db_mod
-    from backend.auth import check_rate_limits
-    from fastapi import HTTPException
+    from backend import passwords as pw_mod
+    from backend.auth import authenticate
 
     run(db_mod.init_db())
-    email = "rl@x.io"
-    for _ in range(auth_cfg.rate_limits.requests_per_hour_per_email):
-        run(db_mod.create_magic_link(email, 60, None))
+    run(db_mod.create_user(
+        username="alice", email="alice@example.com",
+        password_hash=pw_mod.hash_password("s3cret-p4ss"),
+    ))
+    user = run(authenticate("alice", "s3cret-p4ss"))
+    assert user is not None
+    assert user["username"] == "alice"
 
-    # Next one should hit the limit.
-    with pytest.raises(HTTPException) as excinfo:
-        run(check_rate_limits(email, auth_cfg))
-    assert excinfo.value.status_code == 429
 
-
-def test_rate_limit_allows_below_threshold(auth_cfg, db_path):
+def test_authenticate_wrong_password_returns_none(db_path):
     from backend import db as db_mod
-    from backend.auth import check_rate_limits
+    from backend import passwords as pw_mod
+    from backend.auth import authenticate
 
     run(db_mod.init_db())
-    run(db_mod.create_magic_link("ok@x.io", 60, None))
-    # Should not raise.
-    run(check_rate_limits("ok@x.io", auth_cfg))
+    run(db_mod.create_user(
+        username="bob", email="bob@example.com",
+        password_hash=pw_mod.hash_password("correct"),
+    ))
+    assert run(authenticate("bob", "wrong")) is None
+
+
+def test_authenticate_unknown_user_returns_none(db_path):
+    from backend import db as db_mod
+    from backend.auth import authenticate
+    run(db_mod.init_db())
+    assert run(authenticate("nobody", "whatever")) is None
+
+
+def test_authenticate_timing_floor(db_path):
+    """Both unknown-user and wrong-password paths wait at least
+    _MIN_VERIFY_SECONDS. This test doesn't assert exact timing (CI is
+    noisy) — it just confirms authenticate() is slower than a simple
+    DB lookup."""
+    import time
+    from backend import db as db_mod
+    from backend.auth import authenticate
+
+    run(db_mod.init_db())
+    t0 = time.perf_counter()
+    run(authenticate("nobody", "whatever"))
+    elapsed = time.perf_counter() - t0
+    # 0.25s floor is the constant in auth.py; allow margin for CI.
+    assert elapsed >= 0.2

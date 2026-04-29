@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, master]
   push:
-    branches: [main, master, claude-code-integration]
+    branches: [main, master, claude-code-integration, non-docker-dependent]
 
 permissions:
   contents: read
@@ -28,12 +28,13 @@ jobs:
           pip install \
             pytest pytest-asyncio \
             pyyaml pydantic httpx \
-            aiosqlite aiosmtplib \
+            aiosqlite bcrypt aiosmtplib \
             'python-jose[cryptography]' \
             fastapi 'uvicorn[standard]' \
             cryptography 'redis[hiredis]' \
             pypdf python-multipart \
-            pynvml 'passlib[bcrypt]'
+            pynvml 'passlib[bcrypt]' \
+            ddgs huggingface_hub
 
       - name: Run core Python tests
         run: |
@@ -51,6 +52,12 @@ jobs:
             tests/test_rag.py \
             tests/test_memory.py \
             tests/test_docker_setup.py \
+            tests/test_diagnostics.py \
+            tests/test_main.py \
+            tests/test_admin_endpoints.py \
+            tests/test_host_gate.py \
+            tests/test_model_resolver.py \
+            tests/test_model_resolver_dry_run.py \
             tests/test_backend_startup.py \
             tests/test_model_loading.py \
             tests/test_cloudflare_setup.py \
@@ -92,11 +99,10 @@ jobs:
         shell: pwsh
         run: |
           $failed = 0
-          # Support both old Docker layout (launcher/) and new native layout (root + scripts/)
           $patterns = @(
+            "LocalAIStack.ps1",
             "scripts/*.ps1",
             "scripts/steps/*.ps1",
-            "LocalAIStack.ps1",
             "launcher/*.ps1",
             "launcher/steps/*.ps1",
             "tests/*.ps1"
@@ -123,7 +129,7 @@ jobs:
           }
           if ($failed -gt 0) { exit 1 }
 
-  # ── Launcher smoke tests: file structure + step contract ─────────────────────
+  # ── Launcher smoke tests: native LocalAIStack.ps1 layout ─────────────────────
   launcher-smoke:
     name: Launcher — Smoke Tests
     runs-on: ubuntu-latest
@@ -137,7 +143,7 @@ jobs:
           $isNativeLayout = Test-Path "LocalAIStack.ps1"
 
           if ($isNativeLayout) {
-            Write-Host "Detected: native layout (post docker-removal)" -ForegroundColor Cyan
+            Write-Host "Detected: native layout" -ForegroundColor Cyan
             $expected = @(
               "LocalAIStack.ps1",
               "scripts/steps/prereqs.ps1",
@@ -191,7 +197,6 @@ jobs:
             }
             Write-Host "All expected Docker layout files present."
 
-            # Legacy step contract: must source _common.ps1 and call Emit-Result
             $stepFiles = Get-ChildItem "launcher/steps/ensure-*.ps1","launcher/steps/compose-up.ps1","launcher/steps/wait-ready.ps1"
             $failed = 0
             foreach ($f in $stepFiles) {
@@ -314,12 +319,13 @@ jobs:
           pip install `
             pytest pytest-asyncio `
             pyyaml pydantic httpx `
-            aiosqlite aiosmtplib `
+            aiosqlite bcrypt aiosmtplib `
             'python-jose[cryptography]' `
             fastapi 'uvicorn[standard]' `
             cryptography 'redis[hiredis]' `
             pypdf python-multipart `
             pynvml 'passlib[bcrypt]' `
+            ddgs huggingface_hub `
             openai
 
       - name: Create minimal .env for CI
@@ -336,7 +342,6 @@ jobs:
         if: ${{ hashFiles('LocalAIStack.ps1') != '' }}
         shell: pwsh
         run: |
-          # Verify -InitEnv writes .env with expected keys
           Remove-Item .env -ErrorAction SilentlyContinue
           .\LocalAIStack.ps1 -InitEnv
           if (-not (Test-Path .env)) {
@@ -355,7 +360,6 @@ jobs:
       - name: Run Python tests
         shell: pwsh
         run: |
-          # Run whatever test files exist (supports both layouts)
           $testFiles = @()
           $candidates = @(
             "tests/test_tools.py",
@@ -368,6 +372,12 @@ jobs:
             "tests/test_rag.py",
             "tests/test_memory.py",
             "tests/test_docker_setup.py",
+            "tests/test_diagnostics.py",
+            "tests/test_main.py",
+            "tests/test_admin_endpoints.py",
+            "tests/test_host_gate.py",
+            "tests/test_model_resolver.py",
+            "tests/test_model_resolver_dry_run.py",
             "tests/test_backend_startup.py",
             "tests/test_model_loading.py",
             "tests/test_cloudflare_setup.py"
@@ -389,8 +399,6 @@ jobs:
           if (Test-Path tests/ci_results.txt) {
             Write-Host "===== tests/ci_results.txt =====" -ForegroundColor Cyan
             Get-Content tests/ci_results.txt | ForEach-Object { Write-Host $_ }
-          } else {
-            Write-Host "No ci_results.txt found." -ForegroundColor Yellow
           }
 
       - name: Post test results to PR comment
@@ -411,7 +419,6 @@ jobs:
               tr -d '\r' < tests/ci_results.txt | tail -100
             else
               echo "(tests/ci_results.txt not found)"
-              ls -la tests/ 2>&1 | head -30
             fi
             echo '```'
           } > post_comment.md

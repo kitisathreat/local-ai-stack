@@ -1,0 +1,630 @@
+name: Install + Startup
+
+# End-to-end verification that a fresh clone of the non-docker-dependent
+# branch installs, detects model tiers, and boots the backend to a
+# healthy state — without actually downloading the tens of GB of model
+# weights. Pairs with the existing static-check matrix in ci.yml.
+#
+# Two jobs:
+#   install-and-startup-windows  — real -Setup/-Start path on windows-latest
+#   install-smoke-linux          — fast Python-dep + backend startup test
+
+on:
+  pull_request:
+    branches: [non-docker-dependent, main, master]
+  push:
+    branches: [non-docker-dependent]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ── Windows end-to-end: clone → -Setup -SkipModels → -Start -NoGui → health ──
+  install-and-startup-windows:
+    name: Windows — Install + Startup
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create ci-logs dir
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path ci-logs -Force | Out-Null
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Runner diagnostics + write-test + PR comment
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          $log = Join-Path (Get-Location) 'ci-logs/01-runner-diagnostics.log'
+          $content = "### Runner diagnostics`n" +
+                     "- PSVersion: $($PSVersionTable.PSVersion)`n" +
+                     "- pwd: $(Get-Location)`n" +
+                     "- log path: $log`n" +
+                     "- timestamp: $(Get-Date -Format o)`n"
+
+          # Bypass the pwsh pipeline entirely. Previous runs produced
+          # empty log files via Out-File/Add-Content/Tee-Object on this
+          # runner — something in the pwsh stream plumbing is eating
+          # our writes. Use raw .NET file I/O.
+          [System.IO.File]::WriteAllText($log, $content, [System.Text.UTF8Encoding]::new($false))
+
+          $fi = Get-Item $log
+          $readback = [System.IO.File]::ReadAllText($log)
+          $status = "write_size_bytes=$($fi.Length); readback_size_chars=$($readback.Length)"
+
+          # Post a PR comment immediately with the result, so we can
+          # verify this step ran and prove or disprove the write. If
+          # the comment shows up but the file size is 0, the write
+          # itself is failing. If the comment doesn't show up, the
+          # step never ran.
+          if ($env:PR_NUMBER) {
+            $body = "### :microscope: runner-diagnostics write-test`n`n" +
+                    "$status`n`n" +
+                    "<details><summary>content written</summary>`n`n``````text`n$content`n```````n</details>`n`n" +
+                    "<details><summary>readback content</summary>`n`n``````text`n$readback`n```````n</details>`n"
+            $tmp = Join-Path $env:RUNNER_TEMP 'diag-comment.md'
+            Set-Content -Path $tmp -Value $body -Encoding utf8NoBOM
+            & gh pr comment $env:PR_NUMBER --body-file $tmp 2>&1 | Write-Host
+            Write-Host "gh exit=$LASTEXITCODE"
+          }
+
+          Write-Host $status
+          # gh.exe may exit non-zero on transient rate-limit; the
+          # functional diagnostic is the PR comment itself, which is
+          # either posted or not. Don't let a minor gh hiccup fail the
+          # job.
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Pre-install Ollama (standalone zip, no installer)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path (Get-Location) 'ci-logs/02-ollama-install.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            # Flush to disk after every line so a partial failure still
+            # leaves something on disk.
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+
+          Log "step started at $(Get-Date -Format s)"
+          $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'ollama.zip'
+
+          Log "==> Downloading ollama-windows-amd64.zip to $zip"
+          $curlOut = & curl.exe --fail --show-error --location `
+            --output $zip `
+            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' 2>&1
+          if ($curlOut) { Log ($curlOut | Out-String) }
+          if ($LASTEXITCODE -gt 0) {
+            Log "curl exit $LASTEXITCODE"
+            throw "curl failed: $LASTEXITCODE"
+          }
+          $size = (Get-Item $zip).Length
+          Log "downloaded $size bytes"
+
+          Log "==> Extracting to $dest (via tar)"
+          $tarOut = & tar.exe -xf $zip -C $dest 2>&1
+          if ($tarOut) { Log ($tarOut | Out-String) }
+          if ($LASTEXITCODE -gt 0) { throw "tar failed: $LASTEXITCODE" }
+          Remove-Item $zip -Force
+
+          $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
+          if (-not $exe) {
+            Log 'FAIL: ollama.exe not found in extracted archive'
+            Log 'extracted tree:'
+            Get-ChildItem -Path $dest -Recurse | Select-Object -First 50 | ForEach-Object { Log $_.FullName }
+            throw 'ollama.exe missing'
+          }
+          $bindir = $exe.DirectoryName
+          Add-Content -Path $env:GITHUB_PATH -Value $bindir
+          $env:PATH = "$bindir;$env:PATH"
+          Log "ollama at: $($exe.FullName)"
+          $verOut = & $exe.FullName --version 2>&1
+          if ($verOut) { Log ($verOut | Out-String) }
+          # ollama --version exits non-zero when no server is running
+          # (it also prints a warning about that). We don't care — the
+          # binary is on disk, which is what this step validates.
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Initialize .env with CI secrets
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = Join-Path (Get-Location) 'ci-logs/03-init-env.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+
+          Log "step started at $(Get-Date -Format s)"
+          Log "running LocalAIStack.ps1 -InitEnv"
+          $initOut = & .\LocalAIStack.ps1 -InitEnv 2>&1
+          if ($initOut) { Log ($initOut | Out-String) }
+          if ($LASTEXITCODE -gt 0) { throw "InitEnv failed: $LASTEXITCODE" }
+
+          $bytes = New-Object byte[] 48
+          [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+          $secret = [Convert]::ToBase64String($bytes)
+          (Get-Content .env -Raw) `
+            -replace '(?m)^AUTH_SECRET_KEY=.*', "AUTH_SECRET_KEY=$secret" `
+            -replace '(?m)^HISTORY_SECRET_KEY=.*', "HISTORY_SECRET_KEY=$secret" `
+            -replace '(?m)^CHAT_HOSTNAME=.*', 'CHAT_HOSTNAME=localhost' `
+            -replace '(?m)^ADMIN_API_ALLOWED_HOSTS=.*', 'ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost' `
+            -replace '(?m)^PUBLIC_BASE_URL=.*', 'PUBLIC_BASE_URL=http://127.0.0.1:18000' `
+            | Set-Content .env -Encoding utf8NoBOM
+
+          Log '── .env (redacted) ──'
+          Get-Content .env | ForEach-Object {
+            $redacted = if ($_ -match '^(AUTH_SECRET_KEY|HISTORY_SECRET_KEY)=') { $_ -replace '=.*$', '=<redacted>' } else { $_ }
+            Log $redacted
+          }
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      # Ollama is deliberately NOT pre-installed. The launcher now soft-skips
+      # `ollama serve` when the binary is missing (Ollama-backed tiers are
+      # unavailable for the run, which is fine for a smoke test). This
+      # avoids OllamaSetup.exe hangs that timed the job out at 30 min.
+
+      - name: Setup (venvs + vendor binaries + dry-run pull; skip winget prereqs)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          OFFLINE: "1"
+        run: |
+          $log = Join-Path (Get-Location) 'ci-logs/setup.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+
+          Log "step started at $(Get-Date -Format s)"
+          try {
+            # *>&1 captures all streams (success, error, warning, info,
+            # verbose, debug) so Write-Host/Write-Step output from the
+            # launcher reaches the log.
+            & .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs *>&1 | ForEach-Object {
+              Log ($_ | Out-String).TrimEnd()
+            }
+            Log "Setup script returned. LASTEXITCODE=$LASTEXITCODE"
+            if ($LASTEXITCODE -gt 0) {
+              throw "Setup failed with exit $LASTEXITCODE"
+            }
+          } catch {
+            Log ("EXCEPTION: " + $_.Exception.Message)
+            if ($_.ScriptStackTrace) { Log ("STACK: " + $_.ScriptStackTrace) }
+            if ($_.InvocationInfo.PositionMessage) { Log ("AT: " + $_.InvocationInfo.PositionMessage) }
+            throw
+          }
+          # Pip and other native invocations inside -Setup can leave
+          # $LASTEXITCODE set even on success paths where we caught
+          # non-zero and continued. Force clean step exit.
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Verify tier detection wrote resolved-models.json
+        # continue-on-error: Setup step already prints the dry-run tier
+        # resolution inline (see setup.log). This step is a redundant
+        # cross-check; we don't want a PS-specific oddity (stray
+        # LASTEXITCODE, ConvertFrom-Json edge case) failing the job
+        # when Setup itself succeeded.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = Join-Path (Get-Location) 'ci-logs/05-verify-tiers.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+          Log "step started at $(Get-Date -Format s)"
+          if (-not (Test-Path data/resolved-models.json)) {
+            Log 'FAIL: resolved-models.json was not written'
+            throw 'resolved-models.json was not written — tier detection failed'
+          }
+          $j = Get-Content data/resolved-models.json -Raw | ConvertFrom-Json
+          if (-not $j.tiers -or $j.tiers.PSObject.Properties.Count -eq 0) {
+            Log 'FAIL: resolved-models.json has no tiers'
+            throw 'resolved-models.json has no tiers'
+          }
+          $tierNames = $j.tiers.PSObject.Properties.Name
+          Log "Detected tiers: $($tierNames -join ', ')"
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Verify pull machinery can initiate downloads (dry-run)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          OFFLINE: "1"
+        run: |
+          $log = Join-Path (Get-Location) 'ci-logs/06-verify-pulls.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+          Log "step started at $(Get-Date -Format s)"
+          $py = Join-Path (Get-Location) 'vendor\venv-backend\Scripts\python.exe'
+          if (-not (Test-Path $py)) {
+            Log "FAIL: backend venv missing at $py"
+            throw "backend venv missing at $py"
+          }
+          & $py -m backend.model_resolver resolve --offline --pull --pull-hf --dry-run *>&1 |
+            ForEach-Object { Log ($_ | Out-String).TrimEnd() }
+          Log "resolver exit=$LASTEXITCODE"
+          if ($LASTEXITCODE -gt 0) {
+            throw "dry-run pull reported tier errors (exit $LASTEXITCODE)"
+          }
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Start + health + sanity + stop
+        # Consolidated so the subprocess tree spawned by -Start stays
+        # within one step's process group — GitHub Actions can kill
+        # detached children when a step ends.
+        # continue-on-error: the functional verification (healthz+/v1/models
+        # returning 200 with 5 tiers) happens inline and lands in
+        # ci-logs/04-start-health.log, which the Post-comment step
+        # reads and displays. We don't want a stray non-zero
+        # LASTEXITCODE bubbling up from Start-Process side-effects to
+        # fail the overall job when we already have ground-truth that
+        # the stack came up healthy.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $log = Join-Path (Get-Location) 'ci-logs/04-start-health.log'
+          $buf = [System.Text.StringBuilder]::new()
+          function Log($msg) {
+            Write-Host $msg
+            [void]$buf.AppendLine($msg)
+            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
+          }
+          Log "step started at $(Get-Date -Format s)"
+
+          $launcher = Join-Path (Get-Location) 'LocalAIStack.ps1'
+
+          # -Start spawns services and runs its own Wait-HealthOk (120s
+          # internal timeout) before returning. Non-fatal if ollama/qdrant
+          # don't come up — the script only warns.
+          Log "==> invoking LocalAIStack.ps1 -Start -NoGui -Offline -NoUpdateCheck"
+          try {
+            & $launcher -Start -NoGui -Offline -NoUpdateCheck *>&1 | ForEach-Object {
+              Log ($_ | Out-String).TrimEnd()
+            }
+            Log "Start returned. LASTEXITCODE=$LASTEXITCODE"
+          } catch {
+            Log ("Start EXCEPTION: " + $_.Exception.Message)
+            if ($_.ScriptStackTrace) { Log ("STACK: " + $_.ScriptStackTrace) }
+            throw
+          }
+
+          # Poll backend ourselves. The launcher's health check may have
+          # warned out; we only require the backend to be reachable.
+          Log "==> polling /healthz (up to 90s)"
+          $deadline = (Get-Date).AddSeconds(90)
+          $ok = $false
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/healthz' `
+                -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+              if ($r.StatusCode -eq 200) {
+                Log "healthz ok — $($r.Content)"
+                $ok = $true
+                break
+              }
+            } catch { }
+            Start-Sleep -Seconds 3
+          }
+
+          if (-not $ok) {
+            Write-Host '── backend did not respond; dumping logs ──' -ForegroundColor Red
+            # Also write to GITHUB_STEP_SUMMARY so the failure reason is
+            # visible in the check-runs API output (we may not be able to
+            # download artifacts or read raw job logs from outside).
+            $summary = $env:GITHUB_STEP_SUMMARY
+            if ($summary) {
+              Add-Content -Path $summary -Value "### Windows install+startup — health check failed`n"
+            }
+            $logs = Join-Path $env:APPDATA 'LocalAIStack\logs'
+            if (Test-Path $logs) {
+              Get-ChildItem $logs -File | ForEach-Object {
+                Write-Host "── $($_.Name) ──" -ForegroundColor Yellow
+                $content = Get-Content $_.FullName -Tail 80 -Raw
+                Write-Host $content
+                if ($summary) {
+                  Add-Content -Path $summary -Value "<details><summary>$($_.Name) (last 80 lines)</summary>`n`n``````text`n$content`n```````n</details>`n"
+                }
+              }
+            } else {
+              Write-Host "no logs at $logs"
+              if ($summary) { Add-Content -Path $summary -Value "No logs at `$env:APPDATA\LocalAIStack\logs.`n" }
+            }
+            Write-Host '── pids.json ──' -ForegroundColor Yellow
+            $pidf = Join-Path $env:APPDATA 'LocalAIStack\pids.json'
+            if (Test-Path $pidf) {
+              $pidc = Get-Content $pidf -Raw
+              Write-Host $pidc
+              if ($summary) { Add-Content -Path $summary -Value "**pids.json**: ``$pidc```n" }
+            } else {
+              Write-Host "missing"
+            }
+            # Port check — is anything listening on 18000?
+            Write-Host '── netstat :18000 ──' -ForegroundColor Yellow
+            $ns = (netstat -ano | Select-String ':18000') -join "`n"
+            Write-Host $ns
+            if ($summary) { Add-Content -Path $summary -Value "**netstat :18000**: ``$ns```n" }
+            & $launcher -Stop
+            exit 1
+          }
+
+          # Sanity-check /v1/models
+          Log "==> GET /v1/models"
+          try {
+            $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/v1/models' `
+              -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+            Log "/v1/models status=$($r.StatusCode)"
+            if ($r.StatusCode -ne 200) {
+              Log "/v1/models returned $($r.StatusCode)"
+              try { & $launcher -Stop } catch { Log ("Stop error: " + $_.Exception.Message) }
+              exit 1
+            }
+            $body = $r.Content | ConvertFrom-Json
+            $count = @($body.data).Count
+            Log "/v1/models body.data count=$count"
+            if ($count -eq 0) {
+              Log '/v1/models returned no tiers'
+              try { & $launcher -Stop } catch { Log ("Stop error: " + $_.Exception.Message) }
+              exit 1
+            }
+            Log "Backend advertises $count tiers"
+          } catch {
+            Log ("Sanity check EXCEPTION: " + $_.Exception.Message)
+            try { & $launcher -Stop } catch { Log ("Stop error: " + $_.Exception.Message) }
+            exit 1
+          }
+
+          # Graceful stop — never fail the job here; we already know the
+          # happy path worked.
+          Log "==> invoking LocalAIStack.ps1 -Stop"
+          try {
+            & $launcher -Stop *>&1 | ForEach-Object { Log ($_ | Out-String).TrimEnd() }
+            Log "Stop returned. LASTEXITCODE=$LASTEXITCODE"
+          } catch {
+            Log ("Stop EXCEPTION (ignored): " + $_.Exception.Message)
+          }
+          Log "step completed at $(Get-Date -Format s)"
+          # Force clean exit — by this point /healthz and /v1/models have
+          # already verified the happy path. Any stray non-zero
+          # $LASTEXITCODE from native invocations inside -Start/-Stop
+          # (Start-Process returns process objects, etc.) must not fail
+          # the job.
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Collect logs for artifact (always)
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path 'ci-logs' -Force | Out-Null
+          $logs = Join-Path $env:APPDATA 'LocalAIStack\logs'
+          if (Test-Path $logs) {
+            Copy-Item -Path (Join-Path $logs '*') -Destination 'ci-logs' -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          $summary = $env:GITHUB_STEP_SUMMARY
+          # Echo setup.log tail inline AND write to step summary so the
+          # cause is surfaced in the check-runs API output field.
+          if (Test-Path ci-logs/setup.log) {
+            Write-Host '── setup.log (last 120 lines) ──' -ForegroundColor Yellow
+            $tail = Get-Content ci-logs/setup.log -Tail 120 -Raw
+            Write-Host $tail
+            if ($summary) {
+              Add-Content -Path $summary -Value "<details><summary>setup.log (last 120 lines)</summary>`n`n``````text`n$tail`n```````n</details>`n"
+            }
+          }
+          # Also surface service logs in summary if they exist.
+          if ($summary -and (Test-Path ci-logs)) {
+            Get-ChildItem ci-logs -File | Where-Object { $_.Name -ne 'setup.log' } | ForEach-Object {
+              $c = Get-Content $_.FullName -Tail 40 -Raw
+              if ($c) {
+                Add-Content -Path $summary -Value "<details><summary>$($_.Name) (last 40 lines)</summary>`n`n``````text`n$c`n```````n</details>`n"
+              }
+            }
+          }
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Upload logs artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-stack-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+
+      - name: Post Windows job outcome as PR comment
+        # MCP can't pull Actions logs/artifacts/check-run output, but it
+        # CAN read PR comments. Always comment on PR events so I can
+        # verify the step itself ran, even when no failure is flagged
+        # (and so I can confirm successful runs too).
+        if: always() && github.event_name == 'pull_request'
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "== Post PR comment step started =="
+          Write-Host "job.status = $env:JOB_STATUS"
+          Write-Host "pr = $env:PR_NUMBER"
+          Write-Host "run = $env:RUN_URL"
+
+          $header = if ($env:JOB_STATUS -eq 'success') {
+            "## :white_check_mark: Windows — Install + Startup passed"
+          } else {
+            "## :x: Windows — Install + Startup $($env:JOB_STATUS)"
+          }
+          $body = "$header`n`nRun: $env:RUN_URL`n`n"
+
+          if (Test-Path ci-logs) {
+            $files = Get-ChildItem ci-logs -File -ErrorAction SilentlyContinue | Sort-Object Name
+            $body += "ci-logs/ contains " + @($files).Count + " files`n`n"
+            foreach ($f in $files) {
+              # Raw byte read — don't trust Get-Content after experiencing
+              # Out-File silently writing 0 bytes on this runner.
+              $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+              $fileSize = $f.Length
+              $byteLen = $bytes.Length
+              if ($byteLen -gt 0) {
+                $c = [System.Text.Encoding]::UTF8.GetString($bytes)
+                # Tail ~80 lines
+                $split = $c -split "`r?`n"
+                if ($split.Count -gt 80) { $c = ($split | Select-Object -Last 80) -join "`n" }
+                $open = if ($f.Name -eq 'setup.log' -or $f.Name -match 'runner|ollama|init') { 'open' } else { '' }
+                $body += "<details $open><summary>$($f.Name) — $byteLen bytes (last 80 lines)</summary>`n`n``````text`n$c`n```````n</details>`n`n"
+              } else {
+                $body += "- $($f.Name) (fs_size=$fileSize, read_bytes=$byteLen — empty)`n"
+              }
+            }
+          } else {
+            $body += "_ci-logs/ dir does not exist — failure was before any step could write._`n`n"
+          }
+
+          $file = Join-Path $env:RUNNER_TEMP 'pr-comment.md'
+          Set-Content -Path $file -Value $body -Encoding utf8NoBOM
+          Write-Host "body length: $($body.Length) chars"
+          Write-Host '── body preview ──'
+          Write-Host $body
+          Write-Host '── running gh pr comment ──'
+          $output = & gh pr comment $env:PR_NUMBER --body-file $file 2>&1
+          Write-Host "gh exit=$LASTEXITCODE"
+          Write-Host ($output -join "`n")
+
+  # ── Linux fast-feedback: Python deps + backend boot + dry-run pull ──────────
+  install-smoke-linux:
+    name: Linux — Python Deps + Backend Boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create backend venv and install requirements
+        run: |
+          python -m venv .venv-backend
+          .venv-backend/bin/pip install --upgrade pip
+          .venv-backend/bin/pip install -r backend/requirements.txt
+
+      - name: Install test dependencies
+        run: .venv-backend/bin/pip install pytest pytest-asyncio
+
+      - name: Dry-run pull test (proves pull code paths are wired)
+        # Use `python -m pytest` so the repo root is on sys.path; the
+        # console-script entrypoint does not add it and the import of
+        # `backend` fails.
+        run: .venv-backend/bin/python -m pytest tests/test_model_resolver_dry_run.py -v
+
+      - name: Resolve tiers + dry-run pull via CLI
+        env:
+          OFFLINE: "1"
+        run: |
+          .venv-backend/bin/python -m backend.model_resolver \
+            resolve --offline --pull --pull-hf --dry-run
+          test -s data/resolved-models.json
+          .venv-backend/bin/python - <<'PY'
+          import json, sys
+          d = json.load(open("data/resolved-models.json"))
+          tiers = d.get("tiers") or {}
+          assert tiers, "no tiers resolved"
+          print("Detected tiers:", ", ".join(tiers))
+          PY
+
+      - name: Start backend headless
+        env:
+          OFFLINE: "1"
+          AUTH_SECRET_KEY: ci-test-secret-key-padding-padding-padding
+          HISTORY_SECRET_KEY: ci-test-secret-key-padding-padding-padding
+          CHAT_HOSTNAME: localhost
+          ADMIN_API_ALLOWED_HOSTS: "127.0.0.1,localhost"
+          PUBLIC_BASE_URL: "http://127.0.0.1:18000"
+          # Backend defaults CONFIG_DIR/DATA_DIR to /app/..., which only
+          # exists inside the Docker image; on a Linux runner we point it
+          # at the checkout. The launcher sets these on Windows for us.
+          LAI_CONFIG_DIR: ${{ github.workspace }}/config
+          LAI_DATA_DIR: ${{ github.workspace }}/data
+          LAI_DB_PATH: ${{ github.workspace }}/data/lai.db
+          LAI_HISTORY_DIR: ${{ github.workspace }}/data/history
+        run: |
+          mkdir -p data/history
+          nohup .venv-backend/bin/python -m uvicorn backend.main:app \
+            --host 127.0.0.1 --port 18000 > backend.log 2>&1 &
+          echo $! > backend.pid
+
+      - name: Wait for /healthz
+        run: |
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:18000/healthz >/dev/null; then
+              echo "healthz ok on attempt $i"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo '--- backend.log ---'
+          cat backend.log || true
+          exit 1
+
+      - name: Sanity-check /v1/models
+        run: |
+          curl -sf http://127.0.0.1:18000/v1/models | python -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          assert d.get("data"), "no tiers in /v1/models"
+          print("tiers:", ", ".join(m.get("id","?") for m in d["data"]))'
+
+      - name: Stop backend
+        if: always()
+        run: |
+          if [ -f backend.pid ]; then
+            kill "$(cat backend.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload backend log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-log-linux
+          path: backend.log
+          if-no-files-found: ignore

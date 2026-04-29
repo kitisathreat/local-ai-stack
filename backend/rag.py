@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
 EMBED_DIM = int(os.getenv("RAG_EMBED_DIM", "768"))
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
 # Phase 6: minimum cosine similarity for a chunk to be injected. Tuned to

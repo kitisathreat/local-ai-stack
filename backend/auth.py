@@ -1,35 +1,30 @@
-"""Magic-link authentication.
+"""Username + password authentication.
 
 Flow:
-    1. User POSTs email → we issue a random token, store it with expiry,
-       email them a link with ?token=<random>.
-    2. User clicks link → GET /auth/verify?token=... → we consume the
-       token, upsert the user, set a signed JWT session cookie, redirect.
-    3. Every subsequent request carries the cookie; a FastAPI dependency
-       decodes it and injects a user_id.
+    1. Admin creates a user (username, email, password) via the Qt admin
+       window or the `backend.seed_admin` CLI. Passwords are bcrypt-hashed
+       via `backend.passwords`.
+    2. User POSTs credentials to `/auth/login`; on success we set a
+       signed JWT session cookie, same machinery magic-link used.
+    3. Every subsequent request carries the cookie; `current_user` /
+       `optional_user` FastAPI dependencies decode it and fetch the
+       user row from SQLite.
 
 Secrets from env:
     AUTH_SECRET_KEY        — JWT signing key (32+ bytes urlsafe base64)
-    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_STARTTLS
-
-If SMTP env is unset, magic links are printed to the backend log instead
-of emailed — useful for local development without an SMTP server.
 """
-
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import re
 import time
 from typing import Optional
 
-import aiosmtplib
-from email.message import EmailMessage
 from fastapi import Cookie, HTTPException, Request
 from jose import JWTError, jwt
 
-from . import db
+from . import db, passwords
 from .config import AuthConfig
 
 
@@ -104,72 +99,31 @@ async def optional_user(
     return await db.get_user(user_id)
 
 
-# ── Email validation ────────────────────────────────────────────────────
+# ── Password login ──────────────────────────────────────────────────────
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def valid_email(email: str, cfg: AuthConfig) -> bool:
-    if not _EMAIL_RE.match(email):
-        return False
-    if cfg.allowed_email_domains:
-        domain = email.split("@", 1)[1].lower()
-        if domain not in [d.lower() for d in cfg.allowed_email_domains]:
-            return False
-    return True
+# Constant-time floor so brute-force timing can't distinguish
+# "user not found" from "wrong password".
+_MIN_VERIFY_SECONDS = 0.25
 
 
-# ── SMTP sender ─────────────────────────────────────────────────────────
+async def authenticate(username: str, password: str) -> dict | None:
+    """Return the user dict on success, None on any failure.
 
-async def send_magic_email(
-    to_email: str, verify_url: str, cfg: AuthConfig,
-) -> None:
-    """Send the magic-link email, or log it if SMTP isn't configured.
-
-    Configured means all of SMTP_HOST, SMTP_USER, SMTP_PASS set.
+    Always runs a bcrypt verify (even for unknown usernames) so the
+    observable timing is flat.
     """
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
-    starttls = os.getenv("SMTP_STARTTLS", "true").lower() != "false"
-    email_from = os.getenv("AUTH_EMAIL_FROM") or cfg.magic_link.email_from
-
-    body = cfg.magic_link.email_body_template.format(
-        expiry_minutes=cfg.magic_link.expiry_minutes,
-        verify_url=verify_url,
-    ) if cfg.magic_link.email_body_template else (
-        f"Click to sign in (expires in {cfg.magic_link.expiry_minutes}m):\n\n{verify_url}\n"
-    )
-
-    if not (smtp_host and smtp_user and smtp_pass):
-        logger.info("SMTP not configured — would have emailed %s: %s", to_email, verify_url)
-        return
-
-    msg = EmailMessage()
-    msg["From"] = email_from
-    msg["To"] = to_email
-    msg["Subject"] = cfg.magic_link.email_subject
-    msg.set_content(body)
-
-    await aiosmtplib.send(
-        msg,
-        hostname=smtp_host,
-        port=smtp_port,
-        username=smtp_user,
-        password=smtp_pass,
-        start_tls=starttls,
-    )
-
-
-# ── Rate-limit gate ─────────────────────────────────────────────────────
-
-async def check_rate_limits(email: str, cfg: AuthConfig) -> None:
-    """Raise HTTPException 429 if too many requests have been made
-    recently for this email."""
-    n = await db.count_recent_magic_links_for_email(email, window_seconds=3600)
-    if n >= cfg.rate_limits.requests_per_hour_per_email:
-        raise HTTPException(
-            429,
-            f"Too many sign-in requests for {email}. Try again in an hour.",
-        )
+    start = time.perf_counter()
+    user = await db.get_user_by_username(username)
+    if user:
+        ok = passwords.verify_password(password, user.get("password_hash") or "")
+    else:
+        # Waste the same amount of CPU so timing doesn't leak existence.
+        passwords.verify_password(password, "$2b$12$" + "x" * 53)
+        ok = False
+    elapsed = time.perf_counter() - start
+    if elapsed < _MIN_VERIFY_SECONDS:
+        await asyncio.sleep(_MIN_VERIFY_SECONDS - elapsed)
+    if not ok or not user:
+        return None
+    await db.mark_login(user["id"])
+    return user
