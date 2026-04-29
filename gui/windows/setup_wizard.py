@@ -433,12 +433,12 @@ class _TunnelPage(QWizardPage):
         domain = self._domain_edit.text().strip()
         name = f"local-ai-stack-{domain.replace('.', '-')}" if domain else "local-ai-stack"
         try:
-            uuid = create_tunnel(name, cf)
-            self._tunnel_uuid = uuid
+            tunnel_id = create_tunnel(name, cf)
+            self._tunnel_uuid = tunnel_id
             self._tunnel_name = name
-            self._cf_status.setText(f"✓ Tunnel {uuid[:8]}… created. Routing DNS…")
-            route_dns(uuid, hostname, cf)
-            write_config_yml(uuid, hostname)
+            self._cf_status.setText(f"✓ Tunnel {tunnel_id[:8]}… created. Routing DNS…")
+            route_dns(tunnel_id, hostname, cf)
+            write_config_yml(tunnel_id, hostname)
             self._cf_status.setText(
                 f"✓ Tunnel ready. DNS routed to {hostname}.\n"
                 "(DNS propagation may take up to 5 minutes.)"

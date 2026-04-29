@@ -192,8 +192,10 @@ def test_cloudflared_nonzero_exit_raises(monkeypatch, tmp_cloudflared_dir):
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
+    # Pass a fake cloudflared path so find_cloudflared() is not called
+    fake_cf = pathlib.Path("cloudflared")
     with pytest.raises(CloudflareSetupError) as exc_info:
-        _run_cloudflared(["tunnel", "create", "test"], cloudflared_dir=tmp_cloudflared_dir)
+        _run_cloudflared(["tunnel", "create", "test"], cloudflared=fake_cf)
 
     assert "authentication failed" in str(exc_info.value).lower() or \
            exc_info.value.stderr, "CloudflareSetupError must carry the stderr"
