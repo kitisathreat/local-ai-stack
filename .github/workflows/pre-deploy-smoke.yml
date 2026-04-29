@@ -169,6 +169,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $start = Get-Date
           # Start ollama serve in the background; it does not daemonize on
           # Windows so we capture the process and tear it down at the end.
           $ollamaProc = Start-Process -FilePath 'ollama' -ArgumentList 'serve' `
@@ -214,6 +215,8 @@ jobs:
           Write-Host "model response: $resp"
           if (-not $resp) { throw 'ollama returned empty response' }
           "$resp" | Out-File ci-logs/ollama-response.txt -Encoding utf8NoBOM
+          $elapsed = (New-TimeSpan -Start $start -End (Get-Date)).TotalSeconds
+          Add-Content -Path ci-logs/timing.log -Value ("ollama|{0:N0}|{1}" -f $elapsed, $start.ToUniversalTime().ToString('o'))
 
       # ── 6/9 Backend boots; /healthz + /v1/models ────────────────────────
       - name: Start backend + verify health
@@ -222,6 +225,7 @@ jobs:
           OFFLINE: "1"
         run: |
           $ErrorActionPreference = 'Continue'
+          $start = Get-Date
           & .\LocalAIStack.ps1 -Start -NoGui -Offline -NoUpdateCheck *>&1 |
             Tee-Object -FilePath ci-logs/start.log
           $deadline = (Get-Date).AddSeconds(90)
@@ -241,6 +245,8 @@ jobs:
           $count = @($body.data).Count
           Write-Host "backend advertises $count tiers"
           if ($count -lt 1) { throw '/v1/models returned no tiers' }
+          $elapsed = (New-TimeSpan -Start $start -End (Get-Date)).TotalSeconds
+          Add-Content -Path ci-logs/timing.log -Value ("backend|{0:N0}|{1}" -f $elapsed, $start.ToUniversalTime().ToString('o'))
 
       # ── 7/9 PySide6 GUI offscreen construction smoke ────────────────────
       - name: GUI offscreen construction smoke
@@ -269,6 +275,9 @@ jobs:
           if (-not ($log -match '\[gui-smoke\] exec returned')) {
             throw 'GUI smoke log missing terminal marker — script did not run to completion'
           }
+          # Capture timing — the GUI smoke should take ~3-5s if PySide6
+          # really loads. Sub-second strongly suggests an import-only path.
+          Add-Content -Path ci-logs/timing.log -Value ("gui|na|gui-smoke step")
 
       # ── 8/9 cloudflared binary smoke ────────────────────────────────────
       - name: cloudflared binary smoke
@@ -310,6 +319,89 @@ jobs:
           name: pre-deploy-smoke-logs
           path: ci-logs/
           if-no-files-found: ignore
+
+      - name: Post diagnostic snapshot to PR
+        # Always runs — and posts on failure AND success — so we can verify
+        # by inspection (not just job color) that every assertion really
+        # ran. Without this we'd be trusting a green checkmark from a
+        # workflow that completed in 4 minutes.
+        if: always() && github.event_name == 'pull_request'
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          $emoji = if ($env:JOB_STATUS -eq 'success') { ':white_check_mark:' } else { ':x:' }
+          $body = "## $emoji Pre-deploy smoke diagnostic`n`n"
+          $body += "**Job status:** $env:JOB_STATUS  •  [run]($env:RUN_URL)`n`n"
+
+          # --- per-step timing -----------------------------------------------
+          $body += "### Per-step elapsed time`n`n"
+          if (Test-Path ci-logs/timing.log) {
+            $body += "``````csv`n"
+            $body += (Get-Content ci-logs/timing.log -Raw)
+            $body += "`n```````n`n"
+          } else {
+            $body += "_timing.log missing — early failure before any step recorded_`n`n"
+          }
+
+          # --- expected -Setup outputs --------------------------------------
+          $body += "### Setup outputs (file size = proof of work)`n`n"
+          $body += "| path | exists | size (bytes) |`n|---|---|---|`n"
+          $expected = @(
+            'vendor\venv-backend\Scripts\python.exe',
+            'vendor\venv-gui\Scripts\python.exe',
+            'vendor\venv-jupyter\Scripts\python.exe',
+            'vendor\qdrant\qdrant.exe',
+            'vendor\llama-server\llama-server.exe',
+            'data\resolved-models.json'
+          )
+          foreach ($p in $expected) {
+            if (Test-Path $p) {
+              $sz = (Get-Item $p).Length
+              $body += "| ``$p`` | yes | $sz |`n"
+            } else {
+              $body += "| ``$p`` | **NO** | - |`n"
+            }
+          }
+          $body += "`n"
+
+          # --- key log tails -------------------------------------------------
+          $logs = @(
+            @{ name = 'setup.log';            tail = 25 },
+            @{ name = 'ollama-pull.log';      tail = 20 },
+            @{ name = 'ollama-list.log';      tail = 10 },
+            @{ name = 'ollama-response.txt';  tail = 5  },
+            @{ name = 'gui-smoke.log';        tail = 15 },
+            @{ name = 'cloudflared-version.log'; tail = 5 },
+            @{ name = 'start.log';            tail = 30 }
+          )
+          $body += "### Key log tails`n`n"
+          foreach ($spec in $logs) {
+            $path = "ci-logs/$($spec.name)"
+            if (Test-Path $path) {
+              $size = (Get-Item $path).Length
+              if ($size -gt 0) {
+                $content = Get-Content $path -Tail $spec.tail -Raw
+                # Strip CRs to keep the comment readable
+                $content = $content -replace "`r", ''
+                $body += "<details><summary>$($spec.name) — $size bytes (last $($spec.tail) lines)</summary>`n`n``````text`n$content`n```````n</details>`n`n"
+              } else {
+                $body += "- $($spec.name) — empty file`n"
+              }
+            } else {
+              $body += "- $($spec.name) — **missing**`n"
+            }
+          }
+
+          $tmp = Join-Path $env:RUNNER_TEMP 'smoke-diag.md'
+          Set-Content -Path $tmp -Value $body -Encoding utf8NoBOM
+          Write-Host "diag body length: $($body.Length)"
+          & gh pr comment $env:PR_NUMBER --body-file $tmp 2>&1 | Write-Host
+          Write-Host "gh exit=$LASTEXITCODE"
 
       - name: Step summary
         if: always()
