@@ -114,7 +114,8 @@ def test_model_resolver_returns_all_tiers_offline():
     """resolve(offline=True) must return pinned data for all configured tiers."""
     from backend import model_resolver
 
-    resolved = model_resolver.resolve(offline=True)
+    result = model_resolver.resolve(offline=True)
+    resolved = result.resolved
     assert len(resolved) >= 4, (
         f"Expected at least 4 tiers in offline mode, got {len(resolved)}"
     )
@@ -122,12 +123,12 @@ def test_model_resolver_returns_all_tiers_offline():
 
 @pytest.mark.skipif(not _model_resolver_available(), reason="model_resolver not available")
 def test_model_resolver_each_tier_has_model_and_source():
-    """Each resolved tier must have 'model' and at least one source field."""
+    """Each resolved tier must have an identifier (model tag or HF path)."""
     from backend import model_resolver
 
-    resolved = model_resolver.resolve(offline=True)
-    for tier, info in resolved.items():
-        assert info.get("model"), f"Tier '{tier}' missing 'model': {info}"
+    result = model_resolver.resolve(offline=True)
+    for tier, info in result.resolved.items():
+        assert info.identifier, f"Tier '{tier}' missing identifier: {info}"
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +179,8 @@ def test_chat_completions_returns_503_when_all_tiers_down(monkeypatch):
     from fastapi.testclient import TestClient
     from backend.main import app
 
-    client = TestClient(app, raise_server_exceptions=False)
+    # base_url must match CHAT_HOSTNAME so the host-gate middleware passes.
+    client = TestClient(app, base_url="http://testclient", raise_server_exceptions=False)
     payload = {
         "model": "versatile",
         "messages": [{"role": "user", "content": "ping"}],

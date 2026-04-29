@@ -122,14 +122,15 @@ def test_model_resolver_offline_returns_pinned_fallbacks():
     """
     from backend import model_resolver
 
-    resolved = model_resolver.resolve(offline=True)
+    result = model_resolver.resolve(offline=True)
+    resolved = result.resolved
     assert isinstance(resolved, dict), "resolve() must return a dict"
     assert len(resolved) >= 4, (
         f"Expected at least 4 tiers, got {len(resolved)}: {list(resolved)}"
     )
     for tier, info in resolved.items():
-        assert info.get("model"), (
-            f"Tier '{tier}' has no 'model' field: {info}"
+        assert info.identifier, (
+            f"Tier '{tier}' has no identifier: {info}"
         )
 
 
