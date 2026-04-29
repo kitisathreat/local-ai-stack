@@ -22,29 +22,32 @@
 
 [CmdletBinding(DefaultParameterSetName = 'Start')]
 param(
-    [Parameter(ParameterSetName = 'Setup')]        [switch]$Setup,
-    [Parameter(ParameterSetName = 'Start')]        [switch]$Start,
-    [Parameter(ParameterSetName = 'Stop')]         [switch]$Stop,
-    [Parameter(ParameterSetName = 'Build')]        [switch]$Build,
-    [Parameter(ParameterSetName = 'InitEnv')]      [switch]$InitEnv,
-    [Parameter(ParameterSetName = 'CheckUpdates')] [switch]$CheckUpdates,
-    [Parameter(ParameterSetName = 'Admin')]        [switch]$Admin,
-    [Parameter(ParameterSetName = 'Help')]         [switch]$Help,
+    [Parameter(ParameterSetName = 'Setup')]           [switch]$Setup,
+    [Parameter(ParameterSetName = 'Start')]           [switch]$Start,
+    [Parameter(ParameterSetName = 'Stop')]            [switch]$Stop,
+    [Parameter(ParameterSetName = 'Build')]           [switch]$Build,
+    [Parameter(ParameterSetName = 'BuildInstaller')]  [switch]$BuildInstaller,
+    [Parameter(ParameterSetName = 'InitEnv')]         [switch]$InitEnv,
+    [Parameter(ParameterSetName = 'CheckUpdates')]    [switch]$CheckUpdates,
+    [Parameter(ParameterSetName = 'Admin')]           [switch]$Admin,
+    [Parameter(ParameterSetName = 'Test')]            [switch]$Test,
+    [Parameter(ParameterSetName = 'Help')]            [switch]$Help,
 
     # Modifier flags (may combine with -Start)
     [Parameter(ParameterSetName = 'Start')] [switch]$NoUpdateCheck,
     [Parameter(ParameterSetName = 'Start')] [switch]$Offline,
     [Parameter(ParameterSetName = 'Start')] [switch]$NoGui,
 
-    # Modifier flag for -Setup: runs the resolver in dry-run pull mode
-    # instead of actually pulling multi-GB Ollama models and the vision
-    # GGUF. Also skips the interactive admin seeding. Used by CI.
+    # Modifier flag for -Setup
     [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipModels,
+    [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipPrereqs,
 
-    # Modifier flag for -Setup: skip Invoke-EnsurePrereqs (the winget
-    # tool install pass). Use when the caller has already provisioned
-    # the binaries — e.g. CI where winget is flaky.
-    [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipPrereqs
+    # Modifier flags for -Test
+    [Parameter(ParameterSetName = 'Test')] [switch]$Fix,
+    [Parameter(ParameterSetName = 'Test')] [string]$Area,
+
+    # -Force: overwrite .env even when it already exists (-InitEnv)
+    [Parameter(ParameterSetName = 'InitEnv')] [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -533,6 +536,46 @@ function Invoke-Stop {
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
 }
 
+# ── Test (health-check suite) ────────────────────────────────────────────────
+function Invoke-Test {
+    Apply-Env (Read-EnvFile)
+    $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
+    if (-not (Test-Path $py)) {
+        Write-Warn2 'venv-backend not found; falling back to system python.'
+        $py = 'python'
+    }
+    $args = @('-m', 'tests.local_health')
+    if ($Area)  { $args += @('--area', $Area) }
+    if ($Fix)   { $args += '--fix' }
+    Write-Step 'Running health-check suite…'
+    & $py @args
+}
+
+# ── BuildInstaller (Inno Setup) ──────────────────────────────────────────────
+function Invoke-BuildInstaller {
+    Write-Step 'Building LocalAIStack.exe (ps2exe)…'
+    Invoke-Build
+
+    Write-Step 'Freezing GUI with PyInstaller…'
+    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\python.exe'
+    if (-not (Test-Path $guiPy)) { throw 'GUI venv not found — run -Setup first.' }
+    & $guiPy -m PyInstaller --noconfirm --onedir --windowed `
+        --name gui `
+        --specpath (Join-Path $RepoRoot 'installer') `
+        (Join-Path $RepoRoot 'gui\main.py')
+
+    Write-Step 'Running Inno Setup compiler…'
+    $iscc = Join-Path $VendorDir 'inno-setup\ISCC.exe'
+    if (-not (Test-Path $iscc)) {
+        Write-Warn2 'ISCC.exe not found in vendor\inno-setup\; trying system PATH…'
+        $iscc = 'ISCC.exe'
+    }
+    $iss = Join-Path $RepoRoot 'installer\LocalAIStack.iss'
+    & $iscc $iss
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed (exit $LASTEXITCODE)" }
+    Write-Ok 'Installer built: dist\LocalAIStackInstaller-*.exe'
+}
+
 # ── Build (ps2exe) ───────────────────────────────────────────────────────────
 function Invoke-Build {
     if (-not (Get-Module -ListAvailable -Name ps2exe)) {
@@ -586,13 +629,15 @@ if (Test-Path $StepsDir) {
     }
 }
 
-if ($Help)              { Invoke-Help;         return }
-if ($InitEnv)           { Invoke-InitEnv;      return }
-if ($Setup)             { Invoke-Setup;        return }
-if ($Stop)              { Invoke-Stop;         return }
-if ($Build)             { Invoke-Build;        return }
-if ($CheckUpdates)      { Invoke-CheckUpdates; return }
-if ($Admin)             { Invoke-Admin;        return }
+if ($Help)             { Invoke-Help;             return }
+if ($InitEnv)          { Invoke-InitEnv;          return }
+if ($Setup)            { Invoke-Setup;             return }
+if ($Stop)             { Invoke-Stop;              return }
+if ($Build)            { Invoke-Build;             return }
+if ($BuildInstaller)   { Invoke-BuildInstaller;    return }
+if ($CheckUpdates)     { Invoke-CheckUpdates;      return }
+if ($Admin)            { Invoke-Admin;             return }
+if ($Test)             { Invoke-Test;              return }
 
 # Default is -Start
 Invoke-Start
