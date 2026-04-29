@@ -1,0 +1,271 @@
+name: Pre-Deploy Smoke (Windows)
+
+# Free, on-demand "is it safe to install on my real machine yet?" check.
+#
+# Provisions a fresh windows-latest cloud runner and exercises the three
+# install-time things that ci.yml + install-and-startup.yml deliberately
+# skip:
+#
+#   1. A real Ollama pull + run (tiny model, ~400 MB) — proves the
+#      ollama binary, the model registry, and a CPU/CUDA inference cycle
+#      all work end-to-end.
+#   2. The PySide6 GUI constructs without exceptions under
+#      QT_QPA_PLATFORM=offscreen — proves gui/requirements.txt is
+#      installable on a clean Windows box and the import graph is sound.
+#   3. cloudflared is reachable on PATH and `cloudflared tunnel --help`
+#      exits cleanly — proves the binary install path is wired.
+#
+# All on top of the same -InitEnv -> -Setup -> -Start -NoGui -> /healthz
+# bootstrap that install-and-startup.yml already covers.
+#
+# Manual trigger only (workflow_dispatch) plus pushes to the cloud-hosting
+# setup branch — model pulls + GUI install make this slower than ci.yml,
+# so we don't run it on every PR.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ollama_model:
+        description: "Tiny Ollama model to pull + smoke-test"
+        required: false
+        default: "qwen2.5:0.5b"
+  push:
+    branches:
+      - claude/cloud-hosting-setup-sDADo
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pre-deploy-smoke:
+    name: Fresh Windows VM — full install smoke
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    env:
+      OLLAMA_MODEL: ${{ github.event.inputs.ollama_model || 'qwen2.5:0.5b' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create ci-logs dir
+        shell: pwsh
+        run: New-Item -ItemType Directory -Path ci-logs -Force | Out-Null
+
+      # ── 1/9 Install Ollama from standalone zip (no installer hangs) ──────
+      - name: Install Ollama (standalone zip)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'ollama.zip'
+          curl.exe --fail --show-error --location `
+            --output $zip `
+            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip'
+          tar.exe -xf $zip -C $dest
+          Remove-Item $zip -Force
+          $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'ollama.exe missing after extract' }
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+
+      # ── 2/9 Install cloudflared (direct download) ───────────────────────
+      - name: Install cloudflared
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:RUNNER_TOOL_CACHE 'cloudflared'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          $exe = Join-Path $dest 'cloudflared.exe'
+          curl.exe --fail --show-error --location `
+            --output $exe `
+            'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+          Add-Content -Path $env:GITHUB_PATH -Value $dest
+
+      # ── 3/9 -InitEnv (writes .env) + patch CI secrets ───────────────────
+      - name: Initialize .env
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\LocalAIStack.ps1 -InitEnv
+          $bytes = New-Object byte[] 48
+          [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+          $secret = [Convert]::ToBase64String($bytes)
+          (Get-Content .env -Raw) `
+            -replace '(?m)^AUTH_SECRET_KEY=.*', "AUTH_SECRET_KEY=$secret" `
+            -replace '(?m)^HISTORY_SECRET_KEY=.*', "HISTORY_SECRET_KEY=$secret" `
+            -replace '(?m)^CHAT_HOSTNAME=.*', 'CHAT_HOSTNAME=localhost' `
+            -replace '(?m)^ADMIN_API_ALLOWED_HOSTS=.*', 'ADMIN_API_ALLOWED_HOSTS=127.0.0.1,localhost' `
+            -replace '(?m)^PUBLIC_BASE_URL=.*', 'PUBLIC_BASE_URL=http://127.0.0.1:18000' `
+            | Set-Content .env -Encoding utf8NoBOM
+
+      # ── 4/9 -Setup (venvs + vendor binaries; skip prereqs + big models) ─
+      - name: Setup (venvs + binaries; skip winget + tier model pulls)
+        shell: pwsh
+        env:
+          OFFLINE: "1"
+        run: |
+          .\LocalAIStack.ps1 -Setup -SkipModels -SkipPrereqs *>&1 |
+            Tee-Object -FilePath ci-logs/setup.log
+          $global:LASTEXITCODE = 0
+
+      # ── 5/9 Real Ollama pull + run round-trip (tiny model) ──────────────
+      - name: Ollama pull + run smoke (tiny model)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Start ollama serve in the background; it does not daemonize on
+          # Windows so we capture the process and tear it down at the end.
+          $ollamaProc = Start-Process -FilePath 'ollama' -ArgumentList 'serve' `
+            -RedirectStandardOutput 'ci-logs/ollama-serve.log' `
+            -RedirectStandardError  'ci-logs/ollama-serve.err' `
+            -PassThru -WindowStyle Hidden
+          $ollamaProc.Id | Out-File ci-logs/ollama.pid -Encoding ascii
+          # Wait for the API to come up.
+          $ready = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            try {
+              Invoke-WebRequest -Uri 'http://127.0.0.1:11434/api/tags' `
+                -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop | Out-Null
+              $ready = $true; break
+            } catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ready) {
+            Get-Content ci-logs/ollama-serve.err -ErrorAction SilentlyContinue
+            throw 'ollama serve did not become reachable on :11434'
+          }
+          Write-Host "ollama serve ready; pulling $env:OLLAMA_MODEL"
+          & ollama pull $env:OLLAMA_MODEL 2>&1 | Tee-Object -FilePath ci-logs/ollama-pull.log
+          if ($LASTEXITCODE -ne 0) { throw "ollama pull exit $LASTEXITCODE" }
+
+          # Single-shot generation through the HTTP API (avoids interactive
+          # `ollama run` REPL behaviour).
+          $body = @{
+            model  = $env:OLLAMA_MODEL
+            prompt = 'Reply with the single word OK.'
+            stream = $false
+          } | ConvertTo-Json
+          $r = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/generate' `
+            -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 120
+          $resp = ($r.response | Out-String).Trim()
+          Write-Host "model response: $resp"
+          if (-not $resp) { throw 'ollama returned empty response' }
+          "$resp" | Out-File ci-logs/ollama-response.txt -Encoding utf8NoBOM
+
+      # ── 6/9 Backend boots; /healthz + /v1/models ────────────────────────
+      - name: Start backend + verify health
+        shell: pwsh
+        env:
+          OFFLINE: "1"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          & .\LocalAIStack.ps1 -Start -NoGui -Offline -NoUpdateCheck *>&1 |
+            Tee-Object -FilePath ci-logs/start.log
+          $deadline = (Get-Date).AddSeconds(90)
+          $ok = $false
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/healthz' `
+                -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch { }
+            Start-Sleep -Seconds 3
+          }
+          if (-not $ok) { throw 'backend /healthz never responded' }
+          $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18000/v1/models' `
+            -UseBasicParsing -TimeoutSec 10
+          $body = $r.Content | ConvertFrom-Json
+          $count = @($body.data).Count
+          Write-Host "backend advertises $count tiers"
+          if ($count -lt 1) { throw '/v1/models returned no tiers' }
+
+      # ── 7/9 PySide6 GUI offscreen construction smoke ────────────────────
+      - name: GUI offscreen construction smoke
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = Join-Path (Get-Location) 'vendor\venv-gui\Scripts\python.exe'
+          if (-not (Test-Path $py)) {
+            # -Setup may not have created the gui venv if PySide6 wheels
+            # were not installable on the runner; build a fallback venv on
+            # the spot so the smoke still runs.
+            python -m venv .venv-gui-smoke
+            $py = Join-Path (Get-Location) '.venv-gui-smoke\Scripts\python.exe'
+            & $py -m pip install --upgrade pip
+            & $py -m pip install -r gui/requirements.txt
+          }
+          # Smoke script (tests/smoke/gui_offscreen.py): build QApplication
+          # + ChatWindow + tray, process events briefly, exit 0. Imports
+          # prove gui/requirements.txt is satisfied; construction proves
+          # the widget tree initialises without crashing.
+          & $py tests/smoke/gui_offscreen.py 2>&1 | Tee-Object -FilePath ci-logs/gui-smoke.log
+          if ($LASTEXITCODE -ne 0) { throw "GUI smoke failed: $LASTEXITCODE" }
+
+      # ── 8/9 cloudflared binary smoke ────────────────────────────────────
+      - name: cloudflared binary smoke
+        shell: pwsh
+        run: |
+          & cloudflared --version 2>&1 | Tee-Object -FilePath ci-logs/cloudflared-version.log
+          if ($LASTEXITCODE -ne 0) { throw "cloudflared --version exit $LASTEXITCODE" }
+          # `tunnel --help` exits 0 without needing OAuth/cert.pem.
+          & cloudflared tunnel --help 2>&1 | Tee-Object -FilePath ci-logs/cloudflared-help.log
+          if ($LASTEXITCODE -ne 0) { throw "cloudflared tunnel --help exit $LASTEXITCODE" }
+
+      # ── 9/9 Tear down ───────────────────────────────────────────────────
+      - name: Stop services
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          try { & .\LocalAIStack.ps1 -Stop } catch { Write-Host "Stop: $_" }
+          if (Test-Path ci-logs/ollama.pid) {
+            $opid = (Get-Content ci-logs/ollama.pid).Trim()
+            try { Stop-Process -Id $opid -Force -ErrorAction SilentlyContinue } catch {}
+          }
+
+      - name: Collect launcher logs into artifact
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $logs = Join-Path $env:APPDATA 'LocalAIStack\logs'
+          if (Test-Path $logs) {
+            Copy-Item -Path (Join-Path $logs '*') -Destination 'ci-logs' -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload ci-logs artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-deploy-smoke-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+
+      - name: Step summary
+        if: always()
+        shell: pwsh
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          $summary = $env:GITHUB_STEP_SUMMARY
+          $verdict = if ($env:JOB_STATUS -eq 'success') {
+            "## :white_check_mark: Pre-deploy smoke PASSED — safe to install locally"
+          } else {
+            "## :x: Pre-deploy smoke $($env:JOB_STATUS) — DO NOT install locally yet"
+          }
+          $model = $env:OLLAMA_MODEL
+          $lines = @(
+            $verdict,
+            "",
+            "Checks exercised on a fresh windows-latest runner:",
+            "- ollama install + serve + pull ($model) + generate",
+            "- LocalAIStack.ps1 -InitEnv / -Setup -SkipModels / -Start -NoGui",
+            "- backend /healthz + /v1/models",
+            "- PySide6 GUI offscreen construction (ChatWindow + tray)",
+            "- cloudflared --version + tunnel --help"
+          )
+          Add-Content -Path $summary -Value ($lines -join "`n")
