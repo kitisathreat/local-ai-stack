@@ -593,3 +593,150 @@ the rest are no-ops. This is the supported "edit env" UX — there is no
 file the user is expected to open in a text editor.
 
 ---
+
+## Phase 6 — Merge sequence
+
+### Step 1 — Fix CI on `master` BEFORE merging
+
+Hard gate. Three of five jobs in `.github/workflows/ci.yml` break the moment
+`non-docker-dependent` lands:
+
+- **`launcher-smoke`** — checks `launcher/steps/*.ps1` for `_common.ps1` + `Emit-Result`.
+  Fix: rewrite to check `scripts/steps/*.ps1` for `Write-Step`/`Write-Ok`.
+- **`yaml-lint`** — validates `docker-compose.yml` (deleted). Fix: remove compose
+  reference; add `config/model-sources.yaml`.
+- **`test` (Windows)** — runs `tests\run_tests.ps1 -CI` (deleted). Fix: replace with
+  `pytest tests/ --ignore=tests/test_results.txt`.
+- **`powershell-syntax`** — update paths from `launcher/` → root + `scripts/`.
+
+Deliver as a single "CI overhaul" PR on `master` before Step 2.
+
+### Step 1b — New Windows CI job (same PR as Step 1)
+
+Add `windows-integration` job to `ci.yml` (runs on `windows-latest`) covering:
+
+- **Area A** — Install process: `-InitEnv` writes `.env`; `-Setup -SkipModels -SkipPrereqs`
+  creates venvs and exits 0.
+- **Area B** — Backend startup: `tests/test_backend_startup.py` — imports, TestClient
+  `/healthz`, diagnostics, model_resolver offline.
+- **Area C** — Tunnel: `tests/test_cloudflare_setup.py` — subprocess-mocked unit tests
+  of `gui/cloudflare_setup.py`.
+- **Area D** — Model loading: `tests/test_model_loading.py` — Ollama 503 graceful
+  degradation, VRAM fallback, all-tiers-down → 503.
+
+### Step 2 — Merge PR #96 (`non-docker-dependent` → `master`)
+
+### Step 3 — Auth schema migration (feature branch)
+
+`password_hash`, `is_admin` columns; `POST /auth/password`; `passlib[bcrypt]`;
+`is_admin_user()`; updated `seed_admin.py`. Schema v3 → v4.
+
+### Step 4 — Setup wizard (feature branch)
+
+`gui/windows/setup_wizard.py`, `gui/cloudflare_setup.py`. Launcher calls wizard
+when `.env` missing or no admin user.
+
+### Step 5 — Admin GUI write parity (feature branch)
+
+Extend `gui/windows/admin.py` with all tabs (Models, Router, VRAM, Auth, Tools,
+Users, Errors, Multi-agent, Metrics).
+
+### Step 6 — Installer (feature branch)
+
+`installer/LocalAIStack.iss`, `-BuildInstaller` subcommand, PyInstaller spec,
+`vendor/inno-setup/`. Per-machine/per-user path split (`LAI_INSTALLED` registry key).
+
+---
+
+## Phase 7 — Local install health-check suite
+
+Self-contained diagnostic runner. Probes real services on the installed machine,
+writes JSON-line logs, surfaces results in a native PySide6 window.
+
+### Invocation
+
+```powershell
+.\LocalAIStack.ps1 -Test              # full suite
+.\LocalAIStack.ps1 -Test -Fix         # run + auto-fix safe failures
+.\LocalAIStack.ps1 -Test -Area B      # single area
+```
+
+### Log location
+
+`%LOCALAPPDATA%\LocalAIStack\logs\health-<YYYYMMDD-HHmmss>.log`
+
+JSON-line format:
+```json
+{"ts":"...","area":"B","test":"backend_healthz","status":"FAIL","detail":"HTTP 503","fix_hint":"Run -Start"}
+```
+
+### Results window (`gui/windows/diagnostics.py`)
+
+`QTreeWidget` — one row per test with PASS/WARN/FAIL icons. Selecting a FAIL row
+shows `detail` + `fix_hint`. "Auto-fix selected", "Re-run", "Save log" buttons.
+No browser.
+
+### Test areas
+
+| Area | What is tested |
+|------|---------------|
+| A — Prerequisites | Python 3.12, Ollama, cloudflared, NVIDIA driver ≥ 550, CUDA 12, qdrant/llama-server binaries |
+| B — Backend startup | `.env` present, secrets set, admin user exists, venv intact, backend imports, `/healthz` 200 + status=ok |
+| C — Tunnel | cert.pem exists + not expired, config.yml valid, ingress order, cloudflared service running, DNS, external reachability |
+| D — Model loading | Ollama running, fast/versatile tier respond ≤ 60 s, Qdrant running, vision GGUF present, llama-server running, embedding model |
+| E — GUI/wizard | venv-gui intact, PySide6 importable, setup_wizard + chat imports |
+
+### Auto-fix (safe only)
+
+Conservative: never deletes data, never touches Cloudflare. Fixes: restart
+stopped Ollama, Qdrant, cloudflared service, or backend. Flags requiring human
+action as WARN with fix_hint.
+
+### New files
+
+```
+tests/local_health.py           # runner + log writer (no pytest dep)
+gui/windows/diagnostics.py      # PySide6 results window
+tests/health_areas/__init__.py
+tests/health_areas/area_a.py    # prerequisite probes
+tests/health_areas/area_b.py    # backend startup probes
+tests/health_areas/area_c.py    # tunnel probes
+tests/health_areas/area_d.py    # model loading probes
+tests/health_areas/area_e.py    # GUI/wizard probes
+```
+
+`local_health.py` probe functions are importable by pytest — the CI test modules
+(test_backend_startup.py, test_cloudflare_setup.py, test_model_loading.py) mock
+and reuse the same probes.
+
+---
+
+## Verification checklist
+
+### CI (green before each merge)
+
+- [ ] `python-tests` (Linux): existing pytest + new areas B/C/D pass
+- [ ] `powershell-syntax` (Linux): root `*.ps1` + `scripts/steps/*.ps1`
+- [ ] `launcher-smoke` (Linux): `scripts/steps/*.ps1` have `Write-Step`/`Write-Ok`
+- [ ] `yaml-lint` (Linux): all `config/*.yaml` + `config/model-sources.yaml`
+- [ ] `windows-integration` (Windows): areas A/B/C/D pass
+
+### Local health-check
+
+- [ ] `.\LocalAIStack.ps1 -Test` — all 5 areas green after setup
+- [ ] Log written to `%LOCALAPPDATA%\LocalAIStack\logs\health-<ts>.log`
+- [ ] `-Test -Fix` restarts stopped services
+- [ ] Diagnostics window is native PySide6 (no browser)
+
+### Manual (fresh Windows 11, after all phases)
+
+- [ ] Installer runs → installs to `%PROGRAMFILES%`
+- [ ] First launch → setup wizard (native Qt, no browser)
+- [ ] Page 2: admin email + password validated
+- [ ] Page 3: secrets auto-generated
+- [ ] Page 4: Cloudflare — browser opens once for OAuth → tunnel provisioned
+- [ ] Page 7: `.env` + admin SQLite row written
+- [ ] Chat window works
+- [ ] `-Admin` → password login → admin Qt window with all tabs editable
+- [ ] VRAM setting change → hot-reload toast
+- [ ] Reboot → cloudflared service auto-starts → chat still reachable
