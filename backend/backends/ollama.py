@@ -156,3 +156,10 @@ class OllamaClient:
             r = await client.get(f"{self.endpoint}/api/tags")
             r.raise_for_status()
             return r.json().get("models", [])
+
+    async def list_local_models(self) -> list[dict]:
+        """Like list_installed() but returns [] on any error (service absent/503)."""
+        try:
+            return await self.list_installed()
+        except Exception:
+            return []

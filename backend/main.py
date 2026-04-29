@@ -279,7 +279,26 @@ async def security_headers(request: Request, call_next):
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True}
+    ollama_ok = True
+    qdrant_ok = True
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get(os.getenv("OLLAMA_URL", "http://localhost:11434") + "/api/version")
+            ollama_ok = r.status_code == 200
+    except Exception:
+        ollama_ok = False
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get(os.getenv("QDRANT_URL", "http://localhost:6333") + "/healthz")
+            qdrant_ok = r.status_code == 200
+    except Exception:
+        qdrant_ok = False
+
+    all_ok = ollama_ok and qdrant_ok
+    status = "ok" if all_ok else "degraded"
+    return {"ok": all_ok, "status": status, "services": {"ollama": ollama_ok, "qdrant": qdrant_ok}}
 
 
 @app.get("/v1/models", response_model=ModelsListResponse)
