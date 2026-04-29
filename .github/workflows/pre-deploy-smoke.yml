@@ -325,15 +325,40 @@ jobs:
         # by inspection (not just job color) that every assertion really
         # ran. Without this we'd be trusting a green checkmark from a
         # workflow that completed in 4 minutes.
-        if: always() && github.event_name == 'pull_request'
+        #
+        # Works on push, pull_request, and workflow_dispatch — looks up
+        # the PR number via `gh pr list --head <branch>` when the event
+        # doesn't expose one directly.
+        if: always()
         shell: pwsh
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER_FROM_EVENT: ${{ github.event.pull_request.number }}
+          BRANCH: ${{ github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_STATUS: ${{ job.status }}
         run: |
+          # Resolve PR number — direct from the event, or look it up by
+          # branch (push / workflow_dispatch path).
+          $pr = $env:PR_NUMBER_FROM_EVENT
+          if (-not $pr) {
+            $lookup = & gh pr list --head $env:BRANCH --json number --jq '.[0].number // empty' 2>$null
+            $pr = ($lookup | Out-String).Trim()
+          }
+          if (-not $pr) {
+            Write-Host "No PR found for branch $env:BRANCH — skipping comment post"
+            # Still write to step summary so something is visible.
+            $summary = $env:GITHUB_STEP_SUMMARY
+            if ($summary -and (Test-Path ci-logs/timing.log)) {
+              Add-Content -Path $summary -Value "### Per-step timing"
+              Add-Content -Path $summary -Value "``````csv"
+              Add-Content -Path $summary -Value (Get-Content ci-logs/timing.log -Raw)
+              Add-Content -Path $summary -Value "``````"
+            }
+            return
+          }
+          Write-Host "Posting diagnostic to PR #$pr"
           $emoji = if ($env:JOB_STATUS -eq 'success') { ':white_check_mark:' } else { ':x:' }
           $body = "## $emoji Pre-deploy smoke diagnostic`n`n"
           $body += "**Job status:** $env:JOB_STATUS  •  [run]($env:RUN_URL)`n`n"
@@ -400,8 +425,17 @@ jobs:
           $tmp = Join-Path $env:RUNNER_TEMP 'smoke-diag.md'
           Set-Content -Path $tmp -Value $body -Encoding utf8NoBOM
           Write-Host "diag body length: $($body.Length)"
-          & gh pr comment $env:PR_NUMBER --body-file $tmp 2>&1 | Write-Host
+          & gh pr comment $pr --body-file $tmp 2>&1 | Write-Host
           Write-Host "gh exit=$LASTEXITCODE"
+          # Also mirror the timing block into the step summary for
+          # zero-friction visibility on the run page itself.
+          $summary = $env:GITHUB_STEP_SUMMARY
+          if ($summary -and (Test-Path ci-logs/timing.log)) {
+            Add-Content -Path $summary -Value "### Per-step timing"
+            Add-Content -Path $summary -Value "``````csv"
+            Add-Content -Path $summary -Value (Get-Content ci-logs/timing.log -Raw)
+            Add-Content -Path $summary -Value "``````"
+          }
 
       - name: Step summary
         if: always()
