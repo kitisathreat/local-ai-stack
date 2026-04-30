@@ -7,10 +7,10 @@ least-recently-used, unpinned tiers with refcount==0.
 
 Slot cap + queue:
   Each loaded model has `slot_capacity = tier.parallel_slots`, matching the
-  num_parallel value Ollama (or llama.cpp) was asked to open KV-cache slots
-  for. Refcount is capped at slot_capacity. Requests beyond the cap enter a
-  per-tier FIFO wait queue driven by an `asyncio.Condition`. While queued,
-  `acquire()` invokes the caller's `on_event` callback every
+  ``--parallel`` count llama-server was launched with. Refcount is capped
+  at slot_capacity. Requests beyond the cap enter a per-tier FIFO wait
+  queue driven by an `asyncio.Condition`. While queued, `acquire()` invokes
+  the caller's `on_event` callback every
   `queue.position_update_interval_sec` so the SSE stream can surface
   progress. The queue itself is bounded by `queue.max_depth_per_tier` (over
   → QueueFull) and the total wait by `queue.max_wait_sec` (over →
@@ -18,11 +18,11 @@ Slot cap + queue:
 
 Multi-worker note:
   With Uvicorn `--workers N`, each worker owns its own in-process registry.
-  That's safe because Ollama is the single source of truth for what's
-  actually loaded and Ollama enforces its own num_parallel cap. Per-worker
-  scheduler state may drift briefly, but the sweeper reconciles from
-  pynvml/Ollama's /api/ps on its poll cycle. Cross-worker rate limiting is
-  handled by the Redis-backed limiter (see backend/middleware/rate_limit.py).
+  That's safe because the per-tier llama-server processes are the source of
+  truth for what's actually loaded; ``LlamaCppClient.list_running()`` plus
+  pynvml reconciliation on the sweeper poll cycle correct any drift.
+  Cross-worker rate limiting is handled by the Redis-backed limiter (see
+  backend/middleware/rate_limit.py).
 
 Design notes:
   - `pynvml` is optional at import time: tests mock the NVML calls, and the

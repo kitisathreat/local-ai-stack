@@ -54,7 +54,7 @@ Format: ["fact 1", "fact 2", ...]
 
 
 async def distill_and_store(
-    user_id: int, conversation_id: int, ollama_client, versatile_tier,
+    user_id: int, conversation_id: int, llama_client, versatile_tier,
     *, airgap: bool = False,
 ) -> list[str]:
     """Run distillation on a completed conversation. Returns stored facts.
@@ -82,9 +82,7 @@ async def distill_and_store(
     ]
 
     try:
-        raw = await ollama_client.chat_once(
-            versatile_tier, prompt, think=False, keep_alive="5m",
-        )
+        raw = await llama_client.chat_once(versatile_tier, prompt, think=False)
     except Exception as e:
         logger.warning("Memory distillation failed for conv %d: %s", conversation_id, e)
         return []

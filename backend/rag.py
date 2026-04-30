@@ -2,9 +2,9 @@
 
 Each user gets their own Qdrant collection named `user_{id}_docs`. On
 upload we extract text (PDF/MD/TXT/HTML), chunk it, embed each chunk
-via Ollama's `nomic-embed-text` model, and upsert into Qdrant. On chat
-we retrieve top-K and return them as a context block to inject into
-the system prompt.
+via the always-on `embedding` tier (a llama-server pre-spawned with
+``--embedding``), and upsert into Qdrant. On chat we retrieve top-K and
+return them as a context block to inject into the system prompt.
 
 Vector size is determined by the embedding model — nomic-embed-text
 emits 768-dim vectors.
@@ -29,12 +29,23 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
 EMBED_DIM = int(os.getenv("RAG_EMBED_DIM", "768"))
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
+
+# Wired by main.py at startup. Stays None in unit tests where the
+# embedding endpoint isn't running; embed() raises a clear error.
+_EMBED_TIER = None         # type: ignore[var-annotated]
+_EMBED_CLIENT = None       # type: ignore[var-annotated]
+
+
+def configure_embedding(cfg, llama_client) -> None:
+    """Plug the live AppConfig + LlamaCppClient into the module so embed()
+    knows which endpoint to call."""
+    global _EMBED_TIER, _EMBED_CLIENT
+    _EMBED_TIER = cfg.models.tiers.get("embedding")
+    _EMBED_CLIENT = llama_client
 # Phase 6: minimum cosine similarity for a chunk to be injected. Tuned to
 # filter out near-noise hits while keeping genuinely relevant ones. Set to
 # 0 via env to disable the gate.
@@ -104,15 +115,15 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
 # ── Embedding ────────────────────────────────────────────────────────────
 
 async def embed(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of texts via Ollama's /api/embed."""
+    """Embed a batch of texts via the embedding tier (llama-server with
+    --embedding) configured by configure_embedding()."""
     if not texts:
         return []
-    payload = {"model": EMBED_MODEL, "input": texts}
-    async with httpx.AsyncClient(timeout=60.0) as c:
-        r = await c.post(f"{OLLAMA_URL}/api/embed", json=payload)
-        r.raise_for_status()
-        data = r.json()
-    return data.get("embeddings") or []
+    if _EMBED_CLIENT is None or _EMBED_TIER is None:
+        raise RuntimeError(
+            "Embedding tier not configured — call rag.configure_embedding() at startup"
+        )
+    return await _EMBED_CLIENT.embed(_EMBED_TIER, texts)
 
 
 # ── Qdrant client (thin) ─────────────────────────────────────────────────

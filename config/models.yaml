@@ -1,10 +1,13 @@
-# Model tier registry — backend-agnostic
+# Model tier registry — llama.cpp-only.
 #
 # The backend (FastAPI at /backend) reads this and:
-#   - exposes each tier as a virtual model id (tier.<name>) to the frontend
-#   - dispatches requests to the correct backend (ollama | llama_cpp)
-#   - passes per-tier inference params (temperature, top_p, num_ctx, think, ...)
-#   - lets the VRAM scheduler know the cost of each tier
+#   - exposes each chat tier as a virtual model id (tier.<name>) to the frontend
+#   - dispatches requests to a per-tier llama-server subprocess managed by the
+#     VRAMScheduler (vision + embedding are pre-spawned by the launcher and
+#     pinned)
+#   - passes per-tier inference params (temperature, top_p, ...) on each call
+#   - launches the per-tier llama-server with --ctx-size, --parallel,
+#     --n-gpu-layers, -fa, --cache-type-k/v, optional --rope-scaling yarn
 #
 # Old 9-profile schema (fast/quality/coding/large/creative/analyst/balanced/
 # roleplay/summarizer) is preserved via the `aliases:` block at the bottom.
@@ -16,10 +19,10 @@ tiers:
   highest_quality:
     name: "Highest Quality (Qwen3 72B)"
     description: "Maximum reasoning quality. Slow (~15-20 t/s with RAM spillover). Use for hardest problems."
-    backend: ollama
-    endpoint: http://localhost:11434
-    model_tag: "qwen3:72b-q3_k_m"
-    context_window: 8192
+    backend: llama_cpp
+    port: 8010
+    model_tag: "qwen3-72b"
+    context_window: 32768                # native 32k; q8 KV + parallel=1 fits
     think_default: true
     think_supported: true
     params:
@@ -30,15 +33,19 @@ tiers:
       num_predict: 8192
     vram_estimate_gb: 24
     parallel_slots: 1
+    n_gpu_layers: -1
+    flash_attention: true
+    cache_type_k: q8_0
+    cache_type_v: q8_0
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
     name: "Versatile (Qwen3.6 35B-A3B)"
     description: "MoE with 3B active params. Fast (~120+ t/s) and capable. Default tier + multi-agent orchestrator."
-    backend: ollama
-    endpoint: http://localhost:11434
-    model_tag: "qwen3.6:35b-a3b"
-    context_window: 16384
+    backend: llama_cpp
+    port: 8011
+    model_tag: "qwen3.6-35b-a3b"
+    context_window: 65536                # was 16384; YaRN-extended
     think_default: false
     think_supported: true
     preserve_thinking: true             # Qwen3.6 feature — carries reasoning across agent turns
@@ -52,15 +59,23 @@ tiers:
     vram_estimate_gb: 21
     is_orchestrator: true
     parallel_slots: 2
+    n_gpu_layers: -1
+    flash_attention: true
+    cache_type_k: q8_0
+    cache_type_v: q8_0
+    rope_scaling:
+      type: yarn
+      factor: 2.0
+      orig_ctx: 32768
 
   # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
   fast:
     name: "Fast (Qwen3.5 9B)"
-    description: "Small, fully GPU-offloaded. 3 instances fit in 24GB VRAM simultaneously — used as multi-agent workers."
-    backend: ollama
-    endpoint: http://localhost:11434
-    model_tag: "qwen3.5:9b"
-    context_window: 4096
+    description: "Small, fully GPU-offloaded. Multiple instances share VRAM via --parallel — used as multi-agent workers."
+    backend: llama_cpp
+    port: 8012
+    model_tag: "qwen3.5-9b"
+    context_window: 65536                # was 4096; native 128k
     think_default: false
     think_supported: true
     params:
@@ -72,16 +87,20 @@ tiers:
     vram_estimate_gb: 7
     parallel_workers_max: 3
     parallel_slots: 4
+    n_gpu_layers: -1
+    flash_attention: true
+    cache_type_k: q8_0
+    cache_type_v: q8_0
 
   # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
   coding:
     name: "Coding (Qwen3-Coder-Next 80B-A3B)"
     description: "71.3% SWE-bench Verified. RL-trained on 800K real GitHub PRs. Native tool calling."
-    backend: ollama
-    endpoint: http://localhost:11434
-    model_tag: "hf.co/bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF:Q4_K_XL"
-    fallback_tag: "qwen2.5-coder:32b"
-    context_window: 32768
+    backend: llama_cpp
+    port: 8013
+    model_tag: "qwen3-coder-next-80b-a3b"
+    fallback_tag: "qwen2.5-coder-32b"
+    context_window: 131072               # was 32768; native 256k YaRN
     think_default: true                 # always on for coding tasks
     think_supported: true
     params:
@@ -94,15 +113,23 @@ tiers:
     vram_estimate_gb: 24
     reasoning_format: none              # strip <think> tags from API output
     parallel_slots: 1
+    n_gpu_layers: -1
+    flash_attention: true
+    cache_type_k: q8_0
+    cache_type_v: q8_0
+    rope_scaling:
+      type: yarn
+      factor: 4.0
+      orig_ctx: 32768
 
   # ── Vision — Qwen3.6 35B-A3B + mmproj via llama.cpp ─────────────────────────
   vision:
     name: "Vision (Qwen3.6 35B + mmproj)"
     description: "Multimodal via llama.cpp with mmproj-F16.gguf. Charts, screenshots, UI, documents."
     backend: llama_cpp
-    endpoint: http://localhost:8001/v1
+    port: 8001
     model_tag: "qwen3.6-35b-a3b"
-    mmproj_path: "/models/mmproj-qwen3.6-35b-F16.gguf"
+    mmproj_path: "data/models/vision.mmproj.gguf"
     context_window: 16384
     think_default: false
     think_supported: true
@@ -114,8 +141,34 @@ tiers:
       top_k: 20
       num_predict: 4096
     vram_estimate_gb: 21
-    pinned: true                        # llama.cpp can't unload without restart
+    pinned: true                        # pre-spawned by the launcher; never evicted
     parallel_slots: 2
+    n_gpu_layers: -1
+    flash_attention: true
+    cache_type_k: q8_0
+    cache_type_v: q8_0
+
+  # ── Embedding — nomic-embed-text-v1.5, pre-spawned, pinned ──────────────────
+  embedding:
+    name: "Embedding (nomic-embed-text-v1.5)"
+    description: "Always-on embedding server for RAG and memory distillation."
+    backend: llama_cpp
+    role: embedding
+    port: 8090
+    model_tag: "nomic-embed-text-v1.5"
+    context_window: 8192
+    think_supported: false
+    vram_estimate_gb: 1
+    pinned: true                        # pre-spawned by the launcher; never evicted
+    parallel_slots: 4
+    n_gpu_layers: -1
+    flash_attention: false              # nomic-embed is unstable with -fa in some builds
+    cache_type_k: f16
+    cache_type_v: f16
+    extra_args:
+      - "--embedding"
+      - "--pooling"
+      - "mean"
 
 # Backwards compat — map old profile names to new tiers
 aliases:

@@ -2,7 +2,7 @@
 
 Complements `vram_scheduler.py` (which decides *whether* a tier is loaded)
 by deciding *how much of it* is loaded. Rather than always pushing every
-transformer block into VRAM, we choose a `num_gpu` layer count and
+transformer block into VRAM, we choose a `n_gpu_layers` count and
 mmap/mlock posture appropriate to:
 
   - the current free VRAM headroom,
@@ -12,10 +12,11 @@ mmap/mlock posture appropriate to:
     "what's 2+2?" turn doesn't need the full 80B coder on the GPU while
     something vision-heavy or long-reasoning does.
 
-Output is a `ResidencyPlan` plus a dict of Ollama options
-(`num_gpu`, `use_mmap`, `use_mlock`, `numa`) that `backends/ollama.py`
-merges into its `options` payload.  For llama.cpp-backed tiers (vision),
-the same layer count maps to `-ngl` at load time.
+Output is a `ResidencyPlan` plus a dict of llama-server CLI argv
+contributions (``--n-gpu-layers``, ``--no-mmap``, ``--mlock``) that the
+spawn path in ``backends/llama_cpp.py`` merges into the per-tier argv.
+Mode changes mid-life require a process respawn — encoded by the
+scheduler via ``mark_tier_dirty``.
 
 The planner is intentionally conservative: unless VRAM is tight or the
 user asks for partial residency, it returns the "full" plan so existing
@@ -81,10 +82,10 @@ class ResidencyPlan:
     projected_vram_gb: float             # estimated VRAM cost at this offload ratio
 
     def to_backend_options(self) -> dict[str, Any]:
-        """Flags to merge into Ollama's `options` (and the llama.cpp
-        launch argv for the vision tier)."""
+        """Spawn-time argv contributions consumed by
+        ``backends/llama_cpp.py`` when launching a per-tier llama-server."""
         return {
-            "num_gpu": self.num_gpu_layers,
+            "n_gpu_layers": self.num_gpu_layers,
             "use_mmap": self.use_mmap,
             "use_mlock": self.use_mlock,
         }

@@ -1,8 +1,8 @@
-"""Model version resolver.
+"""Model version resolver — Hugging Face only.
 
-Polls Hugging Face + the Ollama registry for each tier declared in
-``config/model-sources.yaml``, picks which revision/tag to load this run,
-and writes the result to ``data/resolved-models.json`` for the backend
+Polls Hugging Face for each tier declared in
+``config/model-sources.yaml``, picks which GGUF revision/file to load this
+run, and writes the result to ``data/resolved-models.json`` for the backend
 to consume.
 
 Design goals:
@@ -13,11 +13,15 @@ Design goals:
       output JSON so the GUI can surface the problem.
     * Cache results for 24 h in ``data/model-cache.json`` so ``-Start``
       is cheap. ``-CheckUpdates`` forces a refresh (``force=True``).
+    * Downloaded GGUFs land at a deterministic path: ``data/models/<tier>.gguf``
+      (and ``<tier>.mmproj.gguf`` for vision). The backend predicts these
+      paths from config, so models.yaml never needs exact filenames.
 
 CLI:
     python -m backend.model_resolver resolve
     python -m backend.model_resolver resolve --force
     python -m backend.model_resolver resolve --offline
+    python -m backend.model_resolver resolve --pull
 """
 
 from __future__ import annotations
@@ -26,7 +30,6 @@ import argparse
 import json
 import logging
 import os
-import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -42,7 +45,6 @@ CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
 def _repo_root() -> Path:
-    # backend/model_resolver.py → repo root
     return Path(__file__).resolve().parent.parent
 
 
@@ -63,18 +65,28 @@ def _data_dir() -> Path:
     return p
 
 
+def _models_dir() -> Path:
+    d = _data_dir() / "models"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 # ── Data model ─────────────────────────────────────────────────────────────
 
 @dataclass
 class Resolved:
     tier: str
-    source: str                         # huggingface | ollama | static
-    identifier: str                     # tag (ollama) or repo/file (hf)
-    revision: str | None = None         # commit SHA (hf) or digest (ollama)
-    origin: str = "pinned"              # latest | pinned | cache | static
+    source: str = "huggingface"         # always "huggingface" now
+    repo: str = ""
+    filename: str = ""                  # GGUF file in the repo
+    mmproj_filename: str | None = None
+    revision: str | None = None         # commit SHA
+    origin: str = "pinned"              # latest | pinned | cache
     update_available: bool = False
     pending_version: str | None = None
     error: str | None = None
+    gguf_path: str | None = None        # absolute on-disk path after pull
+    mmproj_path: str | None = None
     resolved_at: float = field(default_factory=time.time)
 
 
@@ -95,144 +107,89 @@ class ResolveResult:
 
 # ── Upstream probes ────────────────────────────────────────────────────────
 
-def _probe_huggingface(repo: str, file_pattern: str | None) -> tuple[str | None, str | None]:
-    """Returns (revision_sha, matching_file) or (None, None) on failure."""
+def _probe_huggingface(
+    repo: str, file_pattern: str | None, mmproj_pattern: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Returns (revision_sha, gguf_filename, mmproj_filename) or (None, ...) on failure."""
     try:
         from huggingface_hub import HfApi
     except ImportError:
         logger.warning("huggingface_hub not installed — skipping HF poll for %s", repo)
-        return None, None
+        return None, None, None
     token = os.getenv("HF_TOKEN") or None
     try:
         api = HfApi(token=token)
         info = api.model_info(repo)
         sha = getattr(info, "sha", None)
         siblings = getattr(info, "siblings", []) or []
-        chosen = None
-        if file_pattern:
-            import fnmatch
-            for s in siblings:
-                name = getattr(s, "rfilename", "") or ""
-                if fnmatch.fnmatch(name, file_pattern):
-                    chosen = name
-                    break
-        return sha, chosen
+        chosen_gguf = _match_first(siblings, file_pattern) if file_pattern else None
+        chosen_mmproj = _match_first(siblings, mmproj_pattern) if mmproj_pattern else None
+        return sha, chosen_gguf, chosen_mmproj
     except Exception as exc:
         logger.warning("HF poll failed for %s: %s", repo, exc)
-        return None, None
+        return None, None, None
 
 
-def _probe_ollama_local(name: str) -> str | None:
-    """Returns the local digest of `name` if it's pulled, else None."""
-    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-    try:
-        import httpx
-        r = httpx.get(f"{ollama_url}/api/tags", timeout=4.0)
-        r.raise_for_status()
-        for model in (r.json() or {}).get("models", []):
-            if model.get("name") == name or model.get("model") == name:
-                return model.get("digest")
-    except Exception as exc:
-        logger.debug("Ollama local probe failed for %s: %s", name, exc)
+def _match_first(siblings, pattern: str) -> str | None:
+    import fnmatch
+    for s in siblings:
+        name = getattr(s, "rfilename", "") or ""
+        if fnmatch.fnmatch(name, pattern):
+            return name
     return None
-
-
-def _probe_ollama_registry(name: str) -> str | None:
-    """Queries the Ollama registry for the latest manifest digest.
-
-    The `registry.ollama.ai` manifest endpoint isn't officially public,
-    so we defensively handle failures. Format: name[:tag] → library/<name>/manifests/<tag>.
-    `hf.co/...` tags are backed by Hugging Face and can't be polled via
-    registry.ollama.ai; they're handled by the huggingface source instead.
-    """
-    if name.startswith("hf.co/"):
-        return None
-    if ":" in name:
-        base, tag = name.rsplit(":", 1)
-    else:
-        base, tag = name, "latest"
-    if "/" not in base:
-        base = f"library/{base}"
-    url = f"https://registry.ollama.ai/v2/{base}/manifests/{tag}"
-    try:
-        import httpx
-        headers = {"Accept": "application/vnd.docker.distribution.manifest.v2+json"}
-        r = httpx.get(url, headers=headers, timeout=6.0)
-        if r.status_code != 200:
-            return None
-        return r.headers.get("Docker-Content-Digest") or (r.json().get("config") or {}).get("digest")
-    except Exception as exc:
-        logger.debug("Ollama registry probe failed for %s: %s", name, exc)
-        return None
 
 
 # ── Resolution ─────────────────────────────────────────────────────────────
 
 def _resolve_tier(tier: str, spec: dict, *, offline: bool) -> Resolved:
-    source = (spec.get("source") or "").lower()
+    source = (spec.get("source") or "huggingface").lower()
+    if source != "huggingface":
+        return Resolved(
+            tier=tier, source=source, error=f"unsupported source {source!r}",
+        )
+
     tracking = (spec.get("tracking") or "latest").lower()
     pinned = spec.get("pinned") or {}
+    repo = spec.get("repo") or ""
+    file_pattern = spec.get("file")
+    mmproj_pattern = spec.get("mmproj")
+    pinned_file = pinned.get("file") or ""
+    pinned_mmproj = pinned.get("mmproj")
+    pinned_rev = pinned.get("revision") or "main"
 
-    if source == "huggingface":
-        repo = spec.get("repo") or ""
-        file_pattern = spec.get("file")
-        pinned_file = pinned.get("file") or ""
-        pinned_rev = pinned.get("revision") or "main"
-        if offline or tracking == "pinned":
-            return Resolved(
-                tier=tier, source="huggingface",
-                identifier=f"{repo}/{pinned_file}",
-                revision=pinned_rev, origin="pinned",
-            )
-        sha, chosen = _probe_huggingface(repo, file_pattern)
-        if not sha:
-            return Resolved(
-                tier=tier, source="huggingface",
-                identifier=f"{repo}/{pinned_file}",
-                revision=pinned_rev, origin="pinned",
-                error="HF poll failed; using pinned",
-            )
+    if offline or tracking == "pinned":
         return Resolved(
-            tier=tier, source="huggingface",
-            identifier=f"{repo}/{chosen or pinned_file}",
-            revision=sha, origin="latest",
-            update_available=bool(chosen and pinned_file and chosen != pinned_file) or sha != pinned_rev,
-            pending_version=sha if sha != pinned_rev else None,
+            tier=tier,
+            repo=repo,
+            filename=pinned_file,
+            mmproj_filename=pinned_mmproj,
+            revision=pinned_rev,
+            origin="pinned",
         )
 
-    if source == "ollama":
-        name = spec.get("name") or ""
-        pinned_name = pinned.get("name") or name
-        pinned_digest = pinned.get("digest")
-        if offline or tracking == "pinned":
-            return Resolved(
-                tier=tier, source="ollama",
-                identifier=pinned_name, revision=pinned_digest,
-                origin="pinned",
-            )
-        remote_digest = _probe_ollama_registry(name)
-        local_digest = _probe_ollama_local(name)
-        if not remote_digest:
-            return Resolved(
-                tier=tier, source="ollama",
-                identifier=name, revision=local_digest or pinned_digest,
-                origin="pinned" if not local_digest else "cache",
-                error="Ollama registry poll failed; using local/pinned",
-            )
-        update = bool(local_digest and remote_digest and local_digest != remote_digest)
+    sha, chosen, chosen_mmproj = _probe_huggingface(repo, file_pattern, mmproj_pattern)
+    if not sha:
         return Resolved(
-            tier=tier, source="ollama",
-            identifier=name, revision=remote_digest,
-            origin="latest",
-            update_available=update,
-            pending_version=remote_digest if update else None,
+            tier=tier,
+            repo=repo,
+            filename=pinned_file,
+            mmproj_filename=pinned_mmproj,
+            revision=pinned_rev,
+            origin="pinned",
+            error="HF poll failed; using pinned",
         )
-
     return Resolved(
-        tier=tier, source="static",
-        identifier=(spec.get("name") or spec.get("repo") or ""),
-        origin="static",
-        error=f"unknown source {source!r}",
+        tier=tier,
+        repo=repo,
+        filename=chosen or pinned_file,
+        mmproj_filename=chosen_mmproj or pinned_mmproj,
+        revision=sha,
+        origin="latest",
+        update_available=(
+            (bool(chosen) and bool(pinned_file) and chosen != pinned_file)
+            or sha != pinned_rev
+        ),
+        pending_version=sha if sha != pinned_rev else None,
     )
 
 
@@ -266,6 +223,12 @@ def resolve(*, force: bool = False, offline: bool | None = None) -> ResolveResul
     for tier, spec in sources.items():
         resolved[tier] = _resolve_tier(tier, spec or {}, offline=offline)
 
+    # Predict the on-disk path for each tier even before pull.
+    for tier_name, r in resolved.items():
+        r.gguf_path = str(_models_dir() / f"{tier_name}.gguf")
+        if r.mmproj_filename:
+            r.mmproj_path = str(_models_dir() / f"{tier_name}.mmproj.gguf")
+
     result = ResolveResult(resolved=resolved, cached=False, offline=offline)
 
     try:
@@ -282,75 +245,43 @@ def resolve(*, force: bool = False, offline: bool | None = None) -> ResolveResul
     return result
 
 
-# ── Pull orchestration helpers (used by the launcher's -Start) ─────────────
+# ── Pull orchestration ─────────────────────────────────────────────────────
 
-def _models_dir() -> Path:
-    return _data_dir() / "models"
-
-
-def _target_path_for_hf(tier: str, resolved: Resolved) -> Path:
-    """Return the local path where an HF-sourced file should live.
-
-    Special-case the ``vision`` tier: the launcher starts llama-server
-    pointed at ``data/models/vision.gguf``, so regardless of the HF
-    filename we link/copy the downloaded file there.
-    """
-    target_name = Path(resolved.identifier.split("/")[-1]).name or "model.gguf"
-    return _models_dir() / target_name
-
-
-def _ensure_vision_symlink(downloaded: Path) -> Path:
-    """Create data/models/vision.gguf pointing at `downloaded`.
-
-    Uses a symlink when possible; falls back to a file copy on Windows
-    systems without Developer Mode enabled (symlink requires the
-    SeCreateSymbolicLinkPrivilege).
-    """
-    target = _models_dir() / "vision.gguf"
-    _models_dir().mkdir(parents=True, exist_ok=True)
-    # If the target is already a symlink/copy pointing at the same file,
-    # leave it.
-    try:
-        if target.exists() and target.resolve() == downloaded.resolve():
-            return target
-    except OSError:
-        pass
+def _link_or_copy(src: Path, target: Path) -> Path:
+    """Create `target` pointing at `src`. Symlink first, file copy on failure
+    (Windows accounts without Developer Mode can't create symlinks)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() or target.is_symlink():
+        try:
+            if target.resolve() == src.resolve():
+                return target
+        except OSError:
+            pass
         try:
             target.unlink()
         except OSError as exc:
             logger.warning("Could not remove stale %s: %s", target, exc)
-            return downloaded
+            return src
     try:
-        target.symlink_to(downloaded)
+        target.symlink_to(src)
+        return target
     except (OSError, NotImplementedError):
-        # Fall back to a copy; wasteful on disk but works on accounts
-        # that can't create symlinks. The GGUF is large but we don't
-        # have a better option here.
         import shutil
-        shutil.copy2(downloaded, target)
-    return target
+        shutil.copy2(src, target)
+        return target
 
 
 def pull_missing_hf_files(
     result: ResolveResult,
     *,
-    model_dir: Path | None = None,
     dry_run: bool = False,
 ) -> list[str]:
     """For every Hugging-Face-sourced tier whose resolved file isn't on
-    disk, download it via ``hf_hub_download``. Returns the list of tier
-    names that were pulled (or would be pulled if ``dry_run=True``).
+    disk at data/models/<tier>.gguf, download via ``hf_hub_download`` and
+    rename/symlink to the canonical path.
 
-    Errors are logged and don't raise — the launcher continues with the
-    files it was able to fetch; `llama-server` skips the vision tier if
-    `data/models/vision.gguf` isn't present.
-
-    ``dry_run`` walks the same resolution logic (import huggingface_hub,
-    compute repo/filename/revision, decide which tiers are missing on
-    disk) but skips the actual ``hf_hub_download`` call. CI uses this to
-    prove the pull machinery is wired without downloading ~25 GB of
-    weights.
+    Returns the list of tier names that were pulled (or would be pulled if
+    ``dry_run=True``).
     """
     try:
         from huggingface_hub import hf_hub_download
@@ -359,98 +290,66 @@ def pull_missing_hf_files(
         return []
 
     pulled: list[str] = []
-    target_root = model_dir or _models_dir()
-    target_root.mkdir(parents=True, exist_ok=True)
+    target_root = _models_dir()
     token = os.getenv("HF_TOKEN") or None
 
     for tier, r in result.resolved.items():
-        if r.source != "huggingface":
+        if r.source != "huggingface" or not r.repo or not r.filename:
             continue
-        # identifier is "<repo>/<file>"; split off the filename portion.
-        if "/" not in r.identifier:
-            continue
-        # HF repos have two segments; the third and onward are the file path.
-        parts = r.identifier.split("/")
-        if len(parts) < 3:
-            logger.warning("HF identifier %r has no file component", r.identifier)
-            continue
-        repo_id = "/".join(parts[:2])
-        filename = "/".join(parts[2:])
-        revision = r.revision or "main"
 
-        target_path = target_root / filename
-        if target_path.exists():
+        target_gguf = target_root / f"{tier}.gguf"
+        target_mmproj = (
+            target_root / f"{tier}.mmproj.gguf" if r.mmproj_filename else None
+        )
+
+        need_gguf = not target_gguf.exists()
+        need_mmproj = bool(target_mmproj) and not target_mmproj.exists()
+        if not (need_gguf or need_mmproj):
             continue
 
         if dry_run:
             logger.info(
-                "would-pull HF for tier %s: %s@%s %s -> %s",
-                tier, repo_id, revision, filename, target_path,
+                "would-pull HF for tier %s: %s@%s %s -> %s%s",
+                tier, r.repo, r.revision or "main", r.filename, target_gguf,
+                f" (+ mmproj {r.mmproj_filename})" if need_mmproj else "",
             )
             pulled.append(tier)
             continue
 
-        logger.info("Pulling HF file for tier %s: %s@%s %s",
-                    tier, repo_id, revision, filename)
+        revision = r.revision or "main"
         try:
-            downloaded = Path(hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                revision=revision,
-                local_dir=str(target_root),
-                token=token,
-            ))
+            if need_gguf:
+                downloaded = Path(hf_hub_download(
+                    repo_id=r.repo,
+                    filename=r.filename,
+                    revision=revision,
+                    local_dir=str(target_root),
+                    token=token,
+                ))
+                _link_or_copy(downloaded, target_gguf)
+                r.gguf_path = str(target_gguf)
+            if need_mmproj:
+                downloaded = Path(hf_hub_download(
+                    repo_id=r.repo,
+                    filename=r.mmproj_filename,
+                    revision=revision,
+                    local_dir=str(target_root),
+                    token=token,
+                ))
+                _link_or_copy(downloaded, target_mmproj)
+                r.mmproj_path = str(target_mmproj)
         except Exception as exc:
             logger.warning("hf_hub_download failed for tier %s: %s", tier, exc)
             continue
         pulled.append(tier)
 
-        if tier == "vision":
-            _ensure_vision_symlink(downloaded)
+    # Refresh resolved-models.json with the on-disk paths.
+    try:
+        manifest = _data_dir() / "resolved-models.json"
+        manifest.write_text(json.dumps(result.to_json(), indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not update resolved-models.json: %s", exc)
 
-    return pulled
-
-
-def pull_missing_ollama_tags(
-    result: ResolveResult,
-    *,
-    dry_run: bool = False,
-) -> list[str]:
-    """For every Ollama tier whose resolved tag isn't local, run
-    ``ollama pull <tag>``. Returns the list of tags that were pulled
-    (or would be pulled if ``dry_run=True``).
-
-    ``dry_run`` iterates the same tiers and probes local availability
-    via ``_probe_ollama_local`` so CI can verify the pull decision is
-    correct, but does not invoke the ``ollama`` binary. If the binary
-    is missing in dry-run mode the tier is still reported as would-pull;
-    the launcher surface-level prereq check is what guarantees ollama
-    is installed.
-    """
-    pulled: list[str] = []
-    for tier, r in result.resolved.items():
-        if r.source != "ollama" or r.error:
-            continue
-        if _probe_ollama_local(r.identifier):
-            continue
-        if dry_run:
-            logger.info(
-                "would-pull Ollama for tier %s: ollama pull %s",
-                tier, r.identifier,
-            )
-            pulled.append(r.identifier)
-            continue
-        logger.info("Pulling missing Ollama tag for tier %s: %s", tier, r.identifier)
-        try:
-            subprocess.run(
-                ["ollama", "pull", r.identifier],
-                check=True,
-                stdout=sys.stdout,
-                stderr=sys.stderr,
-            )
-            pulled.append(r.identifier)
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-            logger.warning("ollama pull %s failed: %s", r.identifier, exc)
     return pulled
 
 
@@ -466,11 +365,10 @@ def _main() -> int:
     r = sub.add_parser("resolve", help="resolve tiers, write data/resolved-models.json")
     r.add_argument("--force", action="store_true", help="ignore cache, re-poll")
     r.add_argument("--offline", action="store_true", help="skip polling, use pinned")
-    r.add_argument("--pull", action="store_true", help="pull missing Ollama tags after resolution")
-    r.add_argument("--pull-hf", action="store_true", help="pull missing Hugging Face files after resolution")
+    r.add_argument("--pull", action="store_true", help="pull missing GGUFs after resolution")
     r.add_argument(
         "--dry-run", action="store_true",
-        help="with --pull/--pull-hf, enumerate would-be-pulled tiers without downloading. "
+        help="with --pull, enumerate would-be-pulled tiers without downloading. "
              "Exits non-zero if any tier resolved with an error.",
     )
     args = parser.parse_args()
@@ -480,16 +378,11 @@ def _main() -> int:
         for tier, info in result.resolved.items():
             flag = " (update!)" if info.update_available else ""
             err = f"  ERROR: {info.error}" if info.error else ""
-            print(f"  {tier:20s} {info.source:12s} {info.identifier}{flag}{err}")
+            print(f"  {tier:20s} {info.source:12s} {info.repo}/{info.filename}{flag}{err}")
         if args.pull:
-            pulled = pull_missing_ollama_tags(result, dry_run=args.dry_run)
-            if pulled:
-                prefix = "Ollama would-pull" if args.dry_run else "Ollama pulled"
-                print(f"{prefix}: {', '.join(pulled)}")
-        if args.pull_hf:
             pulled = pull_missing_hf_files(result, dry_run=args.dry_run)
             if pulled:
-                prefix = "HF would-pull" if args.dry_run else "HF pulled"
+                prefix = "Would-pull" if args.dry_run else "Pulled"
                 print(f"{prefix}: {', '.join(pulled)}")
         if args.dry_run:
             errored = [t for t, r in result.resolved.items() if r.error]

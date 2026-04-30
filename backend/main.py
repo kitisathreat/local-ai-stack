@@ -28,8 +28,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pathlib import Path
 
 from . import admin, airgap, auth, db, history_store, memory, metrics, rag
-from .backends.llama_cpp import LlamaCppClient
-from .backends.ollama import OllamaClient
+from .backends.llama_cpp import LlamaCppClient, ToolCallAccumulator
 from .config import AppConfig, CompiledSignals
 from .middleware.clarification import (
     format_clarifications,
@@ -77,7 +76,6 @@ logger = logging.getLogger("backend")
 class AppState:
     config: AppConfig
     signals: CompiledSignals
-    ollama: OllamaClient
     llama_cpp: LlamaCppClient
     scheduler: VRAMScheduler
     orchestrator: Orchestrator
@@ -146,46 +144,33 @@ async def lifespan(app: FastAPI):
     state.tools = build_registry(tools_dir=tools_dir, config_dir=config_dir)
     logger.info("Tool registry ready: %d tools", len(state.tools.tools))
 
-    # Backend clients — endpoint overridable per-tier, these are fallbacks.
-    # Defaults target native-mode localhost; the Docker path sets env vars
-    # explicitly in compose.
-    default_ollama = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    default_llama = os.getenv("LLAMACPP_URL", "http://localhost:8001/v1")
-    state.ollama = OllamaClient(default_ollama)
-    state.llama_cpp = LlamaCppClient(default_llama)
+    # llama.cpp is the only backend now. The client manages one
+    # llama-server subprocess per tier; vision + embedding are pre-spawned
+    # by the launcher and pinned (the client adopts them on first
+    # ensure_loaded).
+    state.llama_cpp = LlamaCppClient()
 
-    # Per-tier clients (routed by tier.endpoint). For Phase 1 the endpoints
-    # in models.yaml match the env-defaults, so a single client per backend
-    # is fine. Future: per-tier endpoint dispatch.
-    clients = {"ollama": state.ollama, "llama_cpp": state.llama_cpp}
+    clients = {"llama_cpp": state.llama_cpp}
 
-    async def _ollama_load(tier):
-        await state.ollama.ensure_loaded(
-            tier, keep_alive=state.config.vram.ollama.keep_alive_pinned
-        )
+    async def _llama_load(tier):
+        await state.llama_cpp.ensure_loaded(tier)
 
-    async def _ollama_unload(tier):
-        await state.ollama.unload(tier)
-
-    async def _noop_load(tier):
-        # llama.cpp is pre-loaded at container start
-        return None
-
-    async def _noop_unload(tier):
-        # llama.cpp can't unload without restart — the scheduler should
-        # never reach this path because vision is pinned.
-        logger.warning("Requested unload of pinned llama.cpp model: %s", tier.model_tag)
+    async def _llama_unload(tier):
+        await state.llama_cpp.unload(tier)
 
     state.scheduler = VRAMScheduler(
         config=state.config,
-        loaders={"ollama": _ollama_load, "llama_cpp": _noop_load},
-        unloaders={"ollama": _ollama_unload, "llama_cpp": _noop_unload},
+        loaders={"llama_cpp": _llama_load},
+        unloaders={"llama_cpp": _llama_unload},
     )
     await state.scheduler.start()
 
     # Phase 6: threads the tool registry into the orchestrator so workers
     # can call tools within subtasks.
     state.orchestrator = Orchestrator(state.config, state.scheduler, clients, tools=state.tools)
+
+    # Wire RAG/memory's embedding pipeline to the per-tier llama.cpp client.
+    rag.configure_embedding(state.config, state.llama_cpp)
 
     logger.info("Ready. Tiers: %s", list(state.config.models.tiers))
 
@@ -196,8 +181,6 @@ async def lifespan(app: FastAPI):
         db_path=str(db.DB_PATH),
         cfg=state.config,
         registry=state.tools,
-        ollama_url=default_ollama,
-        llamacpp_url=default_llama,
         qdrant_url=os.getenv("QDRANT_URL", "http://localhost:6333"),
         redis_url=state.config.concurrency.redis_url,
         web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "ddg"),
@@ -207,6 +190,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await state.scheduler.stop()
+        await state.llama_cpp.stop_all()
         if state.redis is not None:
             try:
                 await state.redis.aclose()
@@ -279,15 +263,20 @@ async def security_headers(request: Request, call_next):
 
 @app.get("/healthz")
 async def healthz():
-    ollama_ok = True
+    """Liveness for the launcher health-wait. Probes the embedding tier
+    (always pre-spawned) and Qdrant; chat tiers cold-spawn on first
+    request and are not part of this gate."""
+    embedding_ok = True
     qdrant_ok = True
     try:
         import httpx as _httpx
-        async with _httpx.AsyncClient(timeout=2.0) as c:
-            r = await c.get(os.getenv("OLLAMA_URL", "http://localhost:11434") + "/api/version")
-            ollama_ok = r.status_code == 200
+        emb_tier = state.config.models.tiers.get("embedding")
+        if emb_tier is not None:
+            async with _httpx.AsyncClient(timeout=2.0) as c:
+                r = await c.get(emb_tier.resolved_endpoint().rstrip("/") + "/models")
+                embedding_ok = r.status_code == 200
     except Exception:
-        ollama_ok = False
+        embedding_ok = False
     try:
         import httpx as _httpx
         async with _httpx.AsyncClient(timeout=2.0) as c:
@@ -296,9 +285,13 @@ async def healthz():
     except Exception:
         qdrant_ok = False
 
-    all_ok = ollama_ok and qdrant_ok
+    all_ok = embedding_ok and qdrant_ok
     status = "ok" if all_ok else "degraded"
-    return {"ok": all_ok, "status": status, "services": {"ollama": ollama_ok, "qdrant": qdrant_ok}}
+    return {
+        "ok": all_ok,
+        "status": status,
+        "services": {"embedding": embedding_ok, "qdrant": qdrant_ok},
+    }
 
 
 @app.get("/v1/models", response_model=ModelsListResponse)
@@ -505,7 +498,7 @@ async def chat_completions(
     )
 
     tier = state.config.models.tiers[decision.tier_name]
-    client = state.ollama if tier.backend == "ollama" else state.llama_cpp
+    client = state.llama_cpp
 
     started = time.time()
 
@@ -662,11 +655,11 @@ async def _single_agent_sse(
     )
 
     # Serialize messages for the tool loop (needs to append role=tool entries).
-    from .backends.ollama import _messages_to_payload as _ollama_msgs
-    msg_payload = _ollama_msgs(req.messages) if tier.backend == "ollama" else None
+    from .backends.llama_cpp import _messages_to_payload as _llama_msgs
+    msg_payload = _llama_msgs(req.messages)
 
     tool_schemas: list[dict] | None = None
-    if tier.backend == "ollama" and req.tools is None:
+    if req.tools is None:
         enabled = state.tools.all_schemas(
             only_enabled=True, airgap=airgap.is_enabled(),
         )
@@ -674,7 +667,7 @@ async def _single_agent_sse(
         # degrade with an empty `tools: []` field.
         if enabled:
             tool_schemas = enabled
-    elif req.tools:
+    else:
         tool_schemas = req.tools
 
     max_tool_turns = 5
@@ -686,40 +679,23 @@ async def _single_agent_sse(
                 state.scheduler, decision.tier_name, model_id,
             ):
                 yield sse
-            tool_calls_accum: list[dict] = []
-            llama_cpp_done = False
+            accumulator = ToolCallAccumulator()
             try:
-                if tier.backend == "ollama":
-                    async for chunk in client.chat_stream(
-                        tier, msg_payload, think=decision.think,
-                        keep_alive=state.config.vram.ollama.keep_alive_pinned,
-                        tools=tool_schemas,
-                    ):
-                        msg = chunk.get("message") or {}
-                        text = msg.get("content")
+                async for chunk in client.chat_stream(
+                    tier, msg_payload, think=decision.think,
+                    tools=tool_schemas,
+                ):
+                    for choice in chunk.get("choices", []):
+                        delta = choice.get("delta") or {}
+                        text = delta.get("content")
                         if text:
                             assembled_text.append(text)
                             yield _openai_chunk(text, model_id)
-                        if msg.get("tool_calls"):
-                            tool_calls_accum.extend(msg["tool_calls"])
-                        if chunk.get("done"):
-                            break
-                else:  # llama_cpp — no tool support yet
-                    async for chunk in client.chat_stream(
-                        tier, req.messages, think=decision.think,
-                    ):
-                        for choice in chunk.get("choices", []):
-                            delta = choice.get("delta") or {}
-                            text = delta.get("content")
-                            if text:
-                                assembled_text.append(text)
-                                yield _openai_chunk(text, model_id)
-                    llama_cpp_done = True
+                        accumulator.feed(delta.get("tool_calls"))
             finally:
                 await state.scheduler.release(decision.tier_name)
 
-            if llama_cpp_done:
-                break
+            tool_calls_accum = accumulator.calls()
             if not tool_calls_accum or turn >= max_tool_turns:
                 break
 
@@ -847,7 +823,7 @@ async def _finalize_conversation(
                         req.conversation_id, asst_count, conv_airgap)
             versatile_tier = state.config.models.tiers["versatile"]
             await memory.distill_and_store(
-                user["id"], req.conversation_id, state.ollama, versatile_tier,
+                user["id"], req.conversation_id, state.llama_cpp, versatile_tier,
                 airgap=conv_airgap,
             )
     except Exception:

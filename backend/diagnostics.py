@@ -321,28 +321,30 @@ async def _http_get(url: str, timeout: float = 5.0) -> tuple[int, str]:
         return r.status_code, r.text[:300]
 
 
-async def check_ollama_reachable(url: str | None = None) -> CheckResult:
-    name = "service.ollama"
-    base = (url or os.environ.get("OLLAMA_URL", "http://localhost:11434")).rstrip("/")
-    try:
-        status, _ = await _http_get(f"{base}/api/tags")
-        if status == 200:
-            return _ok(name, f"Ollama reachable at {base}")
-        return _warn(name, f"Ollama returned HTTP {status}", f"URL: {base}/api/tags")
-    except Exception as exc:
-        return _warn(name, f"Ollama not reachable at {base} — inference may fail", str(exc))
-
-
-async def check_llamacpp_reachable(url: str | None = None) -> CheckResult:
-    name = "service.llamacpp"
-    base = (url or os.environ.get("LLAMACPP_URL", "http://localhost:8001/v1")).rstrip("/")
-    try:
-        status, _ = await _http_get(f"{base}/models")
-        if status == 200:
-            return _ok(name, f"llama.cpp server reachable at {base}")
-        return _warn(name, f"llama.cpp returned HTTP {status}", f"URL: {base}/models")
-    except Exception as exc:
-        return _warn(name, f"llama.cpp not reachable at {base} — vision tier may fail", str(exc))
+async def check_pinned_llamacpp_tiers(cfg: Any = None) -> list[CheckResult]:
+    """Pre-spawned tiers (vision, embedding) MUST be reachable; chat tiers
+    cold-spawn on first request and are not gated here."""
+    if cfg is None:
+        return [_warn("service.llamacpp", "Config not provided — skipping per-tier check")]
+    out: list[CheckResult] = []
+    for tier_name, tier in cfg.models.tiers.items():
+        if not tier.pinned:
+            continue
+        base = tier.resolved_endpoint().rstrip("/")
+        check_name = f"service.llamacpp.{tier_name}"
+        try:
+            status, _ = await _http_get(f"{base}/models")
+            if status == 200:
+                out.append(_ok(check_name, f"{tier_name} llama-server reachable at {base}"))
+            else:
+                out.append(_warn(check_name, f"{tier_name} returned HTTP {status}", f"URL: {base}/models"))
+        except Exception as exc:
+            out.append(_warn(
+                check_name,
+                f"{tier_name} llama-server not reachable at {base} — pre-spawn missing?",
+                str(exc),
+            ))
+    return out
 
 
 async def check_qdrant_reachable(url: str | None = None) -> CheckResult:
@@ -502,8 +504,6 @@ async def run_startup_diagnostics(
     db_path: str = "",
     cfg: Any = None,
     registry: Any = None,
-    ollama_url: str | None = None,
-    llamacpp_url: str | None = None,
     qdrant_url: str | None = None,
     redis_url: str | None = None,
     web_search_provider: str | None = None,
@@ -548,13 +548,12 @@ async def run_startup_diagnostics(
 
     # Service connectivity checks — concurrent
     service_results = await asyncio.gather(
-        check_ollama_reachable(ollama_url),
-        check_llamacpp_reachable(llamacpp_url),
         check_qdrant_reachable(qdrant_url),
         check_redis_reachable(redis_url),
         check_web_search_provider(web_search_provider),
     )
     results.extend(service_results)
+    results.extend(await check_pinned_llamacpp_tiers(cfg))
 
     # Log summary + per-check detail
     ok_n    = sum(1 for r in results if r.severity == Severity.OK)

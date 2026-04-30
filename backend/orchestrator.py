@@ -161,9 +161,10 @@ class Subtask:
 class Orchestrator:
     def __init__(self, config: AppConfig, scheduler, backends: dict, tools=None):
         """
-        backends: {"ollama": OllamaClient, "llama_cpp": LlamaCppClient}
-        tools:    optional ToolRegistry. When set, Ollama workers receive the
-                  tool schemas — letting them call functions within subtasks.
+        backends: {"llama_cpp": LlamaCppClient} — only llama.cpp now.
+        tools:    optional ToolRegistry. When set, workers receive the tool
+                  schemas (passed to llama-server with --jinja) — letting
+                  them call functions within subtasks.
                   Phase 6: added to thread tool use into multi-agent workers.
         """
         self.cfg = config
