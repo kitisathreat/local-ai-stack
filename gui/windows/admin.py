@@ -1,27 +1,24 @@
-"""Admin dashboard window — full write-parity with deleted Preact admin panel.
+"""Admin dashboard window.
 
-Tabs: Users, Models, Tools, Airgap, VRAM, Router, Auth, Errors, Reload.
-Requires an admin session; callers show LoginDialog(require_admin=True) first.
+Phase 4: full CRUD parity with the old Preact admin panel — Users,
+Models, Tools, Airgap, Config (read-only), VRAM. Requires an admin
+session; callers are expected to show LoginDialog(require_admin=True)
+first.
 """
 from __future__ import annotations
 
 import asyncio
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
-    QDoubleSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
+    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
 from gui.api_client import BackendClient
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 class _NewUserDialog(QDialog):
     def __init__(self, parent=None):
@@ -56,26 +53,11 @@ class _NewUserDialog(QDialog):
         }
 
 
-def _make_save_row(save_fn) -> tuple[QHBoxLayout, QPushButton]:
-    """Return (layout, save_button) with a right-aligned Save button."""
-    save_btn = QPushButton("Save")
-    save_btn.setFixedWidth(90)
-    save_btn.clicked.connect(save_fn)
-    row = QHBoxLayout()
-    row.addStretch()
-    row.addWidget(save_btn)
-    return row, save_btn
-
-
-# ---------------------------------------------------------------------------
-# Main window
-# ---------------------------------------------------------------------------
-
 class AdminWindow(QMainWindow):
     def __init__(self, client: BackendClient):
         super().__init__()
         self.setWindowTitle("Local AI Stack — Admin")
-        self.resize(1000, 680)
+        self.resize(960, 640)
         self._client = client
         self._airgap_enabled = False
 
@@ -85,18 +67,16 @@ class AdminWindow(QMainWindow):
         tabs.addTab(self._build_tools_tab(), "Tools")
         tabs.addTab(self._build_airgap_tab(), "Airgap")
         tabs.addTab(self._build_vram_tab(), "VRAM")
-        tabs.addTab(self._build_router_tab(), "Router")
-        tabs.addTab(self._build_auth_tab(), "Auth")
-        tabs.addTab(self._build_errors_tab(), "Errors")
-        tabs.addTab(self._build_reload_tab(), "Reload")
 
+        root = QVBoxLayout()
+        root.addWidget(tabs)
         container = QWidget()
-        QVBoxLayout(container).addWidget(tabs)
+        container.setLayout(root)
         self.setCentralWidget(container)
 
         asyncio.ensure_future(self._refresh_all())
 
-    # ── Users tab ──────────────────────────────────────────────────────────
+    # ── Users tab ─────────────────────────────────────────────────
 
     def _build_users_tab(self) -> QWidget:
         self._users_table = QTableWidget(0, 6)
@@ -123,9 +103,10 @@ class AdminWindow(QMainWindow):
         bar.addStretch(1)
 
         w = QWidget()
-        lay = QVBoxLayout(w)
+        lay = QVBoxLayout()
         lay.addLayout(bar)
         lay.addWidget(self._users_table)
+        w.setLayout(lay)
         return w
 
     def _selected_user_id(self) -> int | None:
@@ -133,7 +114,12 @@ class AdminWindow(QMainWindow):
         if not rows:
             return None
         item = self._users_table.item(rows[0].row(), 0)
-        return int(item.text()) if item else None
+        if not item:
+            return None
+        try:
+            return int(item.text())
+        except ValueError:
+            return None
 
     def _on_add_user(self) -> None:
         dlg = _NewUserDialog(self)
@@ -174,10 +160,11 @@ class AdminWindow(QMainWindow):
         uid = self._selected_user_id()
         if uid is None:
             return
+        # Flip the flag shown in the table.
         rows = self._users_table.selectionModel().selectedRows()
-        if not rows:
-            return
-        current = self._users_table.item(rows[0].row(), 3).text() == "yes"
+        if not rows: return
+        row = rows[0].row()
+        current = self._users_table.item(row, 3).text() == "yes"
         async def do():
             try:
                 await self._client.admin_patch_user(uid, is_admin=not current)
@@ -219,7 +206,7 @@ class AdminWindow(QMainWindow):
             last = u.get("last_login_at") or ""
             self._users_table.setItem(row, 5, QTableWidgetItem(str(last)[:19] if last else ""))
 
-    # ── Models tab ─────────────────────────────────────────────────────────
+    # ── Models tab ────────────────────────────────────────────────
 
     def _build_models_tab(self) -> QWidget:
         self._models_table = QTableWidget(0, 5)
@@ -231,7 +218,9 @@ class AdminWindow(QMainWindow):
             QHeaderView.ResizeMode.ResizeToContents
         )
         w = QWidget()
-        QVBoxLayout(w).addWidget(self._models_table)
+        lay = QVBoxLayout()
+        lay.addWidget(self._models_table)
+        w.setLayout(lay)
         return w
 
     async def _refresh_models(self) -> None:
@@ -252,7 +241,7 @@ class AdminWindow(QMainWindow):
             ]):
                 self._models_table.setItem(row, col, QTableWidgetItem(str(val)))
 
-    # ── Tools tab ──────────────────────────────────────────────────────────
+    # ── Tools tab ─────────────────────────────────────────────────
 
     def _build_tools_tab(self) -> QWidget:
         self._tools_table = QTableWidget(0, 3)
@@ -262,13 +251,13 @@ class AdminWindow(QMainWindow):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self._tools_table.cellClicked.connect(self._on_tool_clicked)
-
         w = QWidget()
-        lay = QVBoxLayout(w)
-        hint = QLabel("Click the Enabled column to toggle a tool on or off.")
+        lay = QVBoxLayout()
+        hint = QLabel("Click a checkbox to toggle a tool.")
         hint.setStyleSheet("color: #888;")
         lay.addWidget(hint)
         lay.addWidget(self._tools_table)
+        w.setLayout(lay)
         return w
 
     def _on_tool_clicked(self, row: int, col: int) -> None:
@@ -299,7 +288,7 @@ class AdminWindow(QMainWindow):
             self._tools_table.setItem(row, 1, QTableWidgetItem("yes" if t.get("enabled") else ""))
             self._tools_table.setItem(row, 2, QTableWidgetItem(t.get("description", "")))
 
-    # ── Airgap tab ─────────────────────────────────────────────────────────
+    # ── Airgap tab ─────────────────────────────────────────────────
 
     def _build_airgap_tab(self) -> QWidget:
         self._airgap_label = QLabel("Airgap: (loading…)")
@@ -308,20 +297,21 @@ class AdminWindow(QMainWindow):
         self._airgap_toggle.clicked.connect(self._on_airgap_toggle)
 
         warning = QLabel(
-            "<b>Airgap mode</b> closes the public subdomain and enables the local "
-            "Qt chat window for any logged-in user. "
+            "<b>Airgap mode</b> closes the <code>chat.mylensandi.com</code> subdomain "
+            "and enables the local Qt chat window for any logged-in user. "
             "Web-search tools, RAG uploads, and external API calls are blocked."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #a60; padding: 8px; border: 1px solid #a60;")
 
         w = QWidget()
-        lay = QVBoxLayout(w)
+        lay = QVBoxLayout()
         lay.addWidget(self._airgap_label)
         lay.addWidget(self._airgap_toggle)
         lay.addSpacing(16)
         lay.addWidget(warning)
         lay.addStretch(1)
+        w.setLayout(lay)
         return w
 
     def _on_airgap_toggle(self) -> None:
@@ -340,7 +330,7 @@ class AdminWindow(QMainWindow):
             self._airgap_label.setText("Airgap: ON (outbound blocked)")
             self._airgap_toggle.setText("Disable airgap mode")
         else:
-            self._airgap_label.setText("Airgap: OFF")
+            self._airgap_label.setText("Airgap: OFF (chat via chat.mylensandi.com)")
             self._airgap_toggle.setText("Enable airgap mode")
 
     async def _refresh_airgap(self) -> None:
@@ -351,14 +341,16 @@ class AdminWindow(QMainWindow):
             self._airgap_enabled = False
         self._update_airgap_label()
 
-    # ── VRAM tab ───────────────────────────────────────────────────────────
+    # ── VRAM tab ──────────────────────────────────────────────────
 
     def _build_vram_tab(self) -> QWidget:
         self._vram_table = QTableWidget(0, 3)
         self._vram_table.setHorizontalHeaderLabels(["Tier", "Loaded", "Estimated GB"])
         self._vram_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         w = QWidget()
-        QVBoxLayout(w).addWidget(self._vram_table)
+        lay = QVBoxLayout()
+        lay.addWidget(self._vram_table)
+        w.setLayout(lay)
         return w
 
     async def _refresh_vram(self) -> None:
@@ -373,220 +365,13 @@ class AdminWindow(QMainWindow):
             self._vram_table.setItem(row, 1, QTableWidgetItem("yes" if tier.get("loaded") else ""))
             self._vram_table.setItem(row, 2, QTableWidgetItem(str(tier.get("estimated_vram_gb", ""))))
 
-    # ── Router config tab ──────────────────────────────────────────────────
-
-    def _build_router_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-
-        grp = QGroupBox("Multi-agent settings")
-        form = QFormLayout(grp)
-
-        self._router_max_workers = QSpinBox()
-        self._router_max_workers.setRange(1, 32)
-        form.addRow("Max workers:", self._router_max_workers)
-
-        self._router_min_workers = QSpinBox()
-        self._router_min_workers.setRange(1, 32)
-        form.addRow("Min workers:", self._router_min_workers)
-
-        self._router_worker_tier = QLineEdit()
-        form.addRow("Worker tier:", self._router_worker_tier)
-
-        self._router_orchestrator_tier = QLineEdit()
-        form.addRow("Orchestrator tier:", self._router_orchestrator_tier)
-
-        self._router_interaction_rounds = QSpinBox()
-        self._router_interaction_rounds.setRange(1, 20)
-        form.addRow("Interaction rounds:", self._router_interaction_rounds)
-
-        lay.addWidget(grp)
-        save_row, _ = _make_save_row(self._save_router)
-        lay.addLayout(save_row)
-        lay.addStretch()
-        return w
-
-    def _save_router(self) -> None:
-        payload = {
-            "router": {
-                "multi_agent": {
-                    "max_workers": self._router_max_workers.value(),
-                    "min_workers": self._router_min_workers.value(),
-                    "worker_tier": self._router_worker_tier.text().strip(),
-                    "orchestrator_tier": self._router_orchestrator_tier.text().strip(),
-                    "interaction_rounds": self._router_interaction_rounds.value(),
-                }
-            }
-        }
-        async def do():
-            try:
-                result = await self._client.admin_patch_config(payload)
-                QMessageBox.information(self, "Saved", f"Router config saved.\n{result.get('message','')}")
-            except Exception as exc:
-                QMessageBox.warning(self, "Save failed", str(exc))
-        asyncio.ensure_future(do())
-
-    async def _refresh_router(self, cfg: dict) -> None:
-        router = cfg.get("router", {})
-        ma = router.get("multi_agent", {})
-        self._router_max_workers.setValue(int(ma.get("max_workers", 4)))
-        self._router_min_workers.setValue(int(ma.get("min_workers", 1)))
-        self._router_worker_tier.setText(str(ma.get("worker_tier", "")))
-        self._router_orchestrator_tier.setText(str(ma.get("orchestrator_tier", "")))
-        self._router_interaction_rounds.setValue(int(ma.get("interaction_rounds", 3)))
-
-    # ── Auth config tab ────────────────────────────────────────────────────
-
-    def _build_auth_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-
-        grp = QGroupBox("Auth settings")
-        form = QFormLayout(grp)
-
-        self._auth_domains = QLineEdit()
-        self._auth_domains.setPlaceholderText("example.com, another.org  (blank = any)")
-        form.addRow("Allowed email domains:", self._auth_domains)
-
-        self._auth_link_ttl = QSpinBox()
-        self._auth_link_ttl.setRange(1, 1440)
-        self._auth_link_ttl.setSuffix(" min")
-        form.addRow("Magic-link TTL:", self._auth_link_ttl)
-
-        self._auth_session_ttl = QSpinBox()
-        self._auth_session_ttl.setRange(1, 43200)
-        self._auth_session_ttl.setSuffix(" min")
-        form.addRow("Session TTL:", self._auth_session_ttl)
-
-        self._auth_req_per_hour = QSpinBox()
-        self._auth_req_per_hour.setRange(1, 10000)
-        form.addRow("Requests/hour/IP:", self._auth_req_per_hour)
-
-        self._auth_req_per_min = QSpinBox()
-        self._auth_req_per_min.setRange(1, 1000)
-        form.addRow("Requests/min/user:", self._auth_req_per_min)
-
-        lay.addWidget(grp)
-        save_row, _ = _make_save_row(self._save_auth)
-        lay.addLayout(save_row)
-        lay.addStretch()
-        return w
-
-    def _save_auth(self) -> None:
-        domains_raw = self._auth_domains.text().strip()
-        domains = [d.strip() for d in domains_raw.replace(",", " ").split() if d.strip()]
-        payload = {
-            "auth": {
-                "allowed_email_domains": domains,
-                "magic_link_ttl_minutes": self._auth_link_ttl.value(),
-                "session_ttl_minutes": self._auth_session_ttl.value(),
-                "rate_limits": {
-                    "requests_per_hour_per_ip": self._auth_req_per_hour.value(),
-                    "requests_per_minute_per_user": self._auth_req_per_min.value(),
-                },
-            }
-        }
-        async def do():
-            try:
-                result = await self._client.admin_patch_config(payload)
-                QMessageBox.information(self, "Saved", f"Auth config saved.\n{result.get('message','')}")
-            except Exception as exc:
-                QMessageBox.warning(self, "Save failed", str(exc))
-        asyncio.ensure_future(do())
-
-    async def _refresh_auth_config(self, cfg: dict) -> None:
-        auth = cfg.get("auth", {})
-        domains = auth.get("allowed_email_domains") or []
-        self._auth_domains.setText(", ".join(domains))
-        self._auth_link_ttl.setValue(int(auth.get("magic_link_ttl_minutes", 30)))
-        self._auth_session_ttl.setValue(int(auth.get("session_ttl_minutes", 10080)))
-        rl = auth.get("rate_limits", {})
-        self._auth_req_per_hour.setValue(int(rl.get("requests_per_hour_per_ip", 20)))
-        self._auth_req_per_min.setValue(int(rl.get("requests_per_minute_per_user", 60)))
-
-    # ── Errors tab ─────────────────────────────────────────────────────────
-
-    def _build_errors_tab(self) -> QWidget:
-        self._errors_table = QTableWidget(0, 4)
-        self._errors_table.setHorizontalHeaderLabels(["Time", "User", "Error", "Detail"])
-        self._errors_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._errors_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._errors_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
-        )
-
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(lambda: asyncio.ensure_future(self._refresh_errors()))
-
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        bar = QHBoxLayout()
-        bar.addWidget(refresh_btn)
-        bar.addStretch()
-        lay.addLayout(bar)
-        lay.addWidget(self._errors_table)
-        return w
-
-    async def _refresh_errors(self) -> None:
-        try:
-            errors = await self._client.admin_errors()
-        except Exception:
-            errors = []
-        self._errors_table.setRowCount(0)
-        for row, e in enumerate(errors):
-            self._errors_table.insertRow(row)
-            ts = str(e.get("ts") or e.get("created_at") or "")[:19]
-            self._errors_table.setItem(row, 0, QTableWidgetItem(ts))
-            self._errors_table.setItem(row, 1, QTableWidgetItem(str(e.get("user_id") or "")))
-            self._errors_table.setItem(row, 2, QTableWidgetItem(str(e.get("error_type") or e.get("error") or "")))
-            self._errors_table.setItem(row, 3, QTableWidgetItem(str(e.get("detail") or "")[:200]))
-
-    # ── Reload tab ─────────────────────────────────────────────────────────
-
-    def _build_reload_tab(self) -> QWidget:
-        label = QLabel(
-            "Force-reload all config files from disk.\n"
-            "Use this after manually editing a YAML config."
-        )
-        label.setWordWrap(True)
-
-        reload_btn = QPushButton("Reload config from disk")
-        reload_btn.clicked.connect(self._on_reload)
-
-        self._reload_log = QPlainTextEdit()
-        self._reload_log.setReadOnly(True)
-
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.addWidget(label)
-        lay.addWidget(reload_btn)
-        lay.addWidget(self._reload_log)
-        return w
-
-    def _on_reload(self) -> None:
-        async def do():
-            try:
-                result = await self._client.admin_reload()
-                self._reload_log.appendPlainText(f"✓ {result.get('message', 'Reloaded.')}")
-            except Exception as exc:
-                self._reload_log.appendPlainText(f"✗ {exc}")
-        asyncio.ensure_future(do())
-
-    # ── Refresh orchestration ──────────────────────────────────────────────
+    # ── Refresh orchestration ─────────────────────────────────────
 
     async def _refresh_all(self) -> None:
-        try:
-            cfg = await self._client.admin_get_config()
-        except Exception:
-            cfg = {}
-
         await asyncio.gather(
             self._refresh_users(),
             self._refresh_models(),
             self._refresh_tools(),
             self._refresh_airgap(),
             self._refresh_vram(),
-            self._refresh_router(cfg),
-            self._refresh_auth_config(cfg),
-            self._refresh_errors(),
         )

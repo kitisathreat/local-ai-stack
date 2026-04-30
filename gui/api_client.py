@@ -160,48 +160,6 @@ class BackendClient:
             r.raise_for_status()
             return r.json()
 
-    async def admin_get_config(self) -> dict:
-        async with self._client() as c:
-            r = await c.get("/admin/config")
-            r.raise_for_status()
-            return r.json()
-
-    async def admin_patch_config(self, payload: dict) -> dict:
-        async with self._client() as c:
-            r = await c.patch("/admin/config", json=payload)
-            r.raise_for_status()
-            return r.json()
-
-    async def admin_errors(self, limit: int = 25) -> list[dict]:
-        async with self._client() as c:
-            r = await c.get("/admin/errors", params={"limit": limit})
-            r.raise_for_status()
-            return r.json() or []
-
-    async def admin_reload(self) -> dict:
-        async with self._client() as c:
-            r = await c.post("/admin/reload")
-            r.raise_for_status()
-            return r.json()
-
-    async def airgap_state(self) -> dict:
-        async with self._client() as c:
-            r = await c.get("/admin/airgap")
-            r.raise_for_status()
-            return r.json()
-
-    async def vram_status(self) -> dict:
-        async with self._client() as c:
-            r = await c.get("/admin/vram")
-            r.raise_for_status()
-            return r.json()
-
-    async def resolved_models(self) -> dict:
-        async with self._client() as c:
-            r = await c.get("/admin/overview")
-            r.raise_for_status()
-            return r.json()
-
     # ── Chat streaming ─────────────────────────────────────────────────
 
     async def stream_chat(
