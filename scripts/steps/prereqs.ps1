@@ -8,7 +8,6 @@ $Script:PrereqTools = @(
     @{ Id = 'Git.Git';                Exe = 'git';         Label = 'Git' }
     @{ Id = 'Python.Python.3.12';     Exe = 'python';      Label = 'Python 3.12' }
     @{ Id = 'Microsoft.PowerShell';   Exe = 'pwsh';        Label = 'PowerShell 7' }
-    @{ Id = 'Ollama.Ollama';          Exe = 'ollama';      Label = 'Ollama' }
     @{ Id = 'Cloudflare.cloudflared'; Exe = 'cloudflared'; Label = 'cloudflared' }
 )
 

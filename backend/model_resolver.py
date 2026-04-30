@@ -365,7 +365,12 @@ def _main() -> int:
     r = sub.add_parser("resolve", help="resolve tiers, write data/resolved-models.json")
     r.add_argument("--force", action="store_true", help="ignore cache, re-poll")
     r.add_argument("--offline", action="store_true", help="skip polling, use pinned")
-    r.add_argument("--pull", action="store_true", help="pull missing GGUFs after resolution")
+    # --pull-hf is the legacy launcher name; --pull is the canonical form.
+    r.add_argument(
+        "--pull", "--pull-hf", action="store_true",
+        dest="pull",
+        help="pull missing GGUFs after resolution",
+    )
     r.add_argument(
         "--dry-run", action="store_true",
         help="with --pull, enumerate would-be-pulled tiers without downloading. "

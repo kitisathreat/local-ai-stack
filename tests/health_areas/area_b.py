@@ -155,7 +155,7 @@ def run() -> list[dict]:
             if s == "ok":
                 return "PASS", "status=ok", ""
             return "WARN", f"status={s!r} (degraded — some services unavailable)", \
-                   "Start Ollama and Qdrant: LocalAIStack.ps1 -Start"
+                   "Start the stack: LocalAIStack.ps1 -Start"
         except Exception:
             return "WARN", f"Could not parse JSON: {body[:100]}", ""
 

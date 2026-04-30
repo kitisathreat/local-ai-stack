@@ -37,6 +37,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
+from .backends.llama_cpp import ToolCallAccumulator
 from .config import AppConfig, MultiAgentConfig
 from .schemas import ChatMessage, AgentEvent, MultiAgentOptions
 
@@ -352,20 +353,26 @@ class Orchestrator:
             try:
                 async with self.scheduler.reserve(worker_tier_name):
                     think_workers = settings.reasoning_workers
-                    if worker_tier.backend == "ollama" and worker_tool_schemas:
+                    if worker_tool_schemas:
                         text_chunks: list[str] = []
+                        accumulator = ToolCallAccumulator()
                         async for chunk in worker_client.chat_stream(
                             worker_tier,
                             messages,
                             think=think_workers,
                             tools=worker_tool_schemas,
                         ):
-                            msg = chunk.get("message") or {}
-                            if msg.get("content"):
-                                text_chunks.append(msg["content"])
-                            if chunk.get("done"):
-                                break
+                            for choice in chunk.get("choices", []):
+                                delta = choice.get("delta") or {}
+                                if delta.get("content"):
+                                    text_chunks.append(delta["content"])
+                                accumulator.feed(delta.get("tool_calls"))
+                        # Workers don't run a full tool loop today — we capture
+                        # the model's text and surface tool_calls back to the
+                        # orchestrator for inspection.
                         output = "".join(text_chunks)
+                        if accumulator.calls():
+                            output += "\n\n[worker requested tool calls — not yet executed]"
                     else:
                         output = await worker_client.chat_once(
                             worker_tier, messages, think=think_workers,
@@ -457,15 +464,13 @@ async def _stream_as_events(
     raw_stream: AsyncIterator[dict],
     backend: str,
 ) -> AsyncIterator[AgentEvent]:
-    """Normalize ollama/llama_cpp streaming shapes into `AgentEvent(type=token)`."""
+    """Normalize llama.cpp's OpenAI-shaped streaming chunks into
+    `AgentEvent(type=token)`. The `backend` arg is retained for forward
+    compatibility but is currently always 'llama_cpp'."""
     async for chunk in raw_stream:
-        text: str | None = None
-        if backend == "ollama":
-            msg = chunk.get("message") or {}
-            text = msg.get("content")
-        elif backend == "llama_cpp":
-            choices = chunk.get("choices") or []
-            if choices:
-                text = (choices[0].get("delta") or {}).get("content")
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        text = (choices[0].get("delta") or {}).get("content")
         if text:
             yield AgentEvent(type="token", data={"text": text})

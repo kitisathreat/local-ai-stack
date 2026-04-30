@@ -43,16 +43,6 @@ def run() -> list[dict]:
 
     probe("python_312", _python)
 
-    # Ollama
-    def _ollama():
-        code, out, err = _run(["ollama", "--version"])
-        ver = (out + err).strip()
-        if code != 0:
-            return "FAIL", ver or "ollama not found", "Run LocalAIStack.ps1 -Setup"
-        return "PASS", ver, ""
-
-    probe("ollama_installed", _ollama)
-
     # cloudflared
     def _cloudflared():
         # Check vendor path first, then PATH

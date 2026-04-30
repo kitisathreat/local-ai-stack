@@ -37,19 +37,6 @@ def run() -> list[dict]:
         results.append({"area": "D", "test": name, "status": status,
                         "detail": detail, "fix_hint": fix_hint})
 
-    # Ollama running
-    def _ollama():
-        code, body = _http_get("http://127.0.0.1:11434/api/version")
-        if code == 200:
-            try:
-                ver = json.loads(body).get("version", "?")
-            except Exception:
-                ver = body[:60]
-            return "PASS", f"Ollama {ver}", ""
-        return "FAIL", body[:200], "Run LocalAIStack.ps1 -Start"
-
-    probe("ollama_running", _ollama)
-
     # Fast tier responds (non-streaming, short timeout)
     def _fast_tier():
         payload = {
@@ -113,21 +100,19 @@ def run() -> list[dict]:
 
     probe("llama_server_running", _llama)
 
-    # Embedding model available (RAG/memory requires nomic-embed-text)
+    # Embedding tier available (llama-server with --embedding on port 8090)
     def _embedding():
-        payload = {
-            "model": "nomic-embed-text",
-            "input": "test",
-        }
-        code, body = _http_post("http://127.0.0.1:11434/api/embeddings", payload, timeout=30)
+        code, body = _http_get("http://127.0.0.1:8090/health")
         if code == 200:
-            return "PASS", "nomic-embed-text available", ""
+            return "PASS", "embedding llama-server healthy", ""
+        # /health may not exist — fall back to /v1/models
+        code, body = _http_get("http://127.0.0.1:8090/v1/models")
+        if code == 200:
+            return "PASS", "embedding llama-server reachable", ""
         if code is None:
-            return "FAIL", body, "Run LocalAIStack.ps1 -Start then pull nomic-embed-text"
-        # 404 means model not pulled
-        return "WARN", f"HTTP {code} — embedding model not pulled", \
-               "Run: ollama pull nomic-embed-text"
+            return "FAIL", body, "Run LocalAIStack.ps1 -Start to launch the embedding server"
+        return "WARN", f"HTTP {code}: {body[:100]}", "Check logs\\embedding-llama-server.log"
 
-    probe("embedding_model", _embedding)
+    probe("embedding_server", _embedding)
 
     return results

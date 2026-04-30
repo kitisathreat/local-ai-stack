@@ -1,11 +1,11 @@
 """
 Model loading tests — CI area D.
 
-Verifies that the Ollama/llama-server client layers degrade gracefully when
-services are unavailable, that the VRAM scheduler falls back on 503, and that
+Verifies that the LlamaCppClient layer degrades gracefully when llama-server
+is unavailable, that the VRAM scheduler falls back on errors, and that
 /v1/chat/completions returns 503 (not 500) when all tiers are down.
 
-No real GPU, Ollama, or models required. Network is entirely mocked.
+No real GPU or models required. Network is entirely mocked.
 """
 
 import asyncio
@@ -42,14 +42,6 @@ def _model_resolver_available():
         return False
 
 
-def _ollama_client_available():
-    try:
-        from backend.backends.ollama import OllamaClient  # noqa: F401
-        return True
-    except Exception:
-        return False
-
-
 def _llamacpp_client_available():
     try:
         from backend.backends.llama_cpp import LlamaCppClient  # noqa: F401
@@ -59,49 +51,25 @@ def _llamacpp_client_available():
 
 
 # ---------------------------------------------------------------------------
-# OllamaClient — 503 graceful degradation
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(not _ollama_client_available(), reason="OllamaClient not available")
-def test_ollama_list_models_returns_empty_on_503():
-    """OllamaClient.list_local_models() must return [] when Ollama returns 503."""
-    respx = pytest.importorskip("respx")
-    from backend.backends.ollama import OllamaClient
-
-    with respx.mock:
-        respx.get("http://127.0.0.1:11434/api/tags").mock(
-            return_value=httpx.Response(503)
-        )
-        client = OllamaClient(endpoint="http://127.0.0.1:11434")
-        result = asyncio.run(client.list_local_models())
-    assert result == [], f"Expected [], got {result}"
-
-
-@pytest.mark.skipif(not _ollama_client_available(), reason="OllamaClient not available")
-def test_ollama_list_models_returns_empty_on_connection_refused():
-    """OllamaClient.list_local_models() must return [] on ConnectionRefused."""
-    from backend.backends.ollama import OllamaClient
-
-    client = OllamaClient(endpoint="http://127.0.0.1:19999")  # nothing on 19999
-    result = asyncio.run(client.list_local_models())
-    assert result == [], f"Expected [] on connection refused, got {result}"
-
-
-# ---------------------------------------------------------------------------
 # LlamaCppClient — ConnectionRefused graceful degradation
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not _llamacpp_client_available(), reason="LlamaCppClient not available")
 @pytest.mark.asyncio
-async def test_llamacpp_chat_stream_handles_connection_refused():
+async def test_llamacpp_is_ready_handles_connection_refused():
     """
     LlamaCppClient.is_ready() must return False (not raise) when llama-server
     is unreachable — verifying that the client layer degrades gracefully.
     """
     from backend.backends.llama_cpp import LlamaCppClient
+    from types import SimpleNamespace
 
-    client = LlamaCppClient(endpoint="http://127.0.0.1:19998/v1")  # nothing on 19998
-    result = await client.is_ready()
+    client = LlamaCppClient()
+    fake_tier = SimpleNamespace(
+        name="probe", port=19998, endpoint=None,
+        resolved_endpoint=lambda: "http://127.0.0.1:19998/v1",
+    )
+    result = await client.is_ready(fake_tier)
     assert result is False, f"Expected is_ready()=False on connection refused, got {result}"
 
 
@@ -123,12 +91,13 @@ def test_model_resolver_returns_all_tiers_offline():
 
 @pytest.mark.skipif(not _model_resolver_available(), reason="model_resolver not available")
 def test_model_resolver_each_tier_has_model_and_source():
-    """Each resolved tier must have an identifier (model tag or HF path)."""
+    """Each resolved tier must have a HuggingFace repo + filename."""
     from backend import model_resolver
 
     result = model_resolver.resolve(offline=True)
     for tier, info in result.resolved.items():
-        assert info.identifier, f"Tier '{tier}' missing identifier: {info}"
+        assert info.repo, f"Tier '{tier}' missing repo: {info}"
+        assert info.filename, f"Tier '{tier}' missing filename: {info}"
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,10 @@
-"""Tests for backend.model_resolver, covering the Phase 7 HF-pull path
-and the existing offline fallback behaviour.
-"""
+"""Tests for backend.model_resolver, covering the HF-pull path
+and the offline fallback behaviour. Ollama paths were removed in the
+llama.cpp migration."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -37,7 +36,8 @@ def _fake_resolve_result(tmp_path, filename="test.gguf", rev="abc1234"):
     r = Resolved(
         tier="vision",
         source="huggingface",
-        identifier=f"Qwen/Fake/{filename}",
+        repo="Qwen/Fake",
+        filename=filename,
         revision=rev,
         origin="latest",
     )
@@ -53,12 +53,10 @@ def test_pull_missing_skips_non_hf_tiers(tmp_path, monkeypatch):
 
     result = ResolveResult(
         resolved={"fast": Resolved(
-            tier="fast", source="ollama", identifier="qwen3.5:9b",
+            tier="fast", source="something-else", repo="qwen3.5", filename="9b.gguf",
         )},
         cached=False, offline=False,
     )
-    # Even without huggingface_hub installed, a non-HF result should
-    # return [] without attempting an import path beyond the early exit.
     pulled = pull_missing_hf_files(result)
     assert pulled == []
 
@@ -115,8 +113,7 @@ def test_pull_missing_tolerates_download_errors(tmp_path, monkeypatch):
 
 
 def test_pull_missing_ignores_tiers_without_filename(tmp_path, monkeypatch):
-    """If identifier is just `<org>/<repo>` with no file component, skip
-    quietly (resolver emitted incomplete data)."""
+    """If filename is empty (resolver emitted incomplete data), skip quietly."""
     monkeypatch.setenv("LAI_DATA_DIR", str(tmp_path))
     import importlib
     from backend import model_resolver
@@ -125,7 +122,7 @@ def test_pull_missing_ignores_tiers_without_filename(tmp_path, monkeypatch):
 
     result = ResolveResult(
         resolved={"bad": Resolved(
-            tier="bad", source="huggingface", identifier="Qwen/OnlyRepo",
+            tier="bad", source="huggingface", repo="Qwen/OnlyRepo", filename="",
         )},
         cached=False, offline=False,
     )

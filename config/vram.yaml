@@ -15,17 +15,8 @@ eviction:
   policy: lru
   min_residency_sec: 30                 # don't evict a model that just loaded (anti-thrash)
   pin_orchestrator: false               # orchestrator CAN be evicted while workers run
-  pin_vision: true                      # vision tier is pinned (llama.cpp can't unload
-                                        # without container restart)
-
-# ── Ollama keep_alive control ───────────────────────────────────────────────
-# Ollama's own idle-unload timer. We set this per-request:
-#   - keep_alive_default when refcount drops to 0 (lets Ollama idle-unload
-#     after 30min even if scheduler doesn't evict)
-#   - keep_alive_pinned (-1 = forever) when a model is actively reserved
-ollama:
-  keep_alive_default: "30m"
-  keep_alive_pinned: -1
+  pin_vision: true                      # vision tier is pinned — pre-spawned by the
+                                        # launcher and never evicted
 
 # ── Multi-agent coordination ────────────────────────────────────────────────
 multi_agent:
