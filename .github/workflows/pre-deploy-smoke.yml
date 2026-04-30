@@ -325,38 +325,49 @@ jobs:
         # by inspection (not just job color) that every assertion really
         # ran. Without this we'd be trusting a green checkmark from a
         # workflow that completed in 4 minutes.
-        #
-        # Works on push, pull_request, and workflow_dispatch — looks up
-        # the PR number via `gh pr list --head <branch>` when the event
-        # doesn't expose one directly.
         if: always()
         shell: pwsh
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER_FROM_EVENT: ${{ github.event.pull_request.number }}
           BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # Resolve PR number — direct from the event, or look it up by
-          # branch (push / workflow_dispatch path).
+          $ErrorActionPreference = 'Continue'
+          # First, prove gh is on PATH and authenticated.
+          Write-Host "── gh auth status ──"
+          & gh auth status 2>&1 | Write-Host
+          Write-Host "── gh --version ──"
+          & gh --version 2>&1 | Write-Host
+
+          # Resolve PR number. Three strategies, in order:
+          #   1) the event payload (when on pull_request)
+          #   2) `gh pr list --head <branch> --state open`
+          #   3) `gh api search/issues?q=is:pr+head:<branch>+repo:<repo>`
           $pr = $env:PR_NUMBER_FROM_EVENT
           if (-not $pr) {
-            $lookup = & gh pr list --head $env:BRANCH --json number --jq '.[0].number // empty' 2>$null
-            $pr = ($lookup | Out-String).Trim()
+            Write-Host "── gh pr list --head $env:BRANCH --state open ──"
+            $listOut = & gh pr list --head $env:BRANCH --state open --json number,title 2>&1
+            Write-Host ($listOut | Out-String)
+            try {
+              $parsed = $listOut | ConvertFrom-Json
+              if ($parsed -and $parsed.Count -gt 0) {
+                $pr = $parsed[0].number
+              }
+            } catch { Write-Host "  (parse failed: $($_.Exception.Message))" }
           }
           if (-not $pr) {
-            Write-Host "No PR found for branch $env:BRANCH — skipping comment post"
-            # Still write to step summary so something is visible.
+            Write-Host "::warning::Could not resolve PR number for branch $env:BRANCH"
             $summary = $env:GITHUB_STEP_SUMMARY
             if ($summary -and (Test-Path ci-logs/timing.log)) {
-              Add-Content -Path $summary -Value "### Per-step timing"
+              Add-Content -Path $summary -Value "### Per-step timing (no PR comment posted)"
               Add-Content -Path $summary -Value "``````csv"
               Add-Content -Path $summary -Value (Get-Content ci-logs/timing.log -Raw)
               Add-Content -Path $summary -Value "``````"
             }
-            return
+            exit 0
           }
           Write-Host "Posting diagnostic to PR #$pr"
           $emoji = if ($env:JOB_STATUS -eq 'success') { ':white_check_mark:' } else { ':x:' }
@@ -424,9 +435,26 @@ jobs:
 
           $tmp = Join-Path $env:RUNNER_TEMP 'smoke-diag.md'
           Set-Content -Path $tmp -Value $body -Encoding utf8NoBOM
-          Write-Host "diag body length: $($body.Length)"
-          & gh pr comment $pr --body-file $tmp 2>&1 | Write-Host
+          Write-Host "diag body length: $($body.Length) chars"
+          Write-Host "diag body file size: $((Get-Item $tmp).Length) bytes"
+          Write-Host "── posting via: gh pr comment $pr ──"
+          $ghOut = & gh pr comment $pr --body-file $tmp 2>&1
+          Write-Host ($ghOut | Out-String)
           Write-Host "gh exit=$LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) {
+            # Fallback: post via REST API directly so a gh-CLI quirk
+            # doesn't silently lose our diagnostic.
+            Write-Host "── gh failed; falling back to gh api REST ──"
+            $jsonBody = @{ body = $body } | ConvertTo-Json -Depth 4
+            $jsonPath = Join-Path $env:RUNNER_TEMP 'smoke-diag.json'
+            Set-Content -Path $jsonPath -Value $jsonBody -Encoding utf8NoBOM
+            $apiOut = & gh api -X POST "/repos/$env:REPO/issues/$pr/comments" --input $jsonPath 2>&1
+            Write-Host ($apiOut | Out-String)
+            Write-Host "gh api exit=$LASTEXITCODE"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Both gh pr comment and gh api fallback failed for PR $pr"
+            }
+          }
           # Also mirror the timing block into the step summary for
           # zero-friction visibility on the run page itself.
           $summary = $env:GITHUB_STEP_SUMMARY
