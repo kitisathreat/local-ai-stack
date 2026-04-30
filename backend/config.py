@@ -19,7 +19,12 @@ import yaml
 from pydantic import BaseModel, Field
 
 
-CONFIG_DIR = Path(os.getenv("LAI_CONFIG_DIR", "/app/config"))
+# Prefer explicit override; otherwise auto-detect relative to this file so
+# native mode (no Docker, no LAI_CONFIG_DIR) finds config/ at the repo root.
+CONFIG_DIR = Path(
+    os.getenv("LAI_CONFIG_DIR")
+    or (Path(__file__).parent.parent / "config")
+)
 
 
 class TierConfig(BaseModel):
