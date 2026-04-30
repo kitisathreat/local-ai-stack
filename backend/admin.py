@@ -253,10 +253,6 @@ async def get_config(_: dict = Depends(require_admin)):
                 "pin_orchestrator": cfg.vram.eviction.pin_orchestrator,
                 "pin_vision": cfg.vram.eviction.pin_vision,
             },
-            "ollama": {
-                "keep_alive_default": cfg.vram.ollama.keep_alive_default,
-                "keep_alive_pinned": cfg.vram.ollama.keep_alive_pinned,
-            },
             "queue": {
                 "max_depth_per_tier": cfg.vram.queue.max_depth_per_tier,
                 "max_wait_sec": cfg.vram.queue.max_wait_sec,
@@ -311,6 +307,12 @@ async def get_config(_: dict = Depends(require_admin)):
                 "think_default": t.think_default,
                 "vram_estimate_gb": t.vram_estimate_gb,
                 "parallel_slots": getattr(t, "parallel_slots", 1),
+                "n_gpu_layers": getattr(t, "n_gpu_layers", -1),
+                "flash_attention": getattr(t, "flash_attention", True),
+                "cache_type_k": getattr(t, "cache_type_k", "q8_0"),
+                "cache_type_v": getattr(t, "cache_type_v", "q8_0"),
+                "port": getattr(t, "port", None),
+                "role": getattr(t, "role", "chat"),
                 "params": dict(t.params),
             }
             for name, t in cfg.models.tiers.items()
@@ -367,11 +369,6 @@ def _patch_vram(patch: dict, doc: dict) -> list[str]:
     if "min_residency_sec" in ev: _set_deep(doc, ["eviction", "min_residency_sec"], int(ev["min_residency_sec"])); changes.append("vram.eviction.min_residency_sec")
     if "pin_orchestrator" in ev: _set_deep(doc, ["eviction", "pin_orchestrator"], bool(ev["pin_orchestrator"])); changes.append("vram.eviction.pin_orchestrator")
     if "pin_vision" in ev: _set_deep(doc, ["eviction", "pin_vision"], bool(ev["pin_vision"])); changes.append("vram.eviction.pin_vision")
-    oll = patch.get("ollama") or {}
-    if "keep_alive_default" in oll:
-        _set_deep(doc, ["ollama", "keep_alive_default"], str(oll["keep_alive_default"])); changes.append("vram.ollama.keep_alive_default")
-    if "keep_alive_pinned" in oll:
-        _set_deep(doc, ["ollama", "keep_alive_pinned"], int(oll["keep_alive_pinned"])); changes.append("vram.ollama.keep_alive_pinned")
     q = patch.get("queue") or {}
     if "max_depth_per_tier" in q:
         v = max(0, min(int(q["max_depth_per_tier"]), 1000))
@@ -465,13 +462,15 @@ def _patch_tiers(patch: dict, doc: dict) -> tuple[list[str], set[str]]:
     """Patch a subset of fields on existing tiers in models.yaml.
 
     Only allows edits to fields the dashboard shows: context_window,
-    think_default, vram_estimate_gb, description, parallel_slots, and a
-    flat `params` dict (temperature/top_p/top_k/num_ctx). New tiers cannot
-    be created this way.
+    think_default, vram_estimate_gb, description, parallel_slots, plus
+    llama.cpp spawn-time knobs (n_gpu_layers, flash_attention,
+    cache_type_k, cache_type_v) and a flat `params` dict
+    (temperature/top_p/top_k/num_predict). New tiers cannot be created
+    this way.
 
     Returns (changes, dirty_tiers). `dirty_tiers` is the set of tier names
-    whose load-time parameters (parallel_slots) changed — the caller calls
-    `scheduler.mark_tier_dirty()` on each so the scheduler reloads them on
+    whose load-time parameters changed — the caller calls
+    `scheduler.mark_tier_dirty()` on each so the scheduler respawns them on
     next reserve.
     """
     changes: list[str] = []
@@ -488,11 +487,24 @@ def _patch_tiers(patch: dict, doc: dict) -> tuple[list[str], set[str]]:
             if k in body:
                 t[k] = caster(body[k])
                 changes.append(f"models.tiers.{name}.{k}")
+                if k == "context_window":
+                    dirty.add(name)
         if "parallel_slots" in body:
             v = max(1, min(int(body["parallel_slots"]), 16))
             if t.get("parallel_slots") != v:
                 t["parallel_slots"] = v
                 changes.append(f"models.tiers.{name}.parallel_slots")
+                dirty.add(name)
+        # llama.cpp spawn-time knobs — change forces process respawn.
+        for k, caster in (
+            ("n_gpu_layers", int),
+            ("flash_attention", bool),
+            ("cache_type_k", str),
+            ("cache_type_v", str),
+        ):
+            if k in body:
+                t[k] = caster(body[k])
+                changes.append(f"models.tiers.{name}.{k}")
                 dirty.add(name)
         if "params" in body and isinstance(body["params"], dict):
             t.setdefault("params", {})

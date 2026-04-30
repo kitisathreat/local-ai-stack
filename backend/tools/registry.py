@@ -133,7 +133,7 @@ class ToolEntry:
 # Services considered safe to reach from an airgap environment because they
 # are part of the local compose stack. Anything outside this list is treated
 # as external and excluded from the tool schema while airgap mode is on.
-_LOCAL_SERVICES: set[str] = {"ollama", "qdrant", "redis", "llama_cpp"}
+_LOCAL_SERVICES: set[str] = {"qdrant", "redis", "llama_cpp"}
 
 
 def _is_airgap_safe(entry: "ToolEntry") -> bool:

@@ -91,8 +91,8 @@ def test_models_yaml_tier_required_keys(tier):
 def test_models_yaml_tier_backend_is_known(tier):
     data = _load_yaml("config/models.yaml")
     backend = data.get("tiers", {}).get(tier, {}).get("backend")
-    assert backend in {"ollama", "llama_cpp"}, (
-        f"Tier '{tier}' has unknown backend '{backend}'"
+    assert backend == "llama_cpp", (
+        f"Tier '{tier}' must use llama_cpp backend (got '{backend}')"
     )
 
 
@@ -239,7 +239,7 @@ def test_tools_yaml_service_refs_are_valid():
     # Native mode never starts searxng / n8n containers, but the declarations
     # stay in tools.yaml so the tool registry can gate them at runtime. Keep
     # them in the allowlist so the validator doesn't fail.
-    known_services = {None, "qdrant", "ollama", "jupyter", "backend", "n8n", "searxng"}
+    known_services = {None, "qdrant", "jupyter", "backend", "n8n", "searxng"}
     all_tool_entries = {}
     for section_val in data.values():
         if isinstance(section_val, dict):
@@ -255,23 +255,15 @@ def test_tools_yaml_service_refs_are_valid():
             )
 
 
-# ── ollama-models.yaml ────────────────────────────────────────────────────────
+# ── Removed: ollama-models.yaml (deleted in llama.cpp migration) ─────────────
 
-def test_ollama_models_yaml_exists():
-    assert (ROOT / "config" / "ollama-models.yaml").exists()
-
-
-def test_ollama_models_yaml_has_auto_pull():
-    data = _load_yaml("config/ollama-models.yaml")
-    assert "auto_pull" in data, "ollama-models.yaml missing 'auto_pull' section"
-    assert isinstance(data["auto_pull"], list), "'auto_pull' must be a list"
-    assert len(data["auto_pull"]) > 0, "'auto_pull' list is empty"
-
-
-def test_ollama_models_yaml_has_tier_group():
-    data = _load_yaml("config/ollama-models.yaml")
-    groups = data.get("groups", {})
-    assert "tiers" in groups, "ollama-models.yaml must define a 'tiers' group"
+def test_ollama_models_yaml_removed():
+    """The Ollama catalog file should have been removed in the llama.cpp
+    migration. Models are now described in config/model-sources.yaml using
+    HuggingFace repos exclusively."""
+    assert not (ROOT / "config" / "ollama-models.yaml").exists(), (
+        "config/ollama-models.yaml should be deleted — Ollama is no longer used"
+    )
 
 
 # ── Native mode (no docker-compose, no searxng container) ────────────────────

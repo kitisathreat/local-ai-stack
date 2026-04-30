@@ -5,7 +5,7 @@ Every check function is exercised with happy-path and failure-path inputs.
 No running services required — HTTP calls are monkeypatched.
 
 Live-service tests are skipped unless the corresponding env var is set:
-    LIVE_OLLAMA_URL, LIVE_QDRANT_URL, LIVE_REDIS_URL
+    LIVE_QDRANT_URL, LIVE_REDIS_URL
 
 Run:
     pytest tests/test_diagnostics.py -v
@@ -40,8 +40,7 @@ from backend.diagnostics import (
     check_gpu_available,
     check_history_encryption_roundtrip,
     check_jwt_roundtrip,
-    check_llamacpp_reachable,
-    check_ollama_reachable,
+    check_pinned_llamacpp_tiers,
     check_qdrant_reachable,
     check_redis_reachable,
     check_web_search_provider,
@@ -452,29 +451,33 @@ class TestServiceConnectivityMocked:
 
         monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
 
-    # Ollama
-    def test_ollama_ok(self, monkeypatch):
-        self._patch_get(monkeypatch, 200, '{"models":[]}')
-        assert run(check_ollama_reachable("http://localhost:11434")).severity == Severity.OK
+    # llama.cpp pinned tiers (vision, embedding)
+    def _fake_cfg(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(models=SimpleNamespace(tiers={
+            "embedding": SimpleNamespace(
+                pinned=True,
+                resolved_endpoint=lambda: "http://localhost:8090/v1",
+            ),
+            "fast": SimpleNamespace(
+                pinned=False,
+                resolved_endpoint=lambda: "http://localhost:8012/v1",
+            ),
+        }))
 
-    def test_ollama_unreachable_is_warn(self, monkeypatch):
-        import httpx
-        self._patch_get_raise(monkeypatch, httpx.ConnectError("refused"))
-        assert run(check_ollama_reachable("http://localhost:11434")).severity == Severity.WARN
-
-    def test_ollama_500_is_warn(self, monkeypatch):
-        self._patch_get(monkeypatch, 500)
-        assert run(check_ollama_reachable("http://localhost:11434")).severity == Severity.WARN
-
-    # llama.cpp
-    def test_llamacpp_ok(self, monkeypatch):
+    def test_pinned_llamacpp_ok(self, monkeypatch):
         self._patch_get(monkeypatch, 200, '{"data":[]}')
-        assert run(check_llamacpp_reachable("http://localhost:8001/v1")).severity == Severity.OK
+        results = run(check_pinned_llamacpp_tiers(self._fake_cfg()))
+        # Only the pinned tier is checked
+        assert len(results) == 1
+        assert results[0].severity == Severity.OK
 
-    def test_llamacpp_unreachable_is_warn(self, monkeypatch):
+    def test_pinned_llamacpp_unreachable_is_warn(self, monkeypatch):
         import httpx
         self._patch_get_raise(monkeypatch, httpx.ConnectError("refused"))
-        assert run(check_llamacpp_reachable("http://localhost:8001/v1")).severity == Severity.WARN
+        results = run(check_pinned_llamacpp_tiers(self._fake_cfg()))
+        assert len(results) == 1
+        assert results[0].severity == Severity.WARN
 
     # Qdrant
     def test_qdrant_ok(self, monkeypatch):
@@ -590,12 +593,6 @@ class TestRunStartupDiagnostics:
 
 
 # ── Live service tests (skipped in CI unless env vars set) ────────────────────
-
-@pytest.mark.skipif(not os.getenv("LIVE_OLLAMA_URL"), reason="set LIVE_OLLAMA_URL to run")
-def test_live_ollama():
-    r = run(check_ollama_reachable(os.environ["LIVE_OLLAMA_URL"]))
-    assert r.severity == Severity.OK, r.message
-
 
 @pytest.mark.skipif(not os.getenv("LIVE_QDRANT_URL"), reason="set LIVE_QDRANT_URL to run")
 def test_live_qdrant():

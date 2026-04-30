@@ -57,8 +57,8 @@ def make_scheduler(cfg: AppConfig, probe: FakeProbe) -> VRAMScheduler:
 
     sched = VRAMScheduler(
         config=cfg,
-        loaders={"ollama": loader, "llama_cpp": loader},
-        unloaders={"ollama": unloader, "llama_cpp": unloader},
+        loaders={"llama_cpp": loader},
+        unloaders={"llama_cpp": unloader},
         probe=probe,
     )
     return sched

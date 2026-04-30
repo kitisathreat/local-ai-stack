@@ -15,7 +15,7 @@
       .\LocalAIStack.ps1 -Stop        # terminate all tracked processes
       .\LocalAIStack.ps1 -Build       # ps2exe into LocalAIStack.exe
       .\LocalAIStack.ps1 -InitEnv     # write a default .env if missing
-      .\LocalAIStack.ps1 -CheckUpdates# re-poll HF + Ollama registry
+      .\LocalAIStack.ps1 -CheckUpdates# re-poll HuggingFace for model updates
       .\LocalAIStack.ps1 -Help        # full operator guide (run for deep docs)
       .\LocalAIStack.ps1 -Start -NoUpdateCheck  # skip polling, use pinned
 #>
@@ -121,8 +121,6 @@ HF_TOKEN=                         # optional, for gated/private HF repos
 OFFLINE=                          # 1 = never poll upstream registries
 
 # ── Service URLs (leave blank to use native localhost defaults) ────────
-OLLAMA_URL=
-LLAMACPP_URL=
 QDRANT_URL=
 JUPYTER_URL=
 
@@ -163,8 +161,6 @@ function Apply-Env($dict) {
     $Env:LAI_HISTORY_DIR = Join-Path $DataDir 'history'
     $Env:LAI_AIRGAP_STATE= Join-Path $DataDir 'airgap.state'
     $Env:LAI_TOOLS_DIR   = Join-Path $RepoRoot 'tools'
-    if (-not $Env:OLLAMA_URL)   { $Env:OLLAMA_URL   = 'http://127.0.0.1:11434' }
-    if (-not $Env:LLAMACPP_URL) { $Env:LLAMACPP_URL = 'http://127.0.0.1:8001/v1' }
     if (-not $Env:QDRANT_URL)   { $Env:QDRANT_URL   = 'http://127.0.0.1:6333' }
     if (-not $Env:JUPYTER_URL)  { $Env:JUPYTER_URL  = 'http://127.0.0.1:8888' }
 }
@@ -180,7 +176,8 @@ First run
   1. .\LocalAIStack.ps1 -InitEnv        Write a default .env at the repo root.
   2. Edit .env: set AUTH_SECRET_KEY, HISTORY_SECRET_KEY, optionally BRAVE_API_KEY / HF_TOKEN.
   3. .\LocalAIStack.ps1 -Setup          Install prereqs, download binaries,
-                                        create Python venvs, pull Ollama models.
+                                        create Python venvs, pull GGUFs from
+                                        Hugging Face.
   4. .\LocalAIStack.ps1 -Start          Launch. A native Qt window opens; no browser.
 
 What -Setup installs
@@ -189,7 +186,6 @@ What -Setup installs
     Git.Git                      (for self-updates)
     Python.Python.3.12           (backend + GUI + Jupyter venvs)
     Microsoft.PowerShell         (PS 7 — recommended)
-    Ollama.Ollama                (local model serving)
     Cloudflare.cloudflared       (HTTPS tunnel for chat.<your-domain>)
 
   Detected (never auto-installed):
@@ -210,7 +206,7 @@ Daily use
   .\LocalAIStack.ps1                    = -Start
   .\LocalAIStack.ps1 -Admin             Open the admin Qt window (login prompt).
   .\LocalAIStack.ps1 -Start -NoUpdateCheck
-                                        Skip HF / Ollama-registry polling.
+                                        Skip HF polling.
   .\LocalAIStack.ps1 -CheckUpdates      Re-poll, list pending updates.
   .\LocalAIStack.ps1 -Stop              Terminate all tracked child processes.
   .\LocalAIStack.ps1 -Build             Compile this script to LocalAIStack.exe.
@@ -236,19 +232,22 @@ Logs
 
 Services started by -Start
 --------------------------
-  ollama              127.0.0.1:11434
   qdrant              127.0.0.1:6333
   llama-server        127.0.0.1:8001    (vision tier GGUF)
+  llama-server        127.0.0.1:8090    (embedding tier — nomic-embed-text)
   jupyter-lab         127.0.0.1:8888    (code-interpreter sandbox; never opens a browser)
   backend (FastAPI)   127.0.0.1:18000   (uvicorn, single worker)
   gui (PySide6)       no listening port — talks to the backend over httpx
 
+  The 4 chat tiers (highest_quality, versatile, fast, coding) cold-spawn
+  on first request via the backend's VRAMScheduler — no pre-spawn at boot.
+
 Model version resolution
 ------------------------
 On -Start the script runs `python -m backend.model_resolver resolve`, which
-polls Hugging Face and the Ollama registry for each tier declared in
-config\model-sources.yaml. On any network failure or when OFFLINE=1 is set
-in .env, the resolver falls back to the pinned version recorded in that file.
+polls Hugging Face for each tier declared in config\model-sources.yaml. On
+any network failure or when OFFLINE=1 is set in .env, the resolver falls
+back to the pinned version recorded in that file.
 
 Set MODEL_UPDATE_POLICY in .env to control behaviour when an update is
 detected:
@@ -293,8 +292,9 @@ Disk and memory
   vendor\venv-jupyter   ~400 MB
   vendor\qdrant         ~40 MB
   vendor\llama-server   ~220 MB  (CUDA build)
-  Ollama models         24 - 72 GB depending on tier group
+  GGUF models           24 - 72 GB depending on tier group
   Vision GGUF           ~25 GB  (optional; download offered during -Setup)
+  Embedding GGUF        ~150 MB (nomic-embed-text-v1.5.Q8_0)
 
 Windows Developer Mode
 ----------------------
@@ -343,7 +343,7 @@ function Invoke-Setup {
     if ($SkipModels) {
         Write-Step 'Resolving tiers + dry-run pull (no downloads)'
         if (Test-Path $py) {
-            & $py -m backend.model_resolver resolve --force --pull --pull-hf --dry-run --offline
+            & $py -m backend.model_resolver resolve --force --pull --dry-run --offline
             if ($LASTEXITCODE -ne 0) {
                 throw "model_resolver dry-run exited with code $LASTEXITCODE"
             }
@@ -352,18 +352,20 @@ function Invoke-Setup {
         }
         Write-Warn2 'Skipping actual model pulls and admin seed (-SkipModels).'
     } else {
-        Write-Step 'Pulling Ollama model tiers'
+        Write-Step 'Pulling GGUF model tiers from Hugging Face'
         if (Test-Path $py) {
+            # Pulls the small tiers (fast + embedding) by default; the
+            # vision GGUF (~25 GB) is gated behind a confirmation below
+            # because it's the biggest single file.
             & $py -m backend.model_resolver resolve --force --pull
 
-            # Optional HF pull: vision GGUF is ~25 GB so we confirm first.
             $visionFile = Join-Path $DataDir 'models\vision.gguf'
             if (-not (Test-Path $visionFile)) {
                 Write-Host ''
                 Write-Host 'Vision tier GGUF (~25 GB) is not on disk.' -ForegroundColor Cyan
                 $answer = Read-Host 'Download now from Hugging Face? [y/N]'
                 if ($answer -match '^(y|yes)$') {
-                    & $py -m backend.model_resolver resolve --force --pull-hf
+                    & $py -m backend.model_resolver resolve --force --pull
                 } else {
                     Write-Warn2 'Vision tier skipped — run `-CheckUpdates` or admin panel later.'
                 }
@@ -398,7 +400,7 @@ function Invoke-Start {
         Write-Warn2 'Skipping upstream model poll (offline or -NoUpdateCheck).'
         $Env:OFFLINE = '1'
     } else {
-        Write-Step 'Resolving model versions (HF + Ollama registry)'
+        Write-Step 'Resolving model versions (HuggingFace)'
         $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
         if (Test-Path $py) {
             & $py -m backend.model_resolver resolve
@@ -414,14 +416,6 @@ function Invoke-Start {
         throw "scripts\steps\process.ps1 missing — re-clone or run -Setup."
     }
 
-    Write-Step 'Starting ollama serve'
-    $Env:OLLAMA_HOST = '127.0.0.1:11434'
-    if (Get-Command ollama -ErrorAction SilentlyContinue) {
-        $pids['ollama'] = Record-PidEntry (Start-TrackedProcess -Name 'ollama' -FilePath 'ollama' -Args @('serve') -LogDir $LogsDir)
-    } else {
-        Write-Warn2 "ollama binary not found on PATH — Ollama-backed tiers will be unavailable this run"
-    }
-
     Write-Step 'Starting qdrant'
     $qdrantBin = Join-Path $VendorDir 'qdrant\qdrant.exe'
     if (Test-Path $qdrantBin) {
@@ -434,14 +428,35 @@ function Invoke-Start {
         Write-Warn2 "Qdrant binary missing at $qdrantBin — RAG features disabled"
     }
 
-    Write-Step 'Starting llama-server (vision tier)'
+    # Vision + embedding tiers are pinned and pre-spawned. The four chat
+    # tiers (highest_quality, versatile, fast, coding) are subprocess-managed
+    # by the backend's VRAMScheduler — they cold-spawn on first request.
     $llamaBin = Join-Path $VendorDir 'llama-server\llama-server.exe'
+
+    Write-Step 'Starting llama-server (vision tier, port 8001)'
     $visionGguf = Join-Path $DataDir 'models\vision.gguf'
+    $visionMmproj = Join-Path $DataDir 'models\vision.mmproj.gguf'
     if ((Test-Path $llamaBin) -and (Test-Path $visionGguf)) {
+        $visionArgs = @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf,
+                        '--ctx-size', '16384', '--parallel', '2', '-ngl', '-1', '-fa',
+                        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0', '--jinja')
+        if (Test-Path $visionMmproj) { $visionArgs += @('--mmproj', $visionMmproj) }
         $pids['llama-server'] = Record-PidEntry (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
-            -Args @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf) -LogDir $LogsDir)
+            -Args $visionArgs -LogDir $LogsDir)
     } else {
         Write-Warn2 "llama-server or vision GGUF missing — vision tier disabled"
+    }
+
+    Write-Step 'Starting llama-server (embedding tier, port 8090)'
+    $embedGguf = Join-Path $DataDir 'models\embedding.gguf'
+    if ((Test-Path $llamaBin) -and (Test-Path $embedGguf)) {
+        $embedArgs = @('--host', '127.0.0.1', '--port', '8090', '-m', $embedGguf,
+                       '--ctx-size', '8192', '--parallel', '4', '-ngl', '-1',
+                       '--embedding', '--pooling', 'mean')
+        $pids['embedding'] = Record-PidEntry (Start-TrackedProcess -Name 'embedding' -FilePath $llamaBin `
+            -Args $embedArgs -LogDir $LogsDir)
+    } else {
+        Write-Warn2 "llama-server or embedding GGUF missing — RAG and memory distillation disabled"
     }
 
     Write-Step 'Starting jupyter-lab (code interpreter)'
@@ -466,7 +481,6 @@ function Invoke-Start {
 
     if (Get-Command Wait-HealthOk -ErrorAction SilentlyContinue) {
         Wait-HealthOk -Urls @(
-            'http://127.0.0.1:11434/api/version',
             'http://127.0.0.1:6333/healthz',
             'http://127.0.0.1:18000/healthz'
         ) -TimeoutSeconds 120

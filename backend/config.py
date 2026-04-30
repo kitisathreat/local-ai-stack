@@ -27,14 +27,23 @@ CONFIG_DIR = Path(
 )
 
 
+class RopeScaling(BaseModel):
+    """YaRN-style rope scaling, mapped to llama-server flags
+    --rope-scaling/--rope-scale/--yarn-orig-ctx."""
+
+    type: str = "yarn"
+    factor: float = 1.0
+    orig_ctx: int | None = None
+
+
 class TierConfig(BaseModel):
     """One entry from config/models.yaml `tiers:`."""
 
     name: str
     description: str = ""
-    backend: str                          # "ollama" | "llama_cpp"
-    endpoint: str
-    model_tag: str
+    backend: str = "llama_cpp"            # "llama_cpp" — only llama.cpp is supported
+    endpoint: str | None = None           # derived from `port` when omitted
+    model_tag: str = ""
     fallback_tag: str | None = None
     context_window: int
     think_default: bool = False
@@ -49,10 +58,41 @@ class TierConfig(BaseModel):
     chat_template_kwargs: dict[str, Any] = Field(default_factory=dict)
     reasoning_format: str | None = None
     # How many concurrent requests can share this loaded model. Drives
-    # Ollama's num_parallel and the scheduler's slot cap. The effective
-    # per-request KV budget is context_window (passed as num_ctx) and the
-    # model's total KV allocation is roughly parallel_slots * num_ctx.
+    # llama-server's --parallel and the scheduler's slot cap. The effective
+    # per-request KV budget is context_window (passed as --ctx-size) and the
+    # model's total KV allocation is roughly parallel_slots * context_window.
     parallel_slots: int = 1
+
+    # llama.cpp process configuration. Each tier runs its own llama-server
+    # subprocess on a dedicated port; the backend's VRAMScheduler manages the
+    # lifecycle for non-pinned tiers (vision + embedding are pre-spawned by
+    # the launcher and pinned).
+    role: str = "chat"                    # "chat" | "embedding"
+    gguf_path: str | None = None          # filled in from data/resolved-models.json
+    port: int | None = None               # required at runtime
+    n_gpu_layers: int = -1                # -1 = offload all
+    flash_attention: bool = True
+    cache_type_k: str = "q8_0"            # k/v KV cache quantization
+    cache_type_v: str = "q8_0"
+    rope_scaling: RopeScaling | None = None
+    extra_args: list[str] = Field(default_factory=list)
+    use_mmap: bool = True
+    use_mlock: bool = False
+    spawn_timeout_sec: int = 180
+
+    def resolved_endpoint(self) -> str:
+        """Return the OpenAI-compatible base URL for this tier.
+
+        Prefers the explicit `endpoint` if set, otherwise composes one from
+        `port`. Endpoints always include the /v1 suffix expected by the
+        LlamaCppClient HTTP layer.
+        """
+        if self.endpoint:
+            base = self.endpoint.rstrip("/")
+            return base if base.endswith("/v1") else f"{base}/v1"
+        if self.port is None:
+            raise ValueError(f"tier {self.name!r} has no port or endpoint")
+        return f"http://127.0.0.1:{self.port}/v1"
 
 
 class ModelsConfig(BaseModel):
@@ -118,11 +158,6 @@ class EvictionPolicy(BaseModel):
     pin_vision: bool = True
 
 
-class OllamaKeepAlive(BaseModel):
-    keep_alive_default: str = "30m"
-    keep_alive_pinned: int = -1
-
-
 class VRAMMultiAgent(BaseModel):
     release_orchestrator_during_workers: bool = True
     synthesis_reload_timeout_sec: int = 60
@@ -182,7 +217,6 @@ class VRAMConfig(BaseModel):
     headroom_gb: float = 1.5
     poll_interval_sec: int = 5
     eviction: EvictionPolicy = Field(default_factory=EvictionPolicy)
-    ollama: OllamaKeepAlive = Field(default_factory=OllamaKeepAlive)
     multi_agent: VRAMMultiAgent = Field(default_factory=VRAMMultiAgent)
     observed_costs: ObservedCosts = Field(default_factory=ObservedCosts)
     queue: QueueConfig = Field(default_factory=QueueConfig)
@@ -236,8 +270,10 @@ class AppConfig(BaseModel):
     @classmethod
     def load(cls, config_dir: Path | None = None) -> "AppConfig":
         d = config_dir or CONFIG_DIR
+        models_cfg = ModelsConfig(**_read_yaml(d / "models.yaml"))
+        _apply_resolved_models(models_cfg)
         kwargs = dict(
-            models=ModelsConfig(**_read_yaml(d / "models.yaml")),
+            models=models_cfg,
             router=RouterConfig(**_read_yaml(d / "router.yaml")),
             vram=VRAMConfig(**_read_yaml(d / "vram.yaml")),
         )
@@ -313,6 +349,37 @@ def _read_yaml(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _apply_resolved_models(models_cfg: "ModelsConfig") -> None:
+    """Overlay per-tier `gguf_path` from data/resolved-models.json.
+
+    The model_resolver writes this file at -Setup time; it carries the actual
+    on-disk paths for downloaded GGUFs. When present, it overrides the static
+    defaults in models.yaml so the launcher can rename/relocate files without
+    editing configs.
+    """
+    import json
+
+    data_dir = Path(os.getenv("LAI_DATA_DIR") or (Path(__file__).parent.parent / "data"))
+    manifest = data_dir / "resolved-models.json"
+    if not manifest.exists():
+        return
+    try:
+        doc = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    tiers = (doc or {}).get("tiers") or {}
+    for tier_name, info in tiers.items():
+        tier = models_cfg.tiers.get(tier_name)
+        if not tier:
+            continue
+        gguf = (info or {}).get("gguf_path")
+        if gguf:
+            tier.gguf_path = gguf
+        mmproj = (info or {}).get("mmproj_path")
+        if mmproj:
+            tier.mmproj_path = mmproj
 
 
 @lru_cache(maxsize=1)

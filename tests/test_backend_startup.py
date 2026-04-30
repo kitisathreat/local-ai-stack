@@ -2,12 +2,13 @@
 Backend startup tests — CI area B.
 
 Tests that the backend imports cleanly, that /healthz degrades gracefully
-when external services (Ollama, Qdrant) are absent, and that the model
-resolver produces pinned fallbacks when offline.
+when external services (llama-server, Qdrant) are absent, and that the
+model resolver produces pinned fallbacks when offline.
 
-All tests run on Linux CI and the Windows integration job. GPU, Ollama, and
-Qdrant are NOT required — we only verify that missing services produce
-structured "degraded" or error responses rather than unhandled exceptions.
+All tests run on Linux CI and the Windows integration job. GPU and the
+embedding/vision llama-server processes are NOT required — we only verify
+that missing services produce structured "degraded" or error responses
+rather than unhandled exceptions.
 """
 
 import asyncio
@@ -129,9 +130,8 @@ def test_model_resolver_offline_returns_pinned_fallbacks():
         f"Expected at least 4 tiers, got {len(resolved)}: {list(resolved)}"
     )
     for tier, info in resolved.items():
-        assert info.identifier, (
-            f"Tier '{tier}' has no identifier: {info}"
-        )
+        assert info.repo, f"Tier '{tier}' has no HF repo: {info}"
+        assert info.filename, f"Tier '{tier}' has no GGUF filename: {info}"
 
 
 @pytest.mark.skipif(not _model_resolver_available(), reason="model_resolver not available")

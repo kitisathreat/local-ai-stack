@@ -25,7 +25,7 @@ log locations, model update policy, uninstall — live in:
 - `backend/` — FastAPI API server (localhost:18000).
 - `gui/` — PySide6 native desktop app (chat + admin + QtCharts metrics).
 - `config/` — tier and tool YAML (`model-sources.yaml` drives the
-  Hugging Face / Ollama registry resolver on every start).
+  Hugging Face GGUF resolver on every start).
 - `scripts/steps/` — helpers dot-sourced by `LocalAIStack.ps1`.
 - `vendor/` — created by `-Setup`: pinned Qdrant + llama-server binaries
   and three Python venvs (backend, gui, jupyter).
@@ -40,30 +40,35 @@ stack. Services that used to run in containers now run as tracked subprocesses:
 | Service | Port | How it runs |
 |---|---|---|
 | `backend` | 18000 | FastAPI via uvicorn (venv-backend) |
-| `ollama` | 11434 | Native Windows install via winget |
-| `llama-server` | 8001 | Vendored binary (`vendor/llama-server/`) |
+| `llama-server` (vision) | 8001 | Vendored binary, pre-spawned at boot |
+| `llama-server` (embedding) | 8090 | Vendored binary, pre-spawned at boot, `--embedding` |
+| `llama-server` (chat tiers) | 8010-8013 | Vendored binary, cold-spawned by VRAMScheduler on first request |
 | `qdrant` | 6333 | Vendored binary (`vendor/qdrant/`) |
 | `jupyter` | 8888 | venv-jupyter subprocess |
 | `cloudflared` | — | Windows service (installed by wizard) |
 
 ## Tiers
 
-All five tiers are defined in [`config/models.yaml`](config/models.yaml).
+All six tiers are defined in [`config/models.yaml`](config/models.yaml). Every
+tier is served by its own `llama-server` subprocess with KV-cache quantization
+(`--cache-type-k q8_0 --cache-type-v q8_0`) and flash attention enabled, so
+context windows are pushed to each model's native max.
 
-| Tier | Model | Backend | VRAM | Role |
-|---|---|---|---|---|
-| `highest_quality` | Qwen3 72B | Ollama | ~24 GB | Hardest reasoning |
-| `versatile` | Qwen3.6 35B-A3B (MoE) | Ollama | ~21 GB | Default + orchestrator |
-| `fast` | Qwen3.5 9B | Ollama | ~7 GB | Multi-agent workers |
-| `coding` | Qwen3-Coder-Next 80B-A3B | Ollama | ~24 GB | SWE-bench trained |
-| `vision` | Qwen3.6 35B + mmproj | llama.cpp | ~21 GB | Images / charts |
+| Tier | Model | Port | `--ctx-size` | VRAM | Role |
+|---|---|---|---|---|---|
+| `highest_quality` | Qwen3 72B | 8010 | 32 768 | ~24 GB | Hardest reasoning |
+| `versatile` | Qwen3.6 35B-A3B (MoE) | 8011 | 65 536 (YaRN ×2) | ~21 GB | Default + orchestrator |
+| `fast` | Qwen3.5 9B | 8012 | 65 536 | ~7 GB | Multi-agent workers |
+| `coding` | Qwen3-Coder-Next 80B-A3B | 8013 | 131 072 (YaRN ×4) | ~24 GB | SWE-bench trained |
+| `vision` | Qwen3.6 35B + mmproj | 8001 | 16 384 | ~21 GB | Images / charts |
+| `embedding` | nomic-embed-text-v1.5 | 8090 | 8 192 | ~1 GB | RAG + memory distillation |
 
 ## Configuration
 
 All runtime config lives in [`config/`](config/):
 
 - [`models.yaml`](config/models.yaml) — tier definitions + aliases
-- [`model-sources.yaml`](config/model-sources.yaml) — HuggingFace / Ollama registry resolver
+- [`model-sources.yaml`](config/model-sources.yaml) — HuggingFace GGUF resolver
 - [`router.yaml`](config/router.yaml) — auto-thinking / multi-agent / specialist rules
 - [`vram.yaml`](config/vram.yaml) — scheduler policy (headroom, eviction, pinning)
 - [`auth.yaml`](config/auth.yaml) — magic-link TTL, allowed domains, rate limits
@@ -93,7 +98,7 @@ GET    /chats/{id}                  → Conversation history
 ## Development
 
 ```powershell
-# Start backend in reload mode (requires Ollama + Qdrant running)
+# Start backend in reload mode (requires Qdrant + the embedding llama-server)
 .\LocalAIStack.ps1 -Start -NoGui
 
 # Run tests (Linux CI — no GPU required)
@@ -115,7 +120,7 @@ backend/              FastAPI app
   rag.py              Per-user Qdrant retrieval
   memory.py           Distillation + injection
   auth.py             Magic-link + password auth + JWT cookies
-  model_resolver.py   HF / Ollama registry resolver
+  model_resolver.py   HuggingFace GGUF resolver
 gui/                  PySide6 native desktop app
   windows/            chat.py, admin.py, login.py, diagnostics.py, setup_wizard.py
   widgets/            tray.py, markdown_view.py

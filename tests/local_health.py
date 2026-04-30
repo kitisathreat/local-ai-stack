@@ -54,7 +54,6 @@ _FIX_ACTIONS: dict[str, list[str]] = {
     "A:qdrant_binary": [],          # no safe auto-fix
     "B:backend_healthz": [],        # handled by service restart below
     "C:cloudflared_service_running": ["sc", "start", "cloudflared"],
-    "D:ollama_running": ["ollama", "serve"],
 }
 
 

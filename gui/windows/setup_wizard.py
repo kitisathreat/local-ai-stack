@@ -157,8 +157,14 @@ class _WelcomePage(QWizardPage):
 
         all_ok = True
         all_ok &= check("Python 3.12+", ["python", "--version"])
-        all_ok &= check("Ollama", ["ollama", "--version"])
         all_ok &= check("cloudflared", ["cloudflared", "--version"])
+        # llama-server is vendored; check the binary directly rather than PATH.
+        llama_bin = _REPO / "vendor" / "llama-server"
+        if (llama_bin / "llama-server.exe").exists() or (llama_bin / "llama-server").exists():
+            self._status_box.appendPlainText("  [✓] llama-server (vendored)")
+        else:
+            self._status_box.appendPlainText("  [✗] llama-server (vendored)")
+            all_ok = False
         try:
             r = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=10)
             all_ok &= r.returncode == 0

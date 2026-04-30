@@ -1,5 +1,5 @@
 """Unit tests for backend/model_residency.py — the partial-load planner
-that chooses num_gpu / mmap / mlock per tier based on free VRAM + the
+that chooses n_gpu_layers / mmap / mlock per tier based on free VRAM + the
 live request's complexity signal."""
 
 import sys
@@ -19,12 +19,13 @@ from backend.model_residency import (
 )
 
 
-def _tier(name="fast", vram=7.0, tag="qwen3.5:9b", pinned=False) -> TierConfig:
+def _tier(name="fast", vram=7.0, tag="qwen3.5-9b", pinned=False) -> TierConfig:
     return TierConfig(
         name=name,
         description="t",
-        backend="ollama",
-        endpoint="http://ollama:11434",
+        backend="llama_cpp",
+        port=18012,
+        gguf_path=f"data/models/{name}.gguf",
         model_tag=tag,
         context_window=4096,
         vram_estimate_gb=vram,
@@ -134,9 +135,9 @@ def test_policy_min_ratio_enforced():
 
 def test_merge_into_options_caller_wins():
     plan = plan_residency(_tier(), free_vram_gb=22.0, live_user_text="analyze")
-    out = merge_into_options({"num_gpu": 99}, plan)
+    out = merge_into_options({"n_gpu_layers": 99}, plan)
     # Caller-provided value overrides the planner's suggestion
-    assert out["num_gpu"] == 99
+    assert out["n_gpu_layers"] == 99
     # Flags the caller didn't set come from the plan
     assert "use_mmap" in out
     assert "use_mlock" in out
@@ -145,5 +146,5 @@ def test_merge_into_options_caller_wins():
 def test_merge_into_options_empty_caller():
     plan = plan_residency(_tier(), free_vram_gb=22.0, live_user_text="analyze")
     out = merge_into_options({}, plan)
-    assert out["num_gpu"] == plan.num_gpu_layers
+    assert out["n_gpu_layers"] == plan.num_gpu_layers
     assert out["use_mmap"] == plan.use_mmap
