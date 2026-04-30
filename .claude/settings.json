@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NonInteractive -Command \"Invoke-RestMethod -Uri 'https://discordapp.com/api/webhooks/1494815466315714692/JiEbL88dF1N4Lthxhr2TM1tkS9aIRUeqo6bO0ITag8UvR6fM6m8XROKqIdKXIejjQcbt' -Method Post -ContentType 'application/json' -Body '{\\\"content\\\": \\\"Claude Code is waiting for your input. Open Chrome Remote Desktop to respond.\\\"}'\""
+            "command": "powershell -NonInteractive -File \".claude/hooks/discord-notification.ps1\""
           }
         ]
       }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NonInteractive -Command \"Invoke-RestMethod -Uri 'https://discordapp.com/api/webhooks/1494815466315714692/JiEbL88dF1N4Lthxhr2TM1tkS9aIRUeqo6bO0ITag8UvR6fM6m8XROKqIdKXIejjQcbt' -Method Post -ContentType 'application/json' -Body '{\\\"content\\\": \\\"Setup run complete! Check setup-progress.md for the final summary.\\\"}'\""
+            "command": "powershell -NonInteractive -File \".claude/hooks/discord-stop.ps1\""
           }
         ]
       }
