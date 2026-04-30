@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, master]
   push:
-    branches: [main, master, claude-code-integration, non-docker-dependent]
+    branches: [main, master, claude-code-integration]
 
 permissions:
   contents: read
@@ -51,7 +51,6 @@ jobs:
             tests/test_tools_registry.py \
             tests/test_rag.py \
             tests/test_memory.py \
-            tests/test_docker_setup.py \
             tests/test_diagnostics.py \
             tests/test_main.py \
             tests/test_admin_endpoints.py \
@@ -95,7 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check PS1 script syntax (native + legacy paths)
+      - name: Check PS1 script syntax (native layout)
         shell: pwsh
         run: |
           $failed = 0
@@ -103,8 +102,6 @@ jobs:
             "LocalAIStack.ps1",
             "scripts/*.ps1",
             "scripts/steps/*.ps1",
-            "launcher/*.ps1",
-            "launcher/steps/*.ps1",
             "tests/*.ps1"
           )
           $files = $patterns | ForEach-Object {
@@ -137,99 +134,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect layout and verify structure
+      - name: Verify native launcher structure
         shell: pwsh
         run: |
-          $isNativeLayout = Test-Path "LocalAIStack.ps1"
-
-          if ($isNativeLayout) {
-            Write-Host "Detected: native layout" -ForegroundColor Cyan
-            $expected = @(
-              "LocalAIStack.ps1",
-              "scripts/steps/prereqs.ps1",
-              "scripts/steps/download.ps1",
-              "scripts/steps/process.ps1",
-              "scripts/steps/venvs.ps1"
-            )
-            $missing = @()
-            foreach ($p in $expected) {
-              if (-not (Test-Path $p)) { $missing += $p }
-            }
-            if ($missing.Count -gt 0) {
-              Write-Host "FAIL: missing native layout files:" -ForegroundColor Red
-              $missing | ForEach-Object { Write-Host "  $_" }
-              exit 1
-            }
-            Write-Host "All expected native layout files present."
-
-            # Native step scripts must use Write-Step / Write-Ok helpers
-            $stepFiles = Get-ChildItem "scripts/steps/*.ps1" -ErrorAction SilentlyContinue
-            $failed = 0
-            foreach ($f in $stepFiles) {
-              $content = Get-Content $f.FullName -Raw
-              if ($content -notmatch 'Write-Step|Write-Ok|Write-Warn2|Write-Err') {
-                Write-Host "WARN: $($f.Name) has no Write-Step/Write-Ok calls" -ForegroundColor Yellow
-              } else {
-                Write-Host "PASS: $($f.Name)" -ForegroundColor Green
-              }
-            }
-            if ($failed -gt 0) { exit 1 }
-
-          } else {
-            Write-Host "Detected: Docker layout (legacy)" -ForegroundColor Cyan
-            $expected = @(
-              "launcher/LocalAIStack.ps1",
-              "launcher/build.ps1",
-              "launcher/steps/_common.ps1",
-              "launcher/steps/ensure-docker.ps1",
-              "launcher/steps/ensure-tunnel.ps1",
-              "launcher/steps/compose-up.ps1",
-              "launcher/steps/wait-ready.ps1"
-            )
-            $missing = @()
-            foreach ($p in $expected) {
-              if (-not (Test-Path $p)) { $missing += $p }
-            }
-            if ($missing.Count -gt 0) {
-              Write-Host "FAIL: missing launcher files:" -ForegroundColor Red
-              $missing | ForEach-Object { Write-Host "  $_" }
-              exit 1
-            }
-            Write-Host "All expected Docker layout files present."
-
-            $stepFiles = Get-ChildItem "launcher/steps/ensure-*.ps1","launcher/steps/compose-up.ps1","launcher/steps/wait-ready.ps1"
-            $failed = 0
-            foreach ($f in $stepFiles) {
-              $content = Get-Content $f.FullName -Raw
-              if ($content -notmatch '_common\.ps1') {
-                Write-Host "FAIL: $($f.Name) does not source _common.ps1" -ForegroundColor Red
-                $failed++
-              }
-              if ($content -notmatch 'Emit-Result') {
-                Write-Host "FAIL: $($f.Name) does not call Emit-Result" -ForegroundColor Red
-                $failed++
-              }
-            }
-            if ($failed -gt 0) { exit 1 }
-            Write-Host "All step scripts conform to the launcher contract."
+          $expected = @(
+            "LocalAIStack.ps1",
+            "scripts/steps/prereqs.ps1",
+            "scripts/steps/download.ps1",
+            "scripts/steps/process.ps1",
+            "scripts/steps/venvs.ps1"
+          )
+          $missing = @()
+          foreach ($p in $expected) {
+            if (-not (Test-Path $p)) { $missing += $p }
           }
-
-      - name: Verify Emit-Result (Docker layout only)
-        if: ${{ hashFiles('launcher/steps/_common.ps1') != '' }}
-        shell: pwsh
-        run: |
-          . ./launcher/steps/_common.ps1
-          $output = Emit-Result -Ok $true -Message "ci smoke test"
-          try {
-            $parsed = $output | ConvertFrom-Json
-            if ($parsed.ok -ne $true -or $parsed.message -ne "ci smoke test") {
-              Write-Host "FAIL: parsed JSON does not round-trip: $output" -ForegroundColor Red
-              exit 1
-            }
-            Write-Host "OK: Emit-Result produces valid JSON → $output"
-          } catch {
-            Write-Host "FAIL: Emit-Result output is not valid JSON: $output" -ForegroundColor Red
+          if ($missing.Count -gt 0) {
+            Write-Host "FAIL: missing native layout files:" -ForegroundColor Red
+            $missing | ForEach-Object { Write-Host "  $_" }
             exit 1
+          }
+          Write-Host "All expected native layout files present."
+
+          $stepFiles = Get-ChildItem "scripts/steps/*.ps1" -ErrorAction SilentlyContinue
+          foreach ($f in $stepFiles) {
+            $content = Get-Content $f.FullName -Raw
+            if ($content -notmatch 'Write-Step|Write-Ok|Write-Warn2|Write-Err') {
+              Write-Host "WARN: $($f.Name) has no Write-Step/Write-Ok calls" -ForegroundColor Yellow
+            } else {
+              Write-Host "PASS: $($f.Name)" -ForegroundColor Green
+            }
           }
 
   # ── YAML lint: all config files parse cleanly ─────────────────────────────────
@@ -262,12 +195,9 @@ jobs:
             "knowledge/sources.yaml",
           ]
 
-          # Layout-specific files — validated only when present
+          # Optional config files — validated only when present.
           optional_files = [
-            "config/ollama-models.yaml",      # Docker layout
-            "config/searxng/settings.yml",    # Docker layout (removed in native)
-            "config/model-sources.yaml",      # Native layout
-            "docker-compose.yml",             # Docker layout (removed in native)
+            "config/model-sources.yaml",
           ]
 
           failed = []
@@ -371,7 +301,6 @@ jobs:
             "tests/test_tools_registry.py",
             "tests/test_rag.py",
             "tests/test_memory.py",
-            "tests/test_docker_setup.py",
             "tests/test_diagnostics.py",
             "tests/test_main.py",
             "tests/test_admin_endpoints.py",

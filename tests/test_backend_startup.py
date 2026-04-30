@@ -130,9 +130,8 @@ def test_model_resolver_offline_returns_pinned_fallbacks():
         f"Expected at least 4 tiers, got {len(resolved)}: {list(resolved)}"
     )
     for tier, info in resolved.items():
-        assert info.identifier, (
-            f"Tier '{tier}' has no identifier: {info}"
-        )
+        assert info.repo, f"Tier '{tier}' has no HF repo: {info}"
+        assert info.filename, f"Tier '{tier}' has no GGUF filename: {info}"
 
 
 @pytest.mark.skipif(not _model_resolver_available(), reason="model_resolver not available")

@@ -1,6 +1,6 @@
 name: Install + Startup
 
-# End-to-end verification that a fresh clone of the non-docker-dependent
+# End-to-end verification that a fresh clone of the local-ai-stack
 # branch installs, detects model tiers, and boots the backend to a
 # healthy state — without actually downloading the tens of GB of model
 # weights. Pairs with the existing static-check matrix in ci.yml.
@@ -11,9 +11,9 @@ name: Install + Startup
 
 on:
   pull_request:
-    branches: [non-docker-dependent, main, master]
+    branches: [main, master]
   push:
-    branches: [non-docker-dependent]
+    branches: [main, master]
   workflow_dispatch: {}
 
 permissions:
@@ -86,63 +86,6 @@ jobs:
           $global:LASTEXITCODE = 0
           exit 0
 
-      - name: Pre-install Ollama (standalone zip, no installer)
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $log = Join-Path (Get-Location) 'ci-logs/02-ollama-install.log'
-          $buf = [System.Text.StringBuilder]::new()
-          function Log($msg) {
-            Write-Host $msg
-            [void]$buf.AppendLine($msg)
-            # Flush to disk after every line so a partial failure still
-            # leaves something on disk.
-            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
-          }
-
-          Log "step started at $(Get-Date -Format s)"
-          $dest = Join-Path $env:RUNNER_TOOL_CACHE 'ollama'
-          New-Item -ItemType Directory -Path $dest -Force | Out-Null
-          $zip = Join-Path $env:RUNNER_TEMP 'ollama.zip'
-
-          Log "==> Downloading ollama-windows-amd64.zip to $zip"
-          $curlOut = & curl.exe --fail --show-error --location `
-            --output $zip `
-            'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip' 2>&1
-          if ($curlOut) { Log ($curlOut | Out-String) }
-          if ($LASTEXITCODE -gt 0) {
-            Log "curl exit $LASTEXITCODE"
-            throw "curl failed: $LASTEXITCODE"
-          }
-          $size = (Get-Item $zip).Length
-          Log "downloaded $size bytes"
-
-          Log "==> Extracting to $dest (via tar)"
-          $tarOut = & tar.exe -xf $zip -C $dest 2>&1
-          if ($tarOut) { Log ($tarOut | Out-String) }
-          if ($LASTEXITCODE -gt 0) { throw "tar failed: $LASTEXITCODE" }
-          Remove-Item $zip -Force
-
-          $exe = Get-ChildItem -Path $dest -Filter ollama.exe -Recurse | Select-Object -First 1
-          if (-not $exe) {
-            Log 'FAIL: ollama.exe not found in extracted archive'
-            Log 'extracted tree:'
-            Get-ChildItem -Path $dest -Recurse | Select-Object -First 50 | ForEach-Object { Log $_.FullName }
-            throw 'ollama.exe missing'
-          }
-          $bindir = $exe.DirectoryName
-          Add-Content -Path $env:GITHUB_PATH -Value $bindir
-          $env:PATH = "$bindir;$env:PATH"
-          Log "ollama at: $($exe.FullName)"
-          $verOut = & $exe.FullName --version 2>&1
-          if ($verOut) { Log ($verOut | Out-String) }
-          # ollama --version exits non-zero when no server is running
-          # (it also prints a warning about that). We don't care — the
-          # binary is on disk, which is what this step validates.
-          $global:LASTEXITCODE = 0
-          exit 0
-
       - name: Initialize .env with CI secrets
         continue-on-error: true
         shell: pwsh
@@ -179,11 +122,6 @@ jobs:
           }
           $global:LASTEXITCODE = 0
           exit 0
-
-      # Ollama is deliberately NOT pre-installed. The launcher now soft-skips
-      # `ollama serve` when the binary is missing (Ollama-backed tiers are
-      # unavailable for the run, which is fine for a smoke test). This
-      # avoids OllamaSetup.exe hangs that timed the job out at 30 min.
 
       - name: Setup (venvs + vendor binaries + dry-run pull; skip winget prereqs)
         continue-on-error: true
@@ -309,8 +247,8 @@ jobs:
           $launcher = Join-Path (Get-Location) 'LocalAIStack.ps1'
 
           # -Start spawns services and runs its own Wait-HealthOk (120s
-          # internal timeout) before returning. Non-fatal if ollama/qdrant
-          # don't come up — the script only warns.
+          # internal timeout) before returning. Non-fatal if qdrant
+          # doesn't come up — the script only warns.
           Log "==> invoking LocalAIStack.ps1 -Start -NoGui -Offline -NoUpdateCheck"
           try {
             & $launcher -Start -NoGui -Offline -NoUpdateCheck *>&1 | ForEach-Object {

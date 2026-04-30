@@ -7,8 +7,8 @@ When the admin turns airgap ON, the backend must:
   - Route conversation + memory persistence to separate encrypted stores
     so airgap content never mixes with normal content on disk.
   - Keep the local GUI fully functional against the in-process models
-    (Ollama + llama.cpp), which live inside the same compose network
-    and are therefore not "external" by this rule.
+    (per-tier llama-server subprocesses on loopback), which are part of
+    the local stack and therefore not "external" by this rule.
 
 The flag is persisted to $LAI_AIRGAP_STATE (default /app/data/airgap.state)
 as a tiny JSON blob so it survives restarts. The in-process state is
