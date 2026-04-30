@@ -255,6 +255,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           $ErrorActionPreference = 'Stop'
+          $start = Get-Date
           # Strict: the venv-gui MUST exist (Setup step asserts this
           # already, but re-check here to catch out-of-band issues).
           # No silent fallback — if Setup didn't make the venv, fail loud.
@@ -271,13 +272,13 @@ jobs:
           # Assert the smoke script actually printed its terminal marker
           # — guards against a path where the script imports succeed but
           # exec returns immediately because something earlier killed it.
-          $log = Get-Content ci-logs/gui-smoke.log -Raw -ErrorAction SilentlyContinue
+          $log = [System.IO.File]::ReadAllText("ci-logs/gui-smoke.log")
           if (-not ($log -match '\[gui-smoke\] exec returned')) {
             throw 'GUI smoke log missing terminal marker — script did not run to completion'
           }
-          # Capture timing — the GUI smoke should take ~3-5s if PySide6
-          # really loads. Sub-second strongly suggests an import-only path.
-          Add-Content -Path ci-logs/timing.log -Value ("gui|na|gui-smoke step")
+          $elapsed = (New-TimeSpan -Start $start -End (Get-Date)).TotalSeconds
+          Add-Content -Path ci-logs/timing.log -Value ("gui|{0:N0}|{1}" -f $elapsed, $start.ToUniversalTime().ToString('o'))
+          Write-Host ("GUI smoke elapsed: {0:N0}s" -f $elapsed)
 
       # ── 8/9 cloudflared binary smoke ────────────────────────────────────
       - name: cloudflared binary smoke
@@ -418,19 +419,36 @@ jobs:
           $body += "### Key log tails`n`n"
           foreach ($spec in $logs) {
             $path = "ci-logs/$($spec.name)"
-            if (Test-Path $path) {
-              $size = (Get-Item $path).Length
-              if ($size -gt 0) {
-                $content = Get-Content $path -Tail $spec.tail -Raw
-                # Strip CRs to keep the comment readable
-                $content = $content -replace "`r", ''
-                $body += "<details><summary>$($spec.name) — $size bytes (last $($spec.tail) lines)</summary>`n`n``````text`n$content`n```````n</details>`n`n"
-              } else {
-                $body += "- $($spec.name) — empty file`n"
-              }
-            } else {
+            if (-not (Test-Path $path)) {
               $body += "- $($spec.name) — **missing**`n"
+              continue
             }
+            $size = (Get-Item $path).Length
+            if ($size -le 0) {
+              $body += "- $($spec.name) — empty file`n"
+              continue
+            }
+            # Use [System.IO.File]::ReadAllText so BOM auto-detection
+            # works regardless of whether Tee-Object wrote UTF-16 LE
+            # (Windows PowerShell 5.1) or UTF-8 (pwsh 7+). The previous
+            # `Get-Content -Tail -Raw` returned empty content in the
+            # rendered comment despite the underlying files being
+            # populated — most likely an encoding-detection mismatch.
+            try {
+              $rawText = [System.IO.File]::ReadAllText($path)
+            } catch {
+              $rawText = ""
+            }
+            $rawText = $rawText -replace "`r", ''
+            $lines = $rawText -split "`n"
+            $tail = ($lines | Select-Object -Last $spec.tail) -join "`n"
+            # Strip ANSI escape sequences so colour codes from Write-Host
+            # don't leak into the markdown.
+            $esc = [char]27
+            $ansiPattern = [regex]::new("$esc\[[0-9;]*[a-zA-Z]")
+            $tail = $ansiPattern.Replace($tail, '')
+            Write-Host ("  log {0,-26} size={1,8}  read={2,8} chars  tail={3} chars" -f $spec.name, $size, $rawText.Length, $tail.Length)
+            $body += "<details><summary>$($spec.name) — $size bytes on disk; $($tail.Length) chars in tail (last $($spec.tail) lines)</summary>`n`n``````text`n$tail`n```````n</details>`n`n"
           }
 
           $tmp = Join-Path $env:RUNNER_TEMP 'smoke-diag.md'
