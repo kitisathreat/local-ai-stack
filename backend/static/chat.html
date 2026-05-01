@@ -413,13 +413,18 @@
     const toolState = new Map();   // name → enabled (boolean)
 
     async function loadTools() {
+      // Default every tool to OFF. Auto-enabling default-enabled tools
+      // pushes the request body past llama-server's per-slot context
+      // window once the registry has 200+ entries (28k+ tokens of
+      // schemas alone). The 🔧 popover is the explicit opt-in surface;
+      // the user toggles only what they need for that turn.
       try {
         const r = await api('/tools');
         if (!r.ok) return;
         const j = await r.json();
         toolState.clear();
         (j.data || []).forEach(t => {
-          toolState.set(t.name, !!t.default_enabled && !t.airgap_blocked);
+          toolState.set(t.name, false);
         });
         renderTools();
       } catch (_) {}
