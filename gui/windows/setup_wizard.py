@@ -17,6 +17,8 @@ native Qt.
 from __future__ import annotations
 
 import datetime
+import json
+import logging
 import os
 import pathlib
 import re
@@ -24,6 +26,8 @@ import secrets
 import subprocess
 import sys
 import time
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QThread, Signal, QFileSystemWatcher, QTimer
 from PySide6.QtGui import QFont
@@ -73,6 +77,115 @@ FIELD_SMTP_PORT = "smtp_port"
 FIELD_SMTP_USER = "smtp_user"
 FIELD_SMTP_PASS = "smtp_pass"
 FIELD_SMTP_FROM = "smtp_from"
+
+
+# ---------------------------------------------------------------------------
+# Wizard state persistence
+# ---------------------------------------------------------------------------
+#
+# If the wizard crashes, is killed, or the user closes it before the
+# Finish page commits the .env, we save what they've already typed to a
+# JSON file and pre-populate fields on the next launch. Removed when
+# Finish completes successfully.
+#
+# This includes the admin password — it's the most painful field to
+# re-enter and the user explicitly asked for it to persist. The file
+# lives at `data/.wizard_state.json` (or `%LOCALAPPDATA%\LocalAIStack\
+# .wizard_state.json` in installed mode), is mode 0600 on POSIX, and is
+# always under .gitignore (`data/*`).
+#
+# Field allow-list — only fields that are actually registered with the
+# QWizard (so `wiz.field` succeeds). Auto-generated secrets are
+# deliberately excluded (they regenerate on Page 3 each launch; saving
+# them would defeat their freshness guarantee). Tunnel UUID / name are
+# also excluded because they live as page instance attrs rather than
+# registered fields, AND the new idempotent `create_tunnel` makes
+# re-provisioning safe — restored UUID isn't needed.
+_PERSISTED_FIELDS = (
+    FIELD_EMAIL,
+    FIELD_PASSWORD,
+    FIELD_DOMAIN,
+    FIELD_CHAT_HOSTNAME,
+    FIELD_SMTP_ENABLED,
+    FIELD_SMTP_HOST,
+    FIELD_SMTP_PORT,
+    FIELD_SMTP_USER,
+    FIELD_SMTP_PASS,
+    FIELD_SMTP_FROM,
+)
+
+
+def _wizard_state_path() -> pathlib.Path:
+    if os.environ.get("LAI_INSTALLED") == "1":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        root = (
+            pathlib.Path(local_appdata) / "LocalAIStack"
+            if local_appdata else _REPO / "data"
+        )
+    else:
+        root = _REPO / "data"
+    return root / ".wizard_state.json"
+
+
+def _save_wizard_state(wiz: "QWizard") -> None:
+    """Snapshot every persisted field to disk. Called on every page change.
+
+    Best-effort: any I/O failure is logged and swallowed — the wizard
+    must keep running even if the disk is read-only.
+    """
+    state: dict[str, object] = {}
+    for key in _PERSISTED_FIELDS:
+        try:
+            val = wiz.field(key)
+        except Exception:
+            continue
+        # `wiz.field` returns the underlying widget value: str, int, bool…
+        if val is None:
+            continue
+        # QSpinBox returns int; tunnel UUID can be empty string before
+        # provisioning. Skip empty strings to keep the file clean.
+        if isinstance(val, str) and not val:
+            continue
+        state[key] = val
+    if not state:
+        return
+    path = _wizard_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError as exc:
+        logger.warning("Could not persist wizard state to %s: %s", path, exc)
+
+
+def _load_wizard_state() -> dict[str, object]:
+    """Read prior wizard state, returning {} if absent or corrupt."""
+    path = _wizard_state_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not load wizard state from %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # Filter unknown keys defensively.
+    return {k: v for k, v in data.items() if k in _PERSISTED_FIELDS}
+
+
+def _clear_wizard_state() -> None:
+    """Wipe the saved state. Called from Finish on success."""
+    path = _wizard_state_path()
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Could not remove wizard state %s: %s", path, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +834,9 @@ class _FinishPage(QWizardPage):
             self._log.appendPlainText(f"✗ seed_admin failed: {e}")
 
         self._written = True
+        # Setup committed successfully — discard the partial-progress
+        # snapshot so the next launch starts clean.
+        _clear_wizard_state()
         self._log.appendPlainText("\nSetup complete. Click Finish to launch the stack.")
 
     def isComplete(self) -> bool:
@@ -750,6 +866,34 @@ class SetupWizard(QWizard):
         self.addPage(_TunnelPage())         # page id 3
         self.addPage(_SmtpPage())           # page id 4
         self.addPage(_FinishPage())         # page id 5
+
+        # ── Progress persistence ────────────────────────────────────────
+        # If a previous run was killed or crashed, restore everything the
+        # user already typed. The fields are registered by their owning
+        # pages during addPage(); setField after addPage works because
+        # QWizard wires fields to widgets on registration.
+        prior = _load_wizard_state()
+        for key, val in prior.items():
+            try:
+                self.setField(key, val)
+            except Exception as exc:
+                logger.debug("Could not restore wizard field %r: %s", key, exc)
+
+        # The "Confirm" widget on the Admin page is UI-only (not a
+        # registered wizard field), so setField doesn't reach it. Mirror
+        # the restored password into it so the page validates without
+        # forcing a retype.
+        if FIELD_PASSWORD in prior:
+            try:
+                admin_page = self.page(1)
+                if admin_page is not None and hasattr(admin_page, "_confirm"):
+                    admin_page._confirm.setText(prior[FIELD_PASSWORD])
+            except Exception as exc:
+                logger.debug("Could not mirror restored password to confirm: %s", exc)
+
+        # Save after each Next/Back so a forced-quit always leaves a
+        # current snapshot. _FinishPage wipes the snapshot on success.
+        self.currentIdChanged.connect(lambda _id: _save_wizard_state(self))
 
 
 # ---------------------------------------------------------------------------
