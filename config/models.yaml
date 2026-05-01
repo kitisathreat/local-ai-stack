@@ -104,6 +104,55 @@ tiers:
       factor: 4.0
       orig_ctx: 32768
 
+  # ── Reasoning Max — GPT-OSS-120B, opt-in for hardest reasoning ──────────────
+  # A heavyweight alternative to highest_quality. Higher peak quality on
+  # math derivations and architecture-design prompts than Qwen3-Next-
+  # Thinking, at the cost of being ~1.7x slower (5.1 B active vs 3 B).
+  # Cold-spawn only — never the default; users opt in via /tier reasoning
+  # when they want maximum quality and accept the latency.
+  #
+  # Architecture: MoE, 117 B total / 5.1 B active. Standard (non-hybrid)
+  # attention so KV cache stays at q8_0 (q4_0 is not lossless here, unlike
+  # the Qwen3.x family).
+  #
+  # NO speculative draft: GPT-OSS uses OpenAI's o200k_harmony tokenizer,
+  # which is incompatible with the Qwen3-0.6B draft used by every other
+  # tier. Speculative decoding requires a tokenizer-compatible draft;
+  # without one this tier runs target-only at ~25-35 tok/s. Adding a
+  # GPT-OSS-family draft is feasible (e.g. a hypothetical GPT-OSS-2B)
+  # but no such GGUF exists at time of writing.
+  reasoning_max:
+    name: "Reasoning Max (GPT-OSS-120B)"
+    description: "OpenAI's open-weight 120 B MoE (5.1 B active). Highest peak quality on hard reasoning; ~25-35 t/s with expert offload."
+    backend: llama_cpp
+    port: 8014
+    model_tag: "gpt-oss-120b"
+    context_window: 131072               # native context
+    think_default: true
+    think_supported: true
+    preserve_thinking: true
+    params:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 8192
+    vram_estimate_gb: 14                  # attention + KV + embeddings on GPU.
+                                          # MoE experts (~50 GB) live in system RAM.
+    parallel_slots: 1
+    n_gpu_layers: -1                      # base case = everything to GPU; -ot
+                                          # below pulls experts back to CPU.
+    flash_attention: true
+    use_mmap: true
+    use_mlock: false
+    cache_type_k: q8_0                    # Standard attention — q8_0 stays.
+    cache_type_v: q8_0
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"               # Same MoE expert offload as the
+                                          # Qwen3 MoE tiers — keeps every
+                                          # attention layer GPU-resident.
+
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
     name: "Versatile (Qwen3.6 35B-A3B)"
@@ -362,4 +411,6 @@ aliases:
   creative: fast
   roleplay: fast
   summarizer: fast
+  reasoning: reasoning_max
+  oss: reasoning_max
   # `fast` and `coding` keep their names; no alias entry needed

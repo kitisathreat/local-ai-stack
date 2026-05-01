@@ -151,6 +151,25 @@ def test_models_yaml_orchestrator_flag():
     )
 
 
+def test_reasoning_max_tier_present_and_valid():
+    """The optional GPT-OSS-120B tier must declare a unique port + model_tag."""
+    data = _load_yaml("config/models.yaml")
+    tiers = data.get("tiers", {})
+    assert "reasoning_max" in tiers, "reasoning_max tier missing from models.yaml"
+    rmax = tiers["reasoning_max"]
+    assert rmax.get("model_tag") == "gpt-oss-120b"
+    assert rmax.get("port") == 8014
+    # Should NOT have a speculative draft (tokenizer incompatible with Qwen3)
+    assert not rmax.get("draft_model_tag")
+
+
+def test_all_chat_tier_ports_are_unique():
+    data = _load_yaml("config/models.yaml")
+    tiers = data.get("tiers", {})
+    ports = [t.get("port") for t in tiers.values() if t.get("port")]
+    assert len(ports) == len(set(ports)), f"Duplicate ports: {ports}"
+
+
 @pytest.mark.parametrize("alias", REQUIRED_ALIASES)
 def test_models_yaml_aliases_resolve_to_real_tiers(alias):
     data = _load_yaml("config/models.yaml")

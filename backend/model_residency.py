@@ -46,6 +46,9 @@ _LAYER_HINTS = {
     "qwen3.6-35b-a3b": 64,
     "qwen3.5-9b": 40,
     "qwen3-coder-30b-a3b": 48,
+    "qwen3-coder-next-80b-a3b": 64,      # 80B-A3B coder, MoE w/ standard attention
+    "gpt-oss-120b": 80,                  # 117 B / 5.1 B active MoE, standard attention
+    "qwen3-0.6b": 28,                    # The universal speculative-decode draft
     # Legacy entries kept for graceful fallback during migration
     "qwen3:72b": 80,
     "qwen3-coder-next:80b": 80,

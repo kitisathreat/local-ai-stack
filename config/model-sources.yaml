@@ -135,6 +135,24 @@ tiers:
       revision: "main"
       file: "nomic-embed-text-v1.5.Q8_0.gguf"
 
+  # GPT-OSS-120B — opt-in highest-reasoning tier (reasoning_max). Heavy-
+  # weight MoE (5.1 B active out of 117 B) trained on reasoning, RL'd on
+  # tool use. Native MXFP4 release (lossless 4-bit), but llama.cpp on
+  # b8992 doesn't support MXFP4 yet — use the bartowski Q4_K_M GGUF. ~58
+  # GB on disk. VRAM with -ot expert offload: ~14 GB. RAM: ~50 GB. Slower
+  # than Qwen3-Next-80B-A3B-Thinking (~1.7x — 5.1 B active vs 3 B), but
+  # higher peak quality on hard reasoning. No speculative draft because
+  # GPT-OSS uses OpenAI's o200k_harmony tokenizer which is incompatible
+  # with the Qwen3 family draft.
+  reasoning_max:
+    source: huggingface
+    repo: "bartowski/openai_gpt-oss-120b-GGUF"
+    file: "*Q4_K_M.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "openai_gpt-oss-120b-Q4_K_M.gguf"
+
   # Qwen3-0.6B-Instruct — universal speculative-decode draft for every
   # Qwen3-family chat tier (highest_quality, versatile, fast, coding, vision).
   # Speculative decoding requires the draft and target to share a tokenizer,
