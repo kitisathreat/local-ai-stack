@@ -254,6 +254,7 @@
           const me = await r.json();
           whoEl.textContent = me.username;
           await loadModels();
+          await loadTools();
           signinBox.classList.add('hidden');
           app.classList.remove('hidden');
         }
@@ -278,6 +279,7 @@
       const info = await r.json();
       whoEl.textContent = info.username;
       await loadModels();
+      await loadTools();
       err.textContent = '';
       signinBox.classList.add('hidden');
       app.classList.remove('hidden');
@@ -465,25 +467,63 @@
     async function sendMessage() {
       if (streaming) return;
       const text = composerEl.value.trim();
-      if (!text) return;
+      if (!text && attached.length === 0) return;
       composerEl.value = '';
-      history.push({ role: 'user', content: text });
-      appendMsg('user', text);
+
+      // Upload any attached files first. Each call returns an
+      // attachment_id we hand to /v1/chat/completions; the backend
+      // inlines text content / forwards images to the vision tier.
+      const attachmentIds = [];
+      const uploadList = attached.splice(0, attached.length);
+      renderAttached();
+      for (const a of uploadList) {
+        try {
+          const fd = new FormData();
+          fd.append('file', a.file, a.name);
+          const ur = await fetch('/api/chat/upload', {
+            method: 'POST', credentials: 'include', body: fd,
+          });
+          if (ur.ok) {
+            const j = await ur.json();
+            if (j.id) attachmentIds.push(j.id);
+          }
+        } catch (_) {}
+      }
+
+      // Surface attachments inline in the user message bubble so the
+      // chat history is self-explanatory.
+      const visibleText = text + (uploadList.length
+        ? '\n\n_attached: ' + uploadList.map(a => a.name).join(', ') + '_'
+        : '');
+      history.push({ role: 'user', content: text || '(attachment only)' });
+      appendMsg('user', visibleText);
       const targetBody = appendMsg('assistant', '');
       streaming = true;
       sendEl.disabled = true;
       let buffered = '';
       try {
+        // Per-request enabled tools: only send the names the user
+        // toggled on. Empty array means "no tools this turn"; null
+        // (no key) means "use registry defaults".
+        const toolNames = [];
+        toolState.forEach((on, name) => { if (on) toolNames.push(name); });
+        const body = {
+          model: modelEl.value,
+          stream: true,
+          messages: history,
+          think: thinkEl.checked || undefined,
+        };
+        // Only attach the field when it differs from default; this
+        // preserves backwards compat with handlers that don't know
+        // about it yet.
+        if (toolState.size > 0) body.enabled_tools = toolNames;
+        if (attachmentIds.length) body.attachment_ids = attachmentIds;
+
         const r = await fetch('/v1/chat/completions', {
           method: 'POST',
           credentials: 'include',
           headers: { 'content-type': 'application/json', 'accept': 'text/event-stream' },
-          body: JSON.stringify({
-            model: modelEl.value,
-            stream: true,
-            messages: history,
-            think: thinkEl.checked || undefined,
-          }),
+          body: JSON.stringify(body),
         });
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
         const reader = r.body.getReader();

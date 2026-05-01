@@ -70,6 +70,20 @@ class ChatRequest(BaseModel):
     tools: list[dict[str, Any]] | None = None
     tool_choice: str | dict[str, Any] | None = None
 
+    # Per-request whitelist of tool names the chat composer enabled.
+    # When None / omitted, the registry's default-enabled set is used
+    # (legacy behaviour). When provided (even as empty list — meaning
+    # "no tools at all this turn"), only those exact tool names are
+    # offered to the model. Names match the registry's "<module>.<method>"
+    # form returned by GET /tools.
+    enabled_tools: list[str] | None = None
+
+    # IDs returned by POST /api/chat/upload, attached to the user's
+    # next message. The backend looks them up in data/uploads/<user>/
+    # and either embeds the text inline or feeds image bytes to the
+    # vision tier. Empty / omitted means no attachments.
+    attachment_ids: list[str] | None = None
+
     # Phase 6: when set and the user is signed in, persist the user+assistant
     # messages after the stream completes and trigger background memory
     # distillation every N turns.

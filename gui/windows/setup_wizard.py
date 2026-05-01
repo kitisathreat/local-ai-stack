@@ -883,6 +883,36 @@ class _FinishPage(QWizardPage):
         except Exception as e:
             self._log.appendPlainText(f"✗ seed_admin failed: {e}")
 
+        # Kick off the model pull. ~96 GB across all tiers — we don't
+        # block Finish on it (subprocess detached); -Start later and the
+        # backend's auto-pull task will both pick up whatever's still
+        # missing. Surfacing it here means the user knows it started
+        # and can monitor data\logs\model-pull.log if curious.
+        try:
+            log_path = data_root / "logs" / "model-pull.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_fh = open(log_path, "ab", buffering=0)
+            pull_env = {**os.environ}
+            if hf_token:
+                pull_env["HF_TOKEN"] = hf_token
+            # No HF_HUB_ENABLE_HF_TRANSFER here — the resolver auto-falls
+            # back to the pure-Python downloader on transient failures.
+            subprocess.Popen(
+                [python, "-m", "backend.model_resolver", "resolve", "--pull"],
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                cwd=str(_REPO),
+                env=pull_env,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._log.appendPlainText(
+                f"✓ Model pull started in background (~96 GB total).\n"
+                f"   Progress log: {log_path}\n"
+                f"   Tiers come online progressively as each GGUF lands."
+            )
+        except Exception as e:
+            self._log.appendPlainText(f"! Could not start model pull: {e}")
+
         self._written = True
         # Setup committed successfully — discard the partial-progress
         # snapshot so the next launch starts clean.

@@ -327,6 +327,52 @@ def pull_missing_hf_files(
     target_root = _models_dir()
     token = os.getenv("HF_TOKEN") or None
 
+    def _download_with_retry(**kwargs) -> Path:
+        """hf_hub_download wrapper with hf_transfer fallback + N retries.
+
+        Two failure modes we hit on multi-GB GGUFs:
+          1. hf_transfer (Rust parallel downloader) bombs on any
+             transient error — no built-in retry. We give it one shot
+             then disable it process-wide.
+          2. The pure-Python downloader gets `IncompleteRead` when the
+             CDN connection drops mid-stream. It does NOT auto-resume
+             across calls in our setup — but a fresh call resumes from
+             the partial blob in ~/.cache/huggingface, so we just retry.
+
+        Retry up to 8 times per file with exponential-ish backoff
+        (capped at 30 s). Re-raises only after exhausting attempts.
+        """
+        max_attempts = 8
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return Path(hf_hub_download(**kwargs))
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                if "hf_transfer" in msg or "HF_HUB_ENABLE_HF_TRANSFER" in msg:
+                    logger.warning(
+                        "hf_transfer failed (attempt %d) — disabling and retrying",
+                        attempt,
+                    )
+                    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+                    continue   # retry immediately with the pure-Python path
+                if attempt >= max_attempts:
+                    break
+                # Backoff for transient network errors. The next call
+                # will pick up the partial blob from ~/.cache/huggingface
+                # so we don't lose what already streamed in.
+                sleep_s = min(30, 2 ** attempt)
+                logger.warning(
+                    "hf_hub_download attempt %d/%d failed (%s) — retrying in %ds",
+                    attempt, max_attempts,
+                    msg.splitlines()[0][:140] if msg else type(exc).__name__,
+                    sleep_s,
+                )
+                time.sleep(sleep_s)
+        assert last_exc is not None
+        raise last_exc
+
     for tier, r in result.resolved.items():
         if r.source != "huggingface" or not r.repo or not r.filename:
             continue
@@ -353,13 +399,13 @@ def pull_missing_hf_files(
         revision = r.revision or "main"
         try:
             if need_gguf:
-                downloaded = Path(hf_hub_download(
+                downloaded = _download_with_retry(
                     repo_id=r.repo,
                     filename=r.filename,
                     revision=revision,
                     local_dir=str(target_root),
                     token=token,
-                ))
+                )
                 _link_or_copy(downloaded, target_gguf)
                 r.gguf_path = str(target_gguf)
             if need_mmproj:

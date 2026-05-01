@@ -165,13 +165,25 @@ class ToolRegistry:
 
     def all_schemas(
         self, only_enabled: bool = True, *, airgap: bool = False,
+        names: list[str] | set[str] | None = None,
     ) -> list[dict]:
         """Schemas to send to the model. When `airgap=True` we also drop
         every tool whose declared service is outside the local stack so
-        the model never sees an offering it can't fulfil."""
+        the model never sees an offering it can't fulfil.
+
+        When `names` is provided (e.g. from a chat request's
+        `enabled_tools`), only those exact tool names are returned —
+        ignoring `only_enabled` (the user explicitly opted in). Airgap
+        still filters: a user-toggled tool that needs a remote service
+        is silently dropped rather than offered-and-failing.
+        """
+        wanted: set[str] | None = set(names) if names is not None else None
         out: list[dict] = []
         for t in self.tools.values():
-            if only_enabled and not t.default_enabled:
+            if wanted is not None:
+                if t.name not in wanted:
+                    continue
+            elif only_enabled and not t.default_enabled:
                 continue
             if airgap and not _is_airgap_safe(t):
                 continue
