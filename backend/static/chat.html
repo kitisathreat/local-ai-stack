@@ -39,6 +39,19 @@
     header button { cursor: pointer; }
     header button:hover { background: #2a2d36; }
     header .spacer { flex: 1; }
+    /* Status indicators in the header — small, muted, monospace
+       so the changing numbers don't fight the layout. */
+    .stat {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'Cascadia Code', Consolas, monospace;
+      padding: 0 6px;
+      white-space: nowrap;
+    }
+    .stat .lbl { text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.7; }
+    .stat .val { color: var(--fg); }
+    .stat.warn .val { color: #e0c060; }   /* yellow at >70% */
+    .stat.crit .val { color: var(--danger); }   /* red at >90% */
     #main { flex: 1; display: flex; overflow: hidden; }
     #log { flex: 1; overflow: auto; padding: 16px; max-width: 860px; margin: 0 auto; width: 100%; }
     .msg { margin: 0 0 16px 0; line-height: 1.5; }
@@ -243,6 +256,12 @@
         <select id="model"></select>
         <label><input type="checkbox" id="think"> Think</label>
         <span class="spacer"></span>
+        <span id="vram-stat" class="stat" title="GPU VRAM free / total (polled every 15s)">
+          <span class="lbl">VRAM</span> <span class="val" id="vram-val">—</span>
+        </span>
+        <span id="ctx-stat" class="stat" title="Estimated tokens used / tier context window">
+          <span class="lbl">CTX</span> <span class="val" id="ctx-val">—</span>
+        </span>
         <span id="who" style="color:var(--muted);"></span>
         <button id="logout">Sign out</button>
       </header>
@@ -325,6 +344,7 @@
           await loadModels();
           await loadTools();
           await loadConversations();
+          pollVram();
           signinBox.classList.add('hidden');
           app.classList.remove('hidden');
         }
@@ -350,6 +370,8 @@
       whoEl.textContent = info.username;
       await loadModels();
       await loadTools();
+      await loadConversations();
+      pollVram();
       err.textContent = '';
       signinBox.classList.add('hidden');
       app.classList.remove('hidden');
@@ -428,6 +450,7 @@
         }
         // Refresh sidebar to mark the active item.
         loadConversations();
+        updateCtxIndicator();
       } catch (_) {}
     }
 
@@ -441,6 +464,7 @@
       Array.from(convListEl.querySelectorAll('.conv-item.active')).forEach(
         el => el.classList.remove('active')
       );
+      updateCtxIndicator();
     }
 
     $('new-conv-btn').addEventListener('click', newConversation);
@@ -470,6 +494,72 @@
         .replace(/[-_.]?Q[0-9]+(_K(_[A-Z]+)?|_[01])?$/i, '');
     }
 
+    // ── Header indicators (VRAM + context window) ───────────────────
+    // Per-tier context window in tokens; populated by loadModels() from
+    // /v1/models. Used by updateCtxIndicator() to compute the "X / Y"
+    // display.
+    const tierContext = new Map();   // tier_id → context_window
+    const vramStatEl = $('vram-stat');
+    const vramValEl  = $('vram-val');
+    const ctxStatEl  = $('ctx-stat');
+    const ctxValEl   = $('ctx-val');
+
+    function setStatLevel(el, frac) {
+      // 0–0.7 normal, 0.7–0.9 warn, ≥0.9 crit. Mirrors the stat color
+      // CSS classes added above.
+      el.classList.remove('warn', 'crit');
+      if (frac >= 0.9) el.classList.add('crit');
+      else if (frac >= 0.7) el.classList.add('warn');
+    }
+
+    async function pollVram() {
+      // Polls /vram every 15s. Backend's `free_vram_gb_actual` reads
+      // NVML; falls back to projected when NVML isn't available
+      // (CPU-only or driver missing) — both give a usable percentage.
+      try {
+        const r = await api('/vram');
+        if (!r.ok) return;
+        const v = await r.json();
+        const total = v.total_vram_gb || 0;
+        const free  = v.free_vram_gb_actual ?? v.free_vram_gb_projected ?? total;
+        if (total <= 0) {
+          vramValEl.textContent = 'n/a';
+          return;
+        }
+        const used = Math.max(0, total - free);
+        vramValEl.textContent = `${free.toFixed(1)} / ${total.toFixed(0)} GB free`;
+        setStatLevel(vramStatEl, used / total);
+      } catch (_) {
+        vramValEl.textContent = '—';
+      }
+    }
+
+    function estimateTokens(text) {
+      // Rough char→token estimate. Real tokenization varies per model
+      // (Qwen ~3.5 chars/tok English, ~2 cn/jp); 4 char/tok is the
+      // standard "good enough" approximation widely used by chat UIs.
+      return Math.ceil((text || '').length / 4);
+    }
+
+    function updateCtxIndicator() {
+      const ctx = tierContext.get(modelEl.value);
+      if (!ctx) {
+        ctxValEl.textContent = '—';
+        return;
+      }
+      // Sum estimated tokens across all messages in the local history.
+      // Includes a small fudge for role markers and chat-template
+      // overhead per turn.
+      const overheadPerTurn = 8;
+      let used = 0;
+      for (const m of history) {
+        used += estimateTokens(m.content) + overheadPerTurn;
+      }
+      const fmt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : `${n}`;
+      ctxValEl.textContent = `${fmt(used)} / ${fmt(ctx)}`;
+      setStatLevel(ctxStatEl, used / ctx);
+    }
+
     async function loadModels() {
       // Fetch /v1/models for the available tier list and /resolved-models
       // for the per-tier specific model name + on-disk availability.
@@ -496,9 +586,13 @@
         modelEl.innerHTML = '';
         let firstAvailableValue = null;
         let previousIsAvailable = false;
+        tierContext.clear();
         (data || []).forEach(m => {
           const o = document.createElement('option');
           o.value = m.id;
+          // Stash per-tier context window so the CTX indicator can
+          // show the right "X / Y" denominator even after a tier swap.
+          if (m.context_window) tierContext.set(m.id, m.context_window);
           const key = m.id.replace(/^tier\./, '');
           const info = resolved[key] || resolved[m.id] || {};
           const cat = tierLabel(key);
@@ -526,6 +620,7 @@
           modelEl.value = firstAvailableValue;
         }
         lastSelectedModel = modelEl.value;
+        updateCtxIndicator();
       } catch (_) {}
     }
 
@@ -558,6 +653,14 @@
     // Refresh the tier list every 30 s so download-completed tiers
     // light up without a full page reload. Cheap GET — no streaming.
     setInterval(() => { if (!app.classList.contains('hidden')) loadModels(); }, 30000);
+
+    // Poll VRAM every 15 s. Cheap; just reads scheduler.status() in-memory.
+    setInterval(() => { if (!app.classList.contains('hidden')) pollVram(); }, 15000);
+
+    // Update the CTX indicator on tier change too — different tier
+    // means a different denominator. (mid-chat swap is rare but the
+    // bar should reflect reality immediately when it happens.)
+    modelEl.addEventListener('change', updateCtxIndicator);
 
     // ── Tools popover ─────────────────────────────────────────────────
     const toolsBtn = $('tools-btn');
@@ -705,6 +808,7 @@
         ? '\n\n_attached: ' + uploadList.map(a => a.name).join(', ') + '_'
         : '');
       history.push({ role: 'user', content: text || '(attachment only)' });
+      updateCtxIndicator();
       appendMsg('user', visibleText);
       const targetBody = appendMsg('assistant', '');
       // Initial "thinking" state — replaced by streamed tokens or by
@@ -859,6 +963,7 @@
           }
         }
         history.push({ role: 'assistant', content: buffered });
+        updateCtxIndicator();
       } catch (err) {
         targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(String(err)) + '</em>';
       } finally {
