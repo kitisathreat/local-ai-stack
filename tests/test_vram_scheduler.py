@@ -91,6 +91,13 @@ async def test_reserve_twice_shares_loaded(cfg):
 
 @pytest.mark.asyncio
 async def test_evict_lru_when_pressure(cfg):
+    # The post-Step-5 production config drops MoE tiers to ~6 GB VRAM
+    # via expert offload, so versatile (6) + highest_quality (14) fits
+    # in the 24 GB card with no eviction needed. To exercise the
+    # eviction LOGIC, we override the tier costs in-test to recreate
+    # the pre-optimization pressure scenario.
+    cfg.models.tiers["versatile"].vram_estimate_gb = 21.0
+    cfg.models.tiers["highest_quality"].vram_estimate_gb = 24.0
     probe = FakeProbe(total_gb=24.0, loaded_costs={})
     sched = make_scheduler(cfg, probe)
 
@@ -109,6 +116,11 @@ async def test_evict_lru_when_pressure(cfg):
 async def test_vram_exhausted_when_cant_evict(cfg):
     """If another tier is actively in use (refcount > 0) and there's no
     room for the new request, raise VRAMExhausted."""
+    # Same rationale as test_evict_lru_when_pressure: the optimized
+    # post-Step-5 config no longer triggers exhaustion at these tier
+    # combinations. Override in-test to recreate pressure.
+    cfg.models.tiers["highest_quality"].vram_estimate_gb = 24.0
+    cfg.models.tiers["coding"].vram_estimate_gb = 20.0
     probe = FakeProbe(total_gb=24.0, loaded_costs={})
     sched = make_scheduler(cfg, probe)
 
@@ -138,6 +150,11 @@ async def test_pinned_not_evicted(cfg):
     decoupling the test from the YAML default.
     """
     cfg.models.tiers["vision"].pinned = True
+    # Override costs: post-Step-5, vision is 6GB and coding is 6GB so
+    # they coexist trivially. Restore the pre-optimization sizes so
+    # the pin-vs-eviction race is actually exercised.
+    cfg.models.tiers["vision"].vram_estimate_gb = 21.0
+    cfg.models.tiers["coding"].vram_estimate_gb = 24.0
     probe = FakeProbe(total_gb=24.0, loaded_costs={})
     sched = make_scheduler(cfg, probe)
 

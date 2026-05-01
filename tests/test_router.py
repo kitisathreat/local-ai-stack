@@ -156,7 +156,12 @@ def test_thinking_default_when_no_signal(cfg, signals):
     # appear stuck. Users opt in via the Think checkbox / /think on.
     # When there's no explicit override, no slash override, and no auto
     # signal, resolve_thinking should fall through to tier.think_default.
-    tier = cfg.models.tiers["highest_quality"]
+    #
+    # NOTE: highest_quality is now Qwen3-Next-80B-A3B-Thinking, an
+    # explicitly thinking-only variant — so its think_default is True.
+    # The "fall-through to tier default" semantics are tested here against
+    # versatile, which still defaults to False.
+    tier = cfg.models.tiers["versatile"]
     assert tier.think_default is False
     assert resolve_thinking(
         text="random neutral message",
@@ -165,6 +170,21 @@ def test_thinking_default_when_no_signal(cfg, signals):
         slash_override=None,
         signals=signals,
     ) is False
+
+
+def test_thinking_default_true_for_thinking_variant(cfg, signals):
+    """The highest_quality tier hosts the Qwen3-Next-Thinking variant
+    whose chat template auto-injects <think>. think_default=True ensures
+    the router doesn't accidentally suppress reasoning on that tier."""
+    tier = cfg.models.tiers["highest_quality"]
+    assert tier.think_default is True
+    assert resolve_thinking(
+        text="random neutral message",
+        tier=tier,
+        explicit=None,
+        slash_override=None,
+        signals=signals,
+    ) is True
 
 
 # ── Image & code detection ─────────────────────────────────────────────
