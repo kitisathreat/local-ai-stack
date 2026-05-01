@@ -196,7 +196,8 @@ class BackendClient:
             r.raise_for_status()
             return r.json()
 
-    async def resolved_models(self) -> dict:
+    async def admin_overview(self) -> dict:
+        """Usage / counters for the admin dashboard header."""
         async with self._client() as c:
             r = await c.get("/admin/overview")
             r.raise_for_status()

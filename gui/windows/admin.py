@@ -216,8 +216,18 @@ class AdminWindow(QMainWindow):
             self._users_table.setItem(row, 2, QTableWidgetItem(u.get("email", "")))
             self._users_table.setItem(row, 3, QTableWidgetItem("yes" if u.get("is_admin") else ""))
             self._users_table.setItem(row, 4, QTableWidgetItem(str(u.get("conversations", 0))))
-            last = u.get("last_login_at") or ""
-            self._users_table.setItem(row, 5, QTableWidgetItem(str(last)[:19] if last else ""))
+            # last_login_at can be a unix epoch float (native mode) or
+            # an ISO string (legacy). Normalize to "YYYY-MM-DD HH:MM:SS"
+            # so the column is human-readable instead of raw seconds.
+            last = u.get("last_login_at")
+            if isinstance(last, (int, float)):
+                from datetime import datetime
+                last_str = datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M:%S")
+            elif isinstance(last, str) and last:
+                last_str = last[:19]
+            else:
+                last_str = ""
+            self._users_table.setItem(row, 5, QTableWidgetItem(last_str))
 
     # ── Models tab ─────────────────────────────────────────────────────────
 
@@ -243,10 +253,19 @@ class AdminWindow(QMainWindow):
         self._models_table.setRowCount(0)
         for row, (tier, info) in enumerate(tiers):
             self._models_table.insertRow(row)
+            # The /resolved-models payload has separate repo + filename
+            # fields rather than a single 'identifier'. Compose them so
+            # the user sees what's actually on disk for that tier.
+            repo = info.get("repo") or info.get("model_id") or ""
+            filename = info.get("filename") or ""
+            if repo and filename:
+                identifier = f"{repo}/{filename}"
+            else:
+                identifier = repo or filename or info.get("path") or ""
             for col, val in enumerate([
                 tier,
                 info.get("source", ""),
-                info.get("identifier", ""),
+                identifier,
                 info.get("origin", ""),
                 "yes" if info.get("update_available") else "",
             ]):
