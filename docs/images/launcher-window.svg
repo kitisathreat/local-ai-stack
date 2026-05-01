@@ -1,48 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 320" font-family="Segoe UI, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 380" font-family="Cascadia Code, Consolas, ui-monospace, monospace" role="img" aria-label="LocalAIStack.ps1 console banner during -Start">
   <defs>
     <style><![CDATA[
-      .shadow { fill: rgba(0,0,0,0.35); }
+      .shadow { fill: rgba(0,0,0,0.45); }
       .chrome { fill: #1a1a1a; }
-      .body { fill: #0f0f0f; }
-      .fg { fill: #e5e7eb; }
-      .dim { fill: #8b94a6; }
+      .body   { fill: #0c0c0c; }
+      .fg     { fill: #e5e7eb; }
+      .dim    { fill: #8b94a6; }
       .accent { fill: #7c9cff; }
+      .ok     { fill: #5fd18f; }
+      .warn   { fill: #ffb860; }
+      .step   { fill: #4ec9ff; }
     ]]></style>
   </defs>
 
-  <!-- Backdrop (to show the window sits on something) -->
-  <rect width="520" height="320" fill="#202328"/>
+  <!-- Backdrop -->
+  <rect width="640" height="380" fill="#202328"/>
 
-  <!-- Drop shadow -->
-  <rect class="shadow" x="50" y="56" width="420" height="220" rx="8"/>
-
-  <!-- Window body -->
-  <rect class="body" x="46" y="50" width="420" height="220" rx="6"/>
+  <!-- Drop shadow + window -->
+  <rect class="shadow" x="32" y="38" width="576" height="312" rx="8"/>
+  <rect class="body"   x="28" y="32" width="576" height="312" rx="6"/>
 
   <!-- Title bar -->
-  <rect class="chrome" x="46" y="50" width="420" height="28" rx="6"/>
-  <rect class="chrome" x="46" y="70" width="420" height="8"/>
-  <text class="dim" x="60" y="68" font-size="11">LocalAIStack</text>
+  <rect class="chrome" x="28" y="32" width="576" height="28" rx="6"/>
+  <rect class="chrome" x="28" y="52" width="576" height="8"/>
+  <text class="dim" x="44" y="50" font-size="11" font-family="Segoe UI, sans-serif">Windows PowerShell — LocalAIStack.ps1 -Start</text>
+  <text class="dim" x="568" y="50" font-size="12" font-family="Segoe UI, sans-serif">—</text>
+  <text class="dim" x="586" y="50" font-size="12" font-family="Segoe UI, sans-serif">✕</text>
 
-  <!-- Traffic-light-ish Windows controls -->
-  <text class="dim" x="436" y="68" font-size="12">—</text>
-  <text class="dim" x="450" y="68" font-size="12">✕</text>
+  <!-- Console body -->
+  <text font-size="11.5">
+    <tspan x="44" y="86" class="dim">PS C:\local-ai-stack&gt; </tspan><tspan class="fg">.\LocalAIStack.ps1</tspan>
+    <tspan x="44" y="108" class="step">==&gt; </tspan><tspan class="fg">Resolving model tiers (Hugging Face GGUF)</tspan>
+    <tspan x="64" y="124" class="ok">   ok </tspan><tspan class="dim">versatile  → Qwen3.6-35B-A3B-Q4_K_M.gguf  (cached)</tspan>
+    <tspan x="64" y="140" class="ok">   ok </tspan><tspan class="dim">fast       → Qwen3.5-9B-Q5_K_M.gguf       (cached)</tspan>
+    <tspan x="64" y="156" class="ok">   ok </tspan><tspan class="dim">embedding  → nomic-embed-text-v1.5.gguf  (cached)</tspan>
+    <tspan x="44" y="178" class="step">==&gt; </tspan><tspan class="fg">Starting Qdrant on :6333</tspan>
+    <tspan x="64" y="194" class="ok">   ok </tspan><tspan class="dim">vendor\qdrant\qdrant.exe (pid 14820)</tspan>
+    <tspan x="44" y="216" class="step">==&gt; </tspan><tspan class="fg">Pre-spawning vision + embedding llama-server</tspan>
+    <tspan x="64" y="232" class="ok">   ok </tspan><tspan class="dim">llama-server :8001 vision   (pid 9112)</tspan>
+    <tspan x="64" y="248" class="ok">   ok </tspan><tspan class="dim">llama-server :8090 embedding (pid 12044)</tspan>
+    <tspan x="44" y="270" class="step">==&gt; </tspan><tspan class="fg">Backend on :18000 (FastAPI / uvicorn)</tspan>
+    <tspan x="64" y="286" class="ok">   ok </tspan><tspan class="dim">healthz {status:"ok"}</tspan>
+    <tspan x="44" y="308" class="step">==&gt; </tspan><tspan class="fg">Launching native Qt GUI</tspan>
+  </text>
 
-  <!-- Title -->
-  <text class="fg" x="66" y="114" font-size="15" font-weight="600">LocalAIStack</text>
-
-  <!-- Status -->
-  <text class="fg" x="66" y="146" font-size="12">Bringing up services…</text>
-
-  <!-- Progress bar track -->
-  <rect fill="#141820" x="66" y="162" width="380" height="8" rx="4" stroke="#252a34"/>
-  <!-- Progress fill (indeterminate-ish, ~65%) -->
-  <rect class="accent" x="66" y="162" width="246" height="8" rx="4"/>
-
-  <!-- Detail label -->
-  <text class="dim" x="66" y="196" font-size="11">docker compose up -d backend ollama qdrant searxng</text>
-
-  <!-- View logs link -->
-  <text class="accent" x="66" y="244" font-size="11">View logs</text>
-  <line x1="66" y1="247" x2="114" y2="247" stroke="#7c9cff" stroke-width="1"/>
+  <!-- Caret -->
+  <rect class="fg" x="44" y="322" width="7" height="13">
+    <animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite"/>
+  </rect>
 </svg>
