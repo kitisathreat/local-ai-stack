@@ -35,6 +35,22 @@ from gui.api_client import BackendClient
 from gui.widgets.tray import build_tray
 from gui.windows.chat import ChatWindow
 
+# Must match installer/LocalAIStack.iss `AppAUMID`. Set BEFORE QApplication
+# is constructed so Qt's first window registers under this AUMID and shares
+# its taskbar slot with the pinned shortcut. Same string is set by the PS
+# launcher so any path through the app produces one taskbar identity.
+_APP_AUMID = "LocalAIStack.App"
+
+
+def _set_taskbar_aumid() -> None:
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_AUMID)
+    except (AttributeError, OSError):
+        pass
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="LocalAIStack GUI")
@@ -76,6 +92,8 @@ async def _run_admin_mode(app: QApplication, client: BackendClient) -> int:
 
 def main() -> int:
     args = _parse_args()
+
+    _set_taskbar_aumid()
 
     app = QApplication(sys.argv)
     app.setApplicationName("LocalAIStack")

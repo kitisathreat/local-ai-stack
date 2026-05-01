@@ -19,6 +19,12 @@
 #define AppURL       "https://github.com/kitisathreat/local-ai-stack"
 #define AppId        "{E7B3A1D2-4F8C-4E9A-B012-3C7D5E6F1A2B}"
 #define ExeName      "LocalAIStack.exe"
+; AppUserModelID — opaque, version-stable taskbar identity. Stamped on
+; every shortcut and set at runtime by the launcher and the Qt GUI so
+; (a) the pinned shortcut, (b) the launcher process, and (c) the Qt
+; window all share one taskbar slot. Don't bump on minor upgrades or
+; users lose their pinned shortcut.
+#define AppAUMID     "LocalAIStack.App"
 
 [Setup]
 AppId={#AppId}
@@ -55,6 +61,32 @@ DisableProgramGroupPage=auto
 [Registry]
 Root: HKLM; Subkey: "SOFTWARE\LocalAIStack"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\LocalAIStack"; ValueType: string; ValueName: "Installed"; ValueData: "1"
+
+; ── Proper-app registration (Windows "Apps" recognition + taskbar pin) ──
+; HKCR\Applications\LocalAIStack.exe gives the EXE a friendly name and
+; binds the AUMID. Without this, "Pin to taskbar" / "Open with" treat
+; the EXE as anonymous and the taskbar icon doesn't group with the
+; pinned shortcut.
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}"; \
+    ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}"; \
+    ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppAUMID}"
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}\DefaultIcon"; \
+    ValueType: string; ValueData: "{app}\{#ExeName},0"
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}\shell\open\command"; \
+    ValueType: string; ValueData: """{app}\{#ExeName}"" ""%1"""
+
+; "Registered Applications" entry — surfaces the app in
+; Settings → Apps → Default apps, and in the modern taskbar pin UX.
+Root: HKLM; Subkey: "SOFTWARE\RegisteredApplications"; \
+    ValueType: string; ValueName: "{#AppName}"; ValueData: "SOFTWARE\LocalAIStack\Capabilities"; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "SOFTWARE\LocalAIStack\Capabilities"; \
+    ValueType: string; ValueName: "ApplicationName"; ValueData: "{#AppName}"
+Root: HKLM; Subkey: "SOFTWARE\LocalAIStack\Capabilities"; \
+    ValueType: string; ValueName: "ApplicationDescription"; \
+    ValueData: "Local AI assistant: chat, admin console, model resolver, Cloudflare tunnel."
+Root: HKLM; Subkey: "SOFTWARE\LocalAIStack\Capabilities"; \
+    ValueType: string; ValueName: "ApplicationIcon"; ValueData: "{app}\{#ExeName},0"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -98,14 +130,22 @@ Source: "..\assets\*";                 DestDir: "{app}\assets";             Flag
 [Icons]
 ; Start Menu — every entry targets LocalAIStack.exe (the only EXE on
 ; disk). Reconfigure / Repair are switches, not separate binaries.
-Name: "{group}\{#AppName}";             Filename: "{app}\{#ExeName}";  Tasks: startmenuicon
-Name: "{group}\Admin Console";          Filename: "{app}\{#ExeName}";  Parameters: "-Admin"; Tasks: startmenuicon
-Name: "{group}\Health Check";           Filename: "{app}\{#ExeName}";  Parameters: "-Test"; Tasks: startmenuicon
-Name: "{group}\Reconfigure {#AppName}"; Filename: "{app}\{#ExeName}";  Parameters: "-SetupGui"; Tasks: startmenuicon
+; AppUserModelID stamps the shortcut so its taskbar slot matches the
+; runtime EXE — that's what makes "Pin to taskbar" work cleanly and
+; keeps the running app in the same slot as the pinned shortcut.
+Name: "{group}\{#AppName}";             Filename: "{app}\{#ExeName}"; \
+    AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
+Name: "{group}\Admin Console";          Filename: "{app}\{#ExeName}"; \
+    Parameters: "-Admin"; AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
+Name: "{group}\Health Check";           Filename: "{app}\{#ExeName}"; \
+    Parameters: "-Test"; AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
+Name: "{group}\Reconfigure {#AppName}"; Filename: "{app}\{#ExeName}"; \
+    Parameters: "-SetupGui"; AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 
 ; Desktop (single shortcut for the runtime EXE).
-Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#ExeName}";  Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#ExeName}"; \
+    AppUserModelID: "{#AppAUMID}"; Tasks: desktopicon
 
 [Run]
 ; Phase 1 (silent, hidden, always runs): create the Python venvs and

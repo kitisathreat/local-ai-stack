@@ -89,6 +89,22 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     exit $LASTEXITCODE
 }
 
+# ── Taskbar identity ─────────────────────────────────────────────────────────
+# Stamp this process with the AppUserModelID so Windows groups the
+# launcher under the same taskbar slot as the pinned shortcut and the
+# Qt GUI it spawns. Must match installer/LocalAIStack.iss AppAUMID and
+# gui/main.py _APP_AUMID. SetCurrentProcessExplicitAppUserModelID is a
+# no-op on non-Windows / pre-7 hosts and harmless if already set.
+try {
+    $sig = '[DllImport("shell32.dll")] public static extern int SetCurrentProcessExplicitAppUserModelID([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id);'
+    if (-not ('Win32.AumidApi' -as [type])) {
+        Add-Type -Namespace Win32 -Name AumidApi -MemberDefinition $sig -ErrorAction Stop
+    }
+    [Win32.AumidApi]::SetCurrentProcessExplicitAppUserModelID('LocalAIStack.App') | Out-Null
+} catch {
+    # Non-fatal: taskbar grouping degrades gracefully without it.
+}
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 $Script:RepoRoot  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Script:StepsDir  = Join-Path $RepoRoot 'scripts\steps'
