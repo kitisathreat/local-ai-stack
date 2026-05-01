@@ -30,16 +30,25 @@
 # config/models.yaml does not need to track exact filenames.
 
 tiers:
-  # Qwen3 72B — hardest reasoning. Repo: mradermacher's GGUF mirror
-  # (the official Qwen org doesn't ship a 72B GGUF directly).
+  # Qwen3 32B — hardest reasoning that fits cleanly in 24 GB VRAM.
+  #
+  # Originally targeted Qwen3-72B-Q4_K_M (~46 GB), but that's larger
+  # than a 24 GB GPU and llama.cpp's auto partial-offload (35 of 80
+  # layers on GPU, 45 on CPU) produced numerically corrupted attention
+  # — output was repetitive number tokens and broken fragments rather
+  # than coherent text. Swapped to 32B at the same quant: full GPU
+  # offload, ~20 GB resident, leaves ~4 GB headroom for KV cache and
+  # compute buffer. The 32B is still Qwen3's frontier dense model and
+  # delivers the "highest quality" the tier name promises on this
+  # hardware class.
   highest_quality:
     source: huggingface
-    repo: "mradermacher/Qwen3-72B-Instruct-GGUF"
+    repo: "lmstudio-community/Qwen3-32B-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-72B-Instruct.Q4_K_M.gguf"
+      file: "Qwen3-32B-Q4_K_M.gguf"
 
   # Qwen3.6 35B-A3B (MoE) — default + orchestrator. Same repo as the
   # vision tier; we download the Q4_K_M weights once and the vision
@@ -69,14 +78,22 @@ tiers:
   # Note: the official Qwen/Qwen3-Coder-Next-GGUF ships sharded
   # (00001-of-00004 ... 00004-of-00004), which the resolver doesn't
   # yet stitch — we use unsloth's single-file build.
+  # Qwen3-Coder-30B-A3B (MoE, 3B active) — fits cleanly on a 24 GB GPU.
+  #
+  # Originally targeted Qwen3-Coder-Next-80B-A3B (~50 GB), but at that
+  # size llama.cpp's partial CPU/GPU offload would only fit ~30 of 80
+  # layers on GPU and produce numerically corrupted attention (same
+  # symptom that broke Qwen3-72B as the highest_quality tier).
+  # The 30B-A3B variant is the larger Qwen3 coder model that still
+  # has full-VRAM headroom for stable output.
   coding:
     source: huggingface
-    repo: "unsloth/Qwen3-Coder-Next-GGUF"
+    repo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-Coder-Next-Q4_K_M.gguf"
+      file: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
 
   # Qwen3.6 35B + mmproj — images / charts. Same base weights as the
   # versatile tier; the runtime spawns a separate llama-server with

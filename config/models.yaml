@@ -17,19 +17,18 @@ default: versatile
 tiers:
   # ── Highest Quality — Qwen3 72B dense, hardest reasoning ────────────────────
   highest_quality:
-    name: "Highest Quality (Qwen3 72B)"
-    description: "Maximum reasoning quality. Slow (~5-15 t/s with RAM spillover). Use for hardest problems."
+    name: "Highest Quality (Qwen3 32B)"
+    description: "Frontier dense Qwen3 model that fits in 24 GB VRAM at full GPU offload. Use for hardest problems."
     backend: llama_cpp
     port: 8010
-    model_tag: "qwen3-72b"
-    context_window: 16384                # halved from 32k. f16 KV at 32k for a 72B
-                                         # blows the VRAM budget; 16k + f16 fits
-                                         # alongside ~40 GPU-resident layers and
-                                         # produces correct output where 32k+q8 was
-                                         # emitting nonsense.
-    think_default: false                 # was true; Qwen3-72B emits long reasoning
-                                         # blocks via reasoning_content and the
-                                         # web UI silently drops those, making
+    model_tag: "qwen3-32b"
+    # Was Qwen3-72B with halved context (16k) + f16 KV trying to work
+    # around partial CPU/GPU offload corruption. Switched to 32B which
+    # fits fully on GPU at 32k context with q8 KV — back to the
+    # original spec values and stable output.
+    context_window: 32768
+    think_default: false                 # Qwen3 emits long reasoning_content
+                                         # the web UI silently drops, making
                                          # responses appear stuck. User can still
                                          # opt in via the Think checkbox.
     think_supported: true
@@ -39,16 +38,12 @@ tiers:
       top_k: 20
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 24
+    vram_estimate_gb: 22                 # ~20 GB weights + ~2 GB for KV+compute
     parallel_slots: 1
     n_gpu_layers: -1
     flash_attention: true
-    # f16 KV (was q8_0). q8_0 KV cache + partial CPU/GPU layer split (the file
-    # is 45 GB, GPU is 24 GB, so llama.cpp auto-spills to RAM) produced
-    # numerically corrupted attention → garbled output. f16 KV doubles the
-    # cache footprint but is stable; the smaller ctx above absorbs the cost.
-    cache_type_k: f16
-    cache_type_v: f16
+    cache_type_k: q8_0
+    cache_type_v: q8_0
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
@@ -105,15 +100,24 @@ tiers:
     cache_type_v: q8_0
 
   # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
+  # Was Qwen3-Coder-Next-80B-A3B which couldn't fit on a 24 GB GPU
+  # (same partial-offload corruption that hit the 72B). Now using
+  # Qwen3-Coder-30B-A3B-Instruct (MoE, 3B active params, ~18 GB at
+  # Q4_K_M) which sits comfortably below the VRAM ceiling.
   coding:
-    name: "Coding (Qwen3-Coder-Next 80B-A3B)"
-    description: "71.3% SWE-bench Verified. RL-trained on 800K real GitHub PRs. Native tool calling."
+    name: "Coding (Qwen3-Coder 30B-A3B)"
+    description: "Qwen3 coder MoE (3B active params). Native tool calling."
     backend: llama_cpp
     port: 8013
-    model_tag: "qwen3-coder-next-80b-a3b"
+    model_tag: "qwen3-coder-30b-a3b"
     fallback_tag: "qwen2.5-coder-32b"
-    context_window: 131072               # was 32768; native 256k YaRN
-    think_default: true                 # always on for coding tasks
+    context_window: 65536               # 30B-A3B fits 64k ctx in 24 GB VRAM
+                                        # alongside the model. The 80B variant's
+                                        # 256k YaRN context isn't reachable here.
+    think_default: false                # was true (80B); 30B coder is faster and
+                                        # users typically don't want reasoning
+                                        # blocks on simple coding turns. User
+                                        # can opt in via Think checkbox.
     think_supported: true
     params:
       temperature: 1.0                  # official recommendation for agentic coding
@@ -122,7 +126,7 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 24
+    vram_estimate_gb: 20                # ~18 GB weights + ~2 GB KV/compute
     reasoning_format: none              # strip <think> tags from API output
     parallel_slots: 1
     n_gpu_layers: -1
