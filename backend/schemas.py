@@ -78,6 +78,13 @@ class ChatRequest(BaseModel):
     # form returned by GET /tools.
     enabled_tools: list[str] | None = None
 
+    # When true, the backend uses the auto_tool_routes config to pick
+    # tools based on the user's message. Combines additively with
+    # `enabled_tools` (manual toggles always win — they are unioned with
+    # the auto picks). The chat UI sets this true by default; users can
+    # turn it off via the 🔧 popover's "Auto" switch.
+    tools_auto: bool | None = None
+
     # IDs returned by POST /api/chat/upload, attached to the user's
     # next message. The backend looks them up in data/uploads/<user>/
     # and either embeds the text inline or feeds image bytes to the

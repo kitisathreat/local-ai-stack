@@ -139,7 +139,8 @@
     #tools-popover {
       position: absolute; bottom: 100%; left: 0; margin-bottom: 6px;
       background: var(--panel); border: 1px solid var(--border);
-      border-radius: 6px; padding: 8px; min-width: 280px; max-height: 320px;
+      border-radius: 6px; padding: 8px; min-width: 320px; max-width: 380px;
+      max-height: 420px;
       overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 10;
     }
     #tools-popover.hidden { display: none; }
@@ -150,10 +151,38 @@
     #tools-popover .tool-row label {
       flex: 1; cursor: pointer; color: var(--fg);
     }
+    #tools-popover .tool-row .meta {
+      font-size: 10.5px; color: var(--muted); margin-top: 1px;
+    }
     #tools-popover .tool-search {
       width: 100%; background: #22252e; color: var(--fg);
       border: 1px solid var(--border); border-radius: 4px;
       padding: 4px 6px; margin-bottom: 6px; font: inherit; font-size: 12px;
+    }
+    #tools-popover .tool-section {
+      margin-top: 8px;
+    }
+    #tools-popover .tool-section:first-of-type { margin-top: 0; }
+    #tools-popover .tool-section-hd {
+      font-size: 10.5px; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--muted);
+      padding: 4px 2px 2px 2px; border-bottom: 1px solid var(--border);
+      margin-bottom: 4px;
+    }
+    #tools-popover .tool-empty {
+      color: var(--muted); padding: 12px 4px; font-size: 12px;
+      text-align: center;
+    }
+    #tools-popover .tool-master {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 2px 8px 2px;
+      border-bottom: 1px solid var(--border); margin-bottom: 4px;
+    }
+    #tools-popover .tool-master .label {
+      flex: 1; font-size: 12px; color: var(--fg); cursor: pointer;
+    }
+    #tools-popover .tool-master .hint {
+      font-size: 10.5px; color: var(--muted); display: block; margin-top: 1px;
     }
     /* iOS-style toggle switch */
     .toggle {
@@ -663,26 +692,58 @@
     modelEl.addEventListener('change', updateCtxIndicator);
 
     // ── Tools popover ─────────────────────────────────────────────────
+    // The /tools endpoint returns one entry per <module>.<method>. To
+    // avoid drowning the user in 200+ rows, the popover groups methods
+    // by module (one toggle per module) and renders modules under their
+    // category headings. Toggling a module flips every method it owns.
+    //
+    // Auto mode: when on (the default), the backend auto-picks tool
+    // modules per turn from `auto_tool_routes` in tools.yaml. The
+    // request still carries any modules the user manually toggled —
+    // they're unioned with the auto picks server-side.
     const toolsBtn = $('tools-btn');
     const toolsPop = $('tools-popover');
     const toolsList = $('tools-list');
     const toolsCount = $('tools-count');
     const toolSearch = $('tool-search');
-    const toolState = new Map();   // name → enabled (boolean)
+
+    // Per-module enabled state — single source of truth. Methods belong
+    // to a module; toggling the module's switch flips them all on send.
+    const moduleState = new Map();  // module → { enabled, title, category_id, category_label, methods: [name, ...], blocked: bool }
+    const toolMeta    = new Map();  // toolName → { module, blocked }
+    let toolCategories = [];        // [{ id, label, modules: [...] }]
+    let toolsAuto = true;           // mirrors the "Auto" master toggle
 
     async function loadTools() {
-      // Default every tool to OFF. Auto-enabling default-enabled tools
-      // pushes the request body past llama-server's per-slot context
-      // window once the registry has 200+ entries (28k+ tokens of
-      // schemas alone). The 🔧 popover is the explicit opt-in surface;
-      // the user toggles only what they need for that turn.
+      // Always-on default: Auto-mode picks tools per turn. Manual
+      // toggles still work — they union with the auto picks. This
+      // replaces the old "default OFF" model that left the popover
+      // looking empty and forced a manual hunt for every turn.
       try {
         const r = await api('/tools');
         if (!r.ok) return;
         const j = await r.json();
-        toolState.clear();
+        toolCategories = Array.isArray(j.categories) ? j.categories : [];
+        moduleState.clear();
+        toolMeta.clear();
         (j.data || []).forEach(t => {
-          toolState.set(t.name, false);
+          const mod = t.module || (t.name || '').split('.')[0];
+          if (!mod) return;
+          let entry = moduleState.get(mod);
+          if (!entry) {
+            entry = {
+              enabled: false,
+              title: t.module_title || mod,
+              category_id: t.category_id || '',
+              category_label: t.category_label || '',
+              methods: [],
+              blocked: false,
+            };
+            moduleState.set(mod, entry);
+          }
+          entry.methods.push(t.name);
+          if (t.airgap_blocked) entry.blocked = true;
+          toolMeta.set(t.name, { module: mod, blocked: !!t.airgap_blocked });
         });
         renderTools();
       } catch (_) {}
@@ -690,33 +751,149 @@
 
     function renderTools() {
       const q = (toolSearch.value || '').toLowerCase();
-      const rows = [];
-      toolState.forEach((enabled, name) => {
-        if (q && !name.toLowerCase().includes(q)) return;
-        rows.push({ name, enabled });
+
+      // Group modules by category in the order tools.yaml declared.
+      const byCategory = new Map();   // cid → { label, modules: [name,...] }
+      const declaredOrder = [];
+      toolCategories.forEach(c => {
+        declaredOrder.push(c.id);
+        byCategory.set(c.id, { label: c.label, modules: [] });
       });
-      rows.sort((a, b) => a.name.localeCompare(b.name));
-      toolsList.innerHTML = '';
-      rows.forEach(({ name, enabled }) => {
-        const row = document.createElement('div');
-        row.className = 'tool-row';
-        row.innerHTML = `
-          <label for="tool-${cssId(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</label>
-          <span class="toggle"><input type="checkbox" id="tool-${cssId(name)}" ${enabled ? 'checked' : ''}><span class="slider"></span></span>
-        `;
-        const cb = row.querySelector('input');
-        cb.addEventListener('change', () => {
-          toolState.set(name, cb.checked);
-          updateToolsCount();
+      // "Other" bucket for modules without a category.
+      byCategory.set('', { label: 'Other', modules: [] });
+      declaredOrder.push('');
+
+      // Each module appears under its registered category. Within a
+      // category we follow the declared module order (falling back to
+      // alphabetical for late additions).
+      const moduleNames = Array.from(moduleState.keys());
+      moduleNames.sort((a, b) => a.localeCompare(b));
+      const categoryModuleOrder = new Map();
+      toolCategories.forEach(c => {
+        c.modules.forEach((m, i) => {
+          categoryModuleOrder.set(c.id + ':' + m, i);
         });
-        toolsList.appendChild(row);
       });
+      moduleNames.forEach(mod => {
+        const entry = moduleState.get(mod);
+        const cid = entry.category_id || '';
+        const bucket = byCategory.get(cid) || byCategory.get('');
+        bucket.modules.push(mod);
+      });
+      byCategory.forEach((bucket, cid) => {
+        bucket.modules.sort((a, b) => {
+          const ai = categoryModuleOrder.get(cid + ':' + a);
+          const bi = categoryModuleOrder.get(cid + ':' + b);
+          if (ai != null && bi != null) return ai - bi;
+          if (ai != null) return -1;
+          if (bi != null) return 1;
+          return a.localeCompare(b);
+        });
+      });
+
+      toolsList.innerHTML = '';
+
+      // Master row: Auto-detect toggle. Always rendered first so users
+      // can see/flip it even when filtering.
+      const master = document.createElement('div');
+      master.className = 'tool-master';
+      master.innerHTML = `
+        <span class="label">
+          Auto-detect tools
+          <span class="hint">Backend picks tools per message based on what you asked.</span>
+        </span>
+        <span class="toggle"><input type="checkbox" id="tools-auto-cb" ${toolsAuto ? 'checked' : ''}><span class="slider"></span></span>
+      `;
+      master.querySelector('input').addEventListener('change', (e) => {
+        toolsAuto = !!e.target.checked;
+        updateToolsCount();
+      });
+      toolsList.appendChild(master);
+
+      let any = false;
+      declaredOrder.forEach(cid => {
+        const bucket = byCategory.get(cid);
+        if (!bucket) return;
+        // Apply text filter — match module title, module key, or any
+        // method name. Empty filter matches everything.
+        const visible = bucket.modules.filter(mod => {
+          if (!q) return true;
+          const entry = moduleState.get(mod);
+          if (mod.toLowerCase().includes(q)) return true;
+          if ((entry.title || '').toLowerCase().includes(q)) return true;
+          return entry.methods.some(n => n.toLowerCase().includes(q));
+        });
+        if (visible.length === 0) return;
+
+        const section = document.createElement('div');
+        section.className = 'tool-section';
+        const hd = document.createElement('div');
+        hd.className = 'tool-section-hd';
+        hd.textContent = bucket.label;
+        section.appendChild(hd);
+
+        visible.forEach(mod => {
+          const entry = moduleState.get(mod);
+          any = true;
+          const row = document.createElement('div');
+          row.className = 'tool-row';
+          const id = 'mod-' + cssId(mod);
+          const methodSummary = entry.methods.length > 1
+            ? `${entry.methods.length} methods`
+            : '1 method';
+          const blocked = entry.blocked
+            ? ' <span style="color:var(--danger);">(airgap blocked)</span>'
+            : '';
+          row.innerHTML = `
+            <label for="${id}" title="${escapeHtml(entry.methods.join('\n'))}">
+              ${escapeHtml(entry.title)}
+              <div class="meta">${methodSummary}${blocked}</div>
+            </label>
+            <span class="toggle">
+              <input type="checkbox" id="${id}" ${entry.enabled ? 'checked' : ''} ${entry.blocked ? 'disabled' : ''}>
+              <span class="slider"></span>
+            </span>
+          `;
+          row.querySelector('input').addEventListener('change', (e) => {
+            entry.enabled = !!e.target.checked;
+            updateToolsCount();
+          });
+          section.appendChild(row);
+        });
+        toolsList.appendChild(section);
+      });
+
+      if (!any) {
+        const empty = document.createElement('div');
+        empty.className = 'tool-empty';
+        empty.textContent = moduleState.size === 0
+          ? 'No tools available — backend registry is empty.'
+          : 'No tools match your filter.';
+        toolsList.appendChild(empty);
+      }
+
       updateToolsCount();
     }
     function cssId(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }
     function updateToolsCount() {
-      let n = 0; toolState.forEach(v => { if (v) n++; });
-      toolsCount.textContent = n ? `(${n})` : '';
+      let manual = 0;
+      moduleState.forEach(m => { if (m.enabled) manual++; });
+      const parts = [];
+      if (toolsAuto) parts.push('Auto');
+      if (manual) parts.push(`${manual} manual`);
+      toolsCount.textContent = parts.length ? `(${parts.join(' + ')})` : '(off)';
+    }
+
+    // Returns the explicit per-method tool names the user has toggled
+    // on. Used by sendMessage; auto-routed tools are picked server-side
+    // when tools_auto is true, so we don't need to expand them here.
+    function manuallyEnabledToolNames() {
+      const out = [];
+      moduleState.forEach((entry) => {
+        if (!entry.enabled) return;
+        entry.methods.forEach(n => out.push(n));
+      });
+      return out;
     }
 
     toolsBtn.addEventListener('click', (e) => {
@@ -820,11 +997,12 @@
       let buffered = '';
       let firstTokenSeen = false;
       try {
-        // Per-request enabled tools: only send the names the user
-        // toggled on. Empty array means "no tools this turn"; null
-        // (no key) means "use registry defaults".
-        const toolNames = [];
-        toolState.forEach((on, name) => { if (on) toolNames.push(name); });
+        // Per-request enabled tools: send the per-method names from any
+        // modules the user manually toggled on. The Auto switch is
+        // forwarded as `tools_auto` — the backend unions auto picks
+        // with the manual list. Empty array + tools_auto=false means
+        // "no tools at all this turn".
+        const toolNames = manuallyEnabledToolNames();
         // Lazy-create the conversation row on first send so its tier
         // matches whichever the user picked. Subsequent turns reuse
         // the same conversation_id.
@@ -854,7 +1032,8 @@
         // Only attach the field when it differs from default; this
         // preserves backwards compat with handlers that don't know
         // about it yet.
-        if (toolState.size > 0) body.enabled_tools = toolNames;
+        if (moduleState.size > 0) body.enabled_tools = toolNames;
+        body.tools_auto = !!toolsAuto;
         if (attachmentIds.length) body.attachment_ids = attachmentIds;
 
         const r = await fetch('/v1/chat/completions', {

@@ -128,6 +128,14 @@ class ToolEntry:
     handler: Callable         # bound method on the Tools instance
     default_enabled: bool = True
     requires_service: str | None = None
+    # User-facing label for the module (from tools.yaml `title`). Falls back
+    # to a Title-cased module name when the YAML entry has no title.
+    module_title: str = ""
+    # Stable id of the category this module belongs to (from tools.yaml
+    # `tool_categories[].id`). "" means "Other" — modules with no explicit
+    # category mapping are still surfaced; they just sort to the bottom.
+    category_id: str = ""
+    category_label: str = ""
 
 
 # Services considered safe to reach from an airgap environment because they
@@ -153,15 +161,72 @@ def _is_airgap_safe(entry: "ToolEntry") -> bool:
     return svc in _LOCAL_SERVICES
 
 
+@dataclass
+class ToolCategory:
+    """Display grouping for the chat composer's 🔧 popover.
+
+    Categories are declared at the top of tools.yaml under
+    `tool_categories:`. Order matters — categories render in declaration
+    order, and modules within a category render in the order they appear
+    in the category's `modules:` list.
+    """
+
+    id: str
+    label: str
+    modules: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AutoToolRoute:
+    """One regex → modules mapping used when ChatRequest.tools_auto is on."""
+
+    regex: str
+    modules: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AutoToolRoutes:
+    default_modules: list[str] = field(default_factory=list)
+    rules: list[AutoToolRoute] = field(default_factory=list)
+
+
 class ToolRegistry:
     def __init__(self):
         self.tools: dict[str, ToolEntry] = {}
+        # Filled in by build_registry() from tools.yaml.
+        self.categories: list[ToolCategory] = []
+        self.auto_routes: AutoToolRoutes = AutoToolRoutes()
 
     def __contains__(self, name: str) -> bool:
         return name in self.tools
 
     def get(self, name: str) -> ToolEntry | None:
         return self.tools.get(name)
+
+    def modules(self) -> dict[str, list[ToolEntry]]:
+        """Group tool entries by their source module. Preserves
+        insertion order so the chat UI renders modules in a stable order."""
+        out: dict[str, list[ToolEntry]] = {}
+        for t in self.tools.values():
+            out.setdefault(t.module_name, []).append(t)
+        return out
+
+    def names_for_modules(
+        self, modules: list[str] | set[str], *, airgap: bool = False,
+    ) -> list[str]:
+        """Resolve a list of module names to their full tool method names.
+        Used by auto-tool routing — the router decides which modules to
+        offer; the registry expands that to the concrete schemas. Airgap
+        filtering still applies."""
+        wanted = set(modules)
+        out: list[str] = []
+        for t in self.tools.values():
+            if t.module_name not in wanted:
+                continue
+            if airgap and not _is_airgap_safe(t):
+                continue
+            out.append(t.name)
+        return out
 
     def all_schemas(
         self, only_enabled: bool = True, *, airgap: bool = False,
@@ -231,7 +296,31 @@ def _load_tools_yaml(config_dir: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return data.get("tools", {}) or {}
+    # Merge `tools:` and `additional_tools:` so callers see the full
+    # registry. tools.yaml split them historically but for the chat UI
+    # they're equivalent.
+    merged: dict[str, dict] = {}
+    for section in ("tools", "additional_tools"):
+        block = data.get(section) or {}
+        for k, v in block.items():
+            if isinstance(v, dict):
+                merged[k] = v
+    return merged
+
+
+def _load_full_tools_yaml(config_dir: Path) -> dict:
+    path = config_dir / "tools.yaml"
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _module_title_from(yaml_entry: dict, module: str) -> str:
+    raw = (yaml_entry.get("title") or "").strip()
+    if raw:
+        return raw
+    # Fall back to a Title-cased module name: "open_library" → "Open Library"
+    return module.replace("_", " ").title()
 
 
 def build_registry(
@@ -250,7 +339,42 @@ def build_registry(
         logger.warning("Tools directory not found: %s", tools_dir)
         return reg
 
-    yaml_entries = _load_tools_yaml(config_dir or tools_dir.parent / "config")
+    cfg_dir = config_dir or tools_dir.parent / "config"
+    yaml_entries = _load_tools_yaml(cfg_dir)
+    full_yaml = _load_full_tools_yaml(cfg_dir)
+
+    # Categories: list of {id, label, modules}. Order is significant —
+    # the chat UI renders sections in the order they appear here. Build
+    # a reverse module→category map for O(1) lookup during tool
+    # registration below.
+    raw_categories = full_yaml.get("tool_categories") or []
+    module_to_category: dict[str, ToolCategory] = {}
+    for raw in raw_categories:
+        if not isinstance(raw, dict):
+            continue
+        cid = str(raw.get("id") or "").strip()
+        label = str(raw.get("label") or cid).strip()
+        modules = [str(m).strip() for m in (raw.get("modules") or []) if m]
+        if not cid or not label:
+            continue
+        cat = ToolCategory(id=cid, label=label, modules=modules)
+        reg.categories.append(cat)
+        for m in modules:
+            module_to_category[m] = cat
+
+    # Auto-tool routes — used when ChatRequest.tools_auto is true.
+    raw_auto = full_yaml.get("auto_tool_routes") or {}
+    if isinstance(raw_auto, dict):
+        defaults = [str(m).strip() for m in (raw_auto.get("default_modules") or []) if m]
+        rules: list[AutoToolRoute] = []
+        for r in raw_auto.get("rules") or []:
+            if not isinstance(r, dict):
+                continue
+            rx = (r.get("regex") or "").strip()
+            mods = [str(m).strip() for m in (r.get("modules") or []) if m]
+            if rx and mods:
+                rules.append(AutoToolRoute(regex=rx, modules=mods))
+        reg.auto_routes = AutoToolRoutes(default_modules=defaults, rules=rules)
 
     for py in sorted(tools_dir.glob("*.py")):
         if py.name.startswith("_") or py.name == "__init__.py":
@@ -263,6 +387,10 @@ def build_registry(
         yaml_entry = yaml_entries.get(module, {})
         default_enabled = bool(yaml_entry.get("default_enabled", True))
         requires_service = yaml_entry.get("requires_service")
+        module_title = _module_title_from(yaml_entry, module)
+        cat = module_to_category.get(module)
+        category_id = cat.id if cat else ""
+        category_label = cat.label if cat else ""
 
         for meth_name, meth in inspect.getmembers(instance, predicate=inspect.ismethod):
             if meth_name.startswith("_"):
@@ -279,7 +407,14 @@ def build_registry(
                 handler=meth,
                 default_enabled=default_enabled,
                 requires_service=requires_service,
+                module_title=module_title,
+                category_id=category_id,
+                category_label=category_label,
             )
 
-    logger.info("Loaded %d tool methods from %s", len(reg.tools), tools_dir)
+    logger.info(
+        "Loaded %d tool methods from %s (%d categories, %d auto-routes)",
+        len(reg.tools), tools_dir,
+        len(reg.categories), len(reg.auto_routes.rules),
+    )
     return reg

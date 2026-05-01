@@ -5,6 +5,150 @@
 # Tool files live in: tools/
 # Open WebUI tool docs: https://docs.openwebui.com/features/plugin/tools/
 
+# ── Tool category groupings (chat UI) ──────────────────────────────────────────
+# The chat composer's 🔧 popover groups tools into one toggle per *module*
+# (single switch enables every method of that module) and renders modules under
+# the category headings below in this order. Modules not listed here fall into
+# the "Other" bucket. Categories with no resident modules are hidden.
+tool_categories:
+  - id: search
+    label: "Search & Web"
+    modules: [web_search, url_reader, wayback, google_books, hackernews, rss_reader, stackexchange]
+  - id: knowledge
+    label: "Knowledge & Reference"
+    modules: [wikipedia, wikidata, rest_countries, dictionary]
+  - id: computation
+    label: "Computation & Time"
+    modules: [calculator, datetime_tool, dev_utils]
+  - id: weather_geo
+    label: "Weather, Geo & Events"
+    modules: [weather, openstreetmap, gdelt, nasa_eonet, openaq, noaa_climate, usgs]
+  - id: finance
+    label: "Finance & Markets"
+    modules: [finance, yahoo_finance_extended, sec_edgar, forex, financial_calculator,
+              technical_analysis, alpha_vantage, finnhub, coincap, chart_generator,
+              financial_model]
+  - id: economics
+    label: "Economics & Public Data"
+    modules: [fred, world_bank, imf, eurostat, oecd, census_bureau, bls, bea,
+              un_comtrade, data_gov]
+  - id: academic
+    label: "Academic & Scientific"
+    modules: [arxiv_search, pubmed, semantic_scholar, crossref, openalex, zenodo,
+              dblp, nasa_ads, unpaywall, europepmc, doaj]
+  - id: life_chem
+    label: "Life & Chemical Sciences"
+    modules: [clinicaltrials, openfda, pubchem, gbif, inaturalist, rcsb_pdb,
+              chembl, uniprot, ensembl]
+  - id: engineering
+    label: "Engineering & Physics"
+    modules: [nasa_apis, materials_project, simbad]
+  - id: defense
+    label: "Defense & Geopolitics"
+    modules: [acled, open_sanctions]
+  - id: legal_security
+    label: "Legal, Security & Compliance"
+    modules: [nvd, osv, uspto, courtlistener]
+  - id: news_media
+    label: "News & Media"
+    modules: [guardian, nytimes, tmdb, omdb]
+  - id: culture
+    label: "Culture & Arts"
+    modules: [met_museum, musicbrainz, library_of_congress, smithsonian,
+              rijksmuseum, europeana, open_library, annas_archive, qobuz_dl,
+              soulseek]
+  - id: dev
+    label: "Code & Development"
+    modules: [github_search, package_search, network_tools, jupyter_tool,
+              excel_tool, n8n_trigger]
+  - id: assistant
+    label: "Assistant Memory & Interaction"
+    modules: [memory_tool, ask_clarification]
+
+# ── Auto-tool routes ───────────────────────────────────────────────────────────
+# Used when ChatRequest.tools_auto is true (default in the chat UI). The router
+# picks the union of these modules for any rule whose regex matches the user's
+# message. Empty match set → fall back to a small default keep-list so the
+# model always has at least the workhorses it actually uses.
+auto_tool_routes:
+  default_modules: [calculator, datetime_tool, web_search, wikipedia,
+                    url_reader, memory_tool, ask_clarification]
+  rules:
+    - regex: '\b(weather|forecast|temperature|rain|snow|humidity|wind)\b'
+      modules: [weather, noaa_climate]
+    - regex: '\b(stock|ticker|share price|market cap|earnings|dividend|portfolio|p/?e|valuation)\b'
+      modules: [finance, yahoo_finance_extended, technical_analysis,
+                financial_calculator, sec_edgar, alpha_vantage, finnhub]
+    - regex: '\b(crypto|bitcoin|btc|eth(ereum)?|altcoin|coingecko)\b'
+      modules: [coincap, finance]
+    - regex: '\b(forex|currency|exchange rate|usd|eur|gbp|jpy)\b'
+      modules: [forex]
+    - regex: '\b(npv|irr|dcf|black[- ]?scholes|amortization|sharpe|sortino)\b'
+      modules: [financial_calculator, financial_model, chart_generator]
+    - regex: '\b(gdp|inflation|cpi|unemployment|interest rate|fed funds|treasury yield)\b'
+      modules: [fred, world_bank, imf, bls, bea, eurostat, oecd]
+    - regex: '\b(paper|preprint|arxiv|publication|cited|peer[- ]reviewed)\b'
+      modules: [arxiv_search, semantic_scholar, openalex, crossref, europepmc,
+                unpaywall, dblp]
+    - regex: '\b(clinical trial|nct\d+|fda|adverse event|drug label)\b'
+      modules: [clinicaltrials, openfda, pubmed]
+    - regex: '\b(protein|gene|sequence|genome|enzyme|amino acid|pdb)\b'
+      modules: [uniprot, ensembl, rcsb_pdb, chembl]
+    - regex: '\b(species|biodiversity|wildlife|taxon|ecology)\b'
+      modules: [gbif, inaturalist]
+    - regex: '\b(earthquake|magnitude|seismic|volcano|tsunami)\b'
+      modules: [usgs, nasa_eonet]
+    - regex: '\b(air quality|pm2\.5|pm10|pollution|ozone)\b'
+      modules: [openaq]
+    - regex: '\b(astronom\w*|exoplanet|nebula|galaxy|telescope|asteroid)\b'
+      modules: [nasa_ads, simbad, nasa_apis]
+    - regex: '\b(material|crystal|band gap|dft|alloy)\b'
+      modules: [materials_project]
+    - regex: '\b(news|latest|breaking|headline|article|published today)\b'
+      modules: [guardian, nytimes, gdelt, hackernews, rss_reader]
+    - regex: '\b(movie|film|tv show|series|imdb|box office|cast)\b'
+      modules: [tmdb, omdb]
+    - regex: '\b(book|novel|isbn|author|library|bibliograph\w+)\b'
+      modules: [open_library, google_books, library_of_congress]
+    - regex: '\b(painting|sculpture|museum|exhibit|art\w*|artist)\b'
+      modules: [met_museum, smithsonian, rijksmuseum, europeana]
+    - regex: '\b(music|album|track|song|artist|spotify|qobuz)\b'
+      modules: [musicbrainz, qobuz_dl, soulseek]
+    - regex: '\b(github|pull request|issue|repository|repo)\b'
+      modules: [github_search]
+    - regex: '\b(npm|pypi|pip install|cargo|docker( hub|file)?)\b'
+      modules: [package_search]
+    - regex: '\b(cve|vulnerab|exploit|patch|advisor|security alert)\b'
+      modules: [nvd, osv]
+    - regex: '\b(patent|uspto|inventor|trademark)\b'
+      modules: [uspto]
+    - regex: '\b(case law|opinion|court|scotus|circuit|appellate|docket)\b'
+      modules: [courtlistener]
+    - regex: '\b(sanction|ofac|peps?|watchlist|kyc|aml|compliance)\b'
+      modules: [open_sanctions]
+    - regex: '\b(armed conflict|war|protest|riot|battle|fatalit)\b'
+      modules: [acled, gdelt]
+    - regex: '\b(map|address|geocode|latitude|longitude|nearby|directions)\b'
+      modules: [openstreetmap]
+    - regex: '\b(country|countries|capital|currency|population|borders|nationality)\b'
+      modules: [rest_countries, world_bank]
+    - regex: '\b(define|definition|synonym|antonym|etymology|pronunciation)\b'
+      modules: [dictionary]
+    - regex: '\b(jupyter|run python|matplotlib|notebook|kernel)\b'
+      modules: [jupyter_tool]
+    - regex: '\b(excel|xlsx|csv|spreadsheet|workbook|pivot)\b'
+      modules: [excel_tool]
+    - regex: '\b(n8n|workflow|webhook|automation)\b'
+      modules: [n8n_trigger]
+    - regex: '\b(remember|recall|memori[sz]e|note this|save this fact)\b'
+      modules: [memory_tool]
+    - regex: '\b(calculate|compute|formula|equation|solve|integral|derivative)\b'
+      modules: [calculator]
+    - regex: '\b(today|tomorrow|yesterday|now|date|time|timezone|schedule)\b'
+      modules: [datetime_tool]
+    - regex: '\b(ip|whois|dns|asn|geolocate)\b'
+      modules: [network_tools]
+
 tools:
   # ── Search & Research ─────────────────────────────────────────────────────────
   web_search:

@@ -140,6 +140,35 @@ def multi_agent_decision(
     return False
 
 
+def auto_tool_decision(text: str, registry) -> list[str]:
+    """Pick the modules whose auto-route regex matches the user's message,
+    plus the configured default keep-list.
+
+    Returns module names (e.g. ``"calculator"``) — the caller expands
+    those to per-method tool names via
+    ``ToolRegistry.names_for_modules``. Empty input or a registry with
+    no rules yields just the defaults.
+    """
+    routes = getattr(registry, "auto_routes", None)
+    if routes is None:
+        return []
+    selected: list[str] = list(routes.default_modules)
+    seen: set[str] = set(selected)
+    if text:
+        import re as _re
+        for rule in routes.rules:
+            try:
+                if _re.search(rule.regex, text, _re.IGNORECASE):
+                    for m in rule.modules:
+                        if m not in seen:
+                            seen.add(m)
+                            selected.append(m)
+            except _re.error:
+                # A bad regex in YAML shouldn't take down chat; skip it.
+                continue
+    return selected
+
+
 def resolve_thinking(
     text: str,
     tier: TierConfig,

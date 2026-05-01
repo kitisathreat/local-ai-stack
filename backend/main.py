@@ -176,10 +176,22 @@ async def lifespan(app: FastAPI):
     )
 
     logger.info("Discovering tools…")
-    tools_dir = Path(os.getenv("LAI_TOOLS_DIR", "/app/tools"))
-    config_dir = Path(os.getenv("LAI_CONFIG_DIR", "/app/config"))
+    # Defaults must work in both Docker (/app/...) and native (repo-relative)
+    # deployments. Falling back to /app/* on a native run leaves the
+    # registry empty, which surfaces in the chat UI as an empty 🔧 popover
+    # because `/tools` returns `data: []`.
+    repo_root = Path(__file__).resolve().parent.parent
+    tools_dir = Path(os.getenv("LAI_TOOLS_DIR") or (repo_root / "tools"))
+    config_dir = Path(os.getenv("LAI_CONFIG_DIR") or (repo_root / "config"))
+    if not tools_dir.exists() and Path("/app/tools").exists():
+        tools_dir = Path("/app/tools")
+    if not config_dir.exists() and Path("/app/config").exists():
+        config_dir = Path("/app/config")
     state.tools = build_registry(tools_dir=tools_dir, config_dir=config_dir)
-    logger.info("Tool registry ready: %d tools", len(state.tools.tools))
+    logger.info(
+        "Tool registry ready: %d tools (tools_dir=%s, config_dir=%s)",
+        len(state.tools.tools), tools_dir, config_dir,
+    )
 
     # llama.cpp is the only backend now. The client manages one
     # llama-server subprocess per tier; vision + embedding are pre-spawned
@@ -457,13 +469,27 @@ async def list_tools():
     When airgap mode is on we mark tools that depend on non-local
     services with `airgap_blocked=True` so the frontend can grey them
     out. They remain in the list so users understand *why* an option
-    is unavailable."""
+    is unavailable.
+
+    The chat composer's 🔧 popover groups these by `module` (one toggle
+    per module) and renders modules under their `category_label`. The
+    `categories` list defines the display order; modules without an
+    explicit category fall under "Other" and sort to the bottom."""
     ag = airgap.is_enabled()
     return {
         "airgap": ag,
+        "categories": [
+            {"id": c.id, "label": c.label, "modules": list(c.modules)}
+            for c in state.tools.categories
+        ],
         "data": [
             {
                 "name": t.name,
+                "module": t.module_name,
+                "module_title": t.module_title or t.module_name,
+                "method": t.method_name,
+                "category_id": t.category_id,
+                "category_label": t.category_label,
                 "description": t.schema.get("function", {}).get("description", ""),
                 "default_enabled": t.default_enabled,
                 "requires_service": t.requires_service,
@@ -733,18 +759,33 @@ async def _single_agent_sse(
     tool_schemas: list[dict] | None = None
     if req.tools is None:
         # Per-request whitelist via the chat composer's 🔧 Tools popover.
-        # Three cases:
-        #   enabled_tools=None  → NO tools (default). Tool schemas
-        #     can swell to 25k+ tokens once the registry has 200+ entries,
-        #     which with --parallel 4 + ctx 65k blows past the per-slot
-        #     16k window before the user message even hits. Better to let
-        #     the user opt in explicitly via the popover.
-        #   enabled_tools=[]    → also no tools (matches user intent).
-        #   enabled_tools=[…]   → exactly those names.
-        if req.enabled_tools:
+        # Sources combine additively (manual ∪ auto):
+        #   enabled_tools=None  → no manual picks
+        #   enabled_tools=[]    → no manual picks (matches user intent)
+        #   enabled_tools=[…]   → exactly those names (manual)
+        # tools_auto=True       → router picks modules per user message
+        # tools_auto=None/False → no auto picks
+        # If both empty, no tools are sent — same as before. Tool
+        # schemas can swell to 25k+ tokens once the registry has 200+
+        # entries; auto-routing gates that at the module level so we
+        # only send a handful of relevant schemas per turn.
+        from .router import auto_tool_decision, last_user_text
+        wanted: list[str] = list(req.enabled_tools or [])
+        seen: set[str] = set(wanted)
+        if req.tools_auto:
+            user_text = last_user_text(req.messages)
+            modules = auto_tool_decision(user_text, state.tools)
+            auto_names = state.tools.names_for_modules(
+                modules, airgap=airgap.is_enabled(),
+            )
+            for n in auto_names:
+                if n not in seen:
+                    seen.add(n)
+                    wanted.append(n)
+        if wanted:
             enabled = state.tools.all_schemas(
                 airgap=airgap.is_enabled(),
-                names=req.enabled_tools,
+                names=wanted,
             )
             if enabled:
                 tool_schemas = enabled

@@ -279,3 +279,49 @@ def test_route_strips_slash_from_message(cfg, signals):
     decision, req2 = route(req, cfg, signals)
     assert req2.messages[-1].content == "Hello"
     assert decision.think is True
+
+
+# ── Auto-tool routing ──────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def tool_registry():
+    from backend.tools.registry import build_registry
+    return build_registry(tools_dir=ROOT / "tools", config_dir=ROOT / "config")
+
+
+def test_auto_tool_decision_includes_defaults(tool_registry):
+    from backend.router import auto_tool_decision
+    picks = auto_tool_decision("hello there", tool_registry)
+    # Always include the default keep-list so the model has the
+    # workhorses available even on neutral messages.
+    assert "calculator" in picks
+    assert "datetime_tool" in picks
+
+
+def test_auto_tool_decision_weather_intent(tool_registry):
+    from backend.router import auto_tool_decision
+    picks = auto_tool_decision("What's the weather forecast for Boston?", tool_registry)
+    assert "weather" in picks
+
+
+def test_auto_tool_decision_finance_intent(tool_registry):
+    from backend.router import auto_tool_decision
+    picks = auto_tool_decision("What's the share price of NVDA?", tool_registry)
+    assert "finance" in picks
+    assert "yahoo_finance_extended" in picks
+
+
+def test_auto_tool_decision_dedupes(tool_registry):
+    from backend.router import auto_tool_decision
+    # "stock price" matches finance rule; calculator stays in via defaults.
+    # Each module appears at most once even if multiple rules nominate it.
+    picks = auto_tool_decision("stock ticker price market cap", tool_registry)
+    assert len(picks) == len(set(picks))
+
+
+def test_auto_tool_decision_handles_empty_text(tool_registry):
+    from backend.router import auto_tool_decision
+    picks = auto_tool_decision("", tool_registry)
+    # Empty input → just the defaults.
+    assert picks == list(tool_registry.auto_routes.default_modules)
