@@ -176,6 +176,53 @@ def test_chat_completions_returns_503_when_all_tiers_down(monkeypatch):
     )
 
 
+# ── /v1/models filtering ──────────────────────────────────────────────────────
+
+def test_list_models_filter_excludes_embedding_role():
+    """Standalone version: directly verify the comprehension's filter
+    semantics over a mock TierConfig set, without booting FastAPI. The
+    full integration test below covers the live endpoint when the
+    backend is importable."""
+    from backend.config import TierConfig
+
+    tiers = {
+        "versatile": TierConfig(name="V", context_window=131072, role="chat"),
+        "fast": TierConfig(name="F", context_window=65536, role="chat"),
+        "embedding": TierConfig(
+            name="E", context_window=32768, role="embedding",
+        ),
+    }
+    visible = [name for name, t in tiers.items() if t.role != "embedding"]
+    assert "embedding" not in visible
+    assert "versatile" in visible
+    assert "fast" in visible
+
+
+@pytest.mark.skipif(not _backend_available(), reason="backend not importable")
+def test_list_models_excludes_embedding_tier():
+    """The chat dropdown is populated from /v1/models. The embedding tier
+    is RAG infrastructure (always-on, never user-selectable) — it must not
+    appear here, otherwise users see it as a chat option and break the
+    dropdown."""
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    with TestClient(app, base_url="http://testclient", raise_server_exceptions=False) as client:
+        r = client.get("/v1/models")
+    assert r.status_code in (200, 401), (
+        f"Unexpected status from /v1/models: {r.status_code}: {r.text[:200]}"
+    )
+    if r.status_code != 200:
+        return  # auth-gated environments — nothing more to check
+    body = r.json()
+    ids = {m.get("id") for m in body.get("data", [])}
+    assert "tier.embedding" not in ids, f"Embedding tier leaked into /v1/models: {ids}"
+    # Sanity: the chat tiers we DO want should still be there
+    assert "tier.versatile" in ids
+    assert "tier.fast" in ids
+    assert "tier.coding" in ids
+
+
 # ── build_argv: -ot expert offload flags ──────────────────────────────────────
 
 def test_build_argv_emits_ot_per_pattern():

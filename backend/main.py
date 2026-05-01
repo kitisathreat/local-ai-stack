@@ -357,6 +357,12 @@ async def healthz():
 
 @app.get("/v1/models", response_model=ModelsListResponse)
 async def list_models():
+    """Return user-selectable chat tiers as virtual OpenAI-compatible models.
+
+    Skips any tier whose `role` is "embedding" — the always-on embedding
+    server is RAG infrastructure, not a chat tier the user picks. This
+    keeps the GUI's tier dropdown clean.
+    """
     tiers = state.config.models.tiers
     return ModelsListResponse(data=[
         TierInfo(
@@ -369,6 +375,7 @@ async def list_models():
             vram_estimate_gb=tier.vram_estimate_gb,
         )
         for name, tier in tiers.items()
+        if tier.role != "embedding"
     ])
 
 
