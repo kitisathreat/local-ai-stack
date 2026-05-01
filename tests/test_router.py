@@ -151,14 +151,20 @@ def test_thinking_auto_overrides_default(cfg, signals):
 
 
 def test_thinking_default_when_no_signal(cfg, signals):
-    tier = cfg.models.tiers["highest_quality"]  # default think=True
+    # All Qwen3 tiers now ship with think_default=False — Qwen3 emits long
+    # reasoning_content blocks the chat UI silently drops, making responses
+    # appear stuck. Users opt in via the Think checkbox / /think on.
+    # When there's no explicit override, no slash override, and no auto
+    # signal, resolve_thinking should fall through to tier.think_default.
+    tier = cfg.models.tiers["highest_quality"]
+    assert tier.think_default is False
     assert resolve_thinking(
         text="random neutral message",
         tier=tier,
         explicit=None,
         slash_override=None,
         signals=signals,
-    ) is True
+    ) is False
 
 
 # ── Image & code detection ─────────────────────────────────────────────
