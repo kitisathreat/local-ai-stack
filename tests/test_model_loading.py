@@ -174,3 +174,43 @@ def test_chat_completions_returns_503_when_all_tiers_down(monkeypatch):
     assert r.status_code in (200, 401, 503), (
         f"Unexpected status when all tiers are down: {r.status_code}: {r.text[:200]}"
     )
+
+
+# ── build_argv: -ot expert offload flags ──────────────────────────────────────
+
+def test_build_argv_emits_ot_per_pattern():
+    """Each override_tensors entry becomes a separate -ot flag pair."""
+    from backend.config import TierConfig
+    from backend.backends.llama_cpp import build_argv
+
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        gguf_path="/tmp/fake.gguf",
+        port=9999,
+        override_tensors=[
+            ".ffn_.*_exps.=CPU",
+            ".ffn_gate_inp.=CPU",
+        ],
+    )
+    argv = build_argv(tier)
+    # Should have exactly two -ot occurrences, paired with their patterns
+    ot_indexes = [i for i, a in enumerate(argv) if a == "-ot"]
+    assert len(ot_indexes) == 2
+    assert argv[ot_indexes[0] + 1] == ".ffn_.*_exps.=CPU"
+    assert argv[ot_indexes[1] + 1] == ".ffn_gate_inp.=CPU"
+
+
+def test_build_argv_no_ot_when_field_empty():
+    """Backward compat: tiers without override_tensors emit no -ot flags."""
+    from backend.config import TierConfig
+    from backend.backends.llama_cpp import build_argv
+
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        gguf_path="/tmp/fake.gguf",
+        port=9999,
+    )
+    argv = build_argv(tier)
+    assert "-ot" not in argv

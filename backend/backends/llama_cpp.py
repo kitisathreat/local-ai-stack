@@ -139,6 +139,8 @@ def build_argv(tier: TierConfig) -> list[str]:
             argv += ["--yarn-orig-ctx", str(tier.rope_scaling.orig_ctx)]
     if tier.extra_args:
         argv += list(tier.extra_args)
+    for pattern in tier.override_tensors:
+        argv += ["-ot", pattern]
     return argv
 
 
