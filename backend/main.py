@@ -189,8 +189,11 @@ async def lifespan(app: FastAPI):
 
     clients = {"llama_cpp": state.llama_cpp}
 
-    async def _llama_load(tier, free_vram_gb=None):
-        await state.llama_cpp.ensure_loaded(tier, free_vram_gb=free_vram_gb)
+    async def _llama_load(tier, free_vram_gb=None, variant=None):
+        # Resolve to the variant-effective tier so build_argv sees the
+        # right model_tag / gguf_path / vram_estimate_gb / draft fields.
+        effective = tier.resolve_variant(variant) if variant else tier
+        await state.llama_cpp.ensure_loaded(effective, free_vram_gb=free_vram_gb)
 
     async def _llama_unload(tier):
         await state.llama_cpp.unload(tier)
@@ -564,6 +567,13 @@ async def chat_completions(
     )
 
     tier = state.config.models.tiers[decision.tier_name]
+    # If the router picked a variant (e.g. /coder big -> '80b'), point the
+    # request payload at the variant-effective tier — same llama-server
+    # endpoint, but build_argv-relevant fields (model_tag, draft, vram)
+    # come from the variant. The scheduler has already loaded the right
+    # variant by this point via decision.variant.
+    if decision.variant:
+        tier = tier.resolve_variant(decision.variant)
     client = state.llama_cpp
 
     started = time.time()
@@ -655,6 +665,7 @@ async def _reserve_with_sse(
     scheduler: VRAMScheduler,
     tier_id: str,
     model_id: str,
+    variant: str | None = None,
 ) -> AsyncIterator[str]:
     """Acquire a scheduler slot, forwarding queue-progress events as SSE.
 
@@ -674,7 +685,9 @@ async def _reserve_with_sse(
         position updates. Lets the chat UI label them differently."""
         return str(ev.get("type") or "queue")
 
-    acquire_task = asyncio.create_task(scheduler.acquire(tier_id, on_event))
+    acquire_task = asyncio.create_task(
+        scheduler.acquire(tier_id, on_event, variant=variant),
+    )
     try:
         while not acquire_task.done():
             try:
@@ -758,6 +771,7 @@ async def _single_agent_sse(
             # queue-progress events to the client while we wait.
             async for sse in _reserve_with_sse(
                 state.scheduler, decision.tier_name, model_id,
+                variant=decision.variant,
             ):
                 yield sse
             accumulator = ToolCallAccumulator()

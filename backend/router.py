@@ -26,6 +26,7 @@ class SlashParseResult:
     cleaned_message: str
     applied: list[str] = field(default_factory=list)
     set_tier: str | None = None
+    set_variant: str | None = None
     think_override: bool | None = None
     multi_agent_override: bool | None = None
     clear_memory: bool = False
@@ -58,6 +59,20 @@ def parse_slash_commands(
                 parts = remaining.split(None, 1)
                 if parts:
                     result.set_tier = parts[0].strip().lower().lstrip("tier.")
+                    result.applied.append(f"{cmd.strip()} {parts[0]}")
+                    text = parts[1] if len(parts) > 1 else ""
+                    changed = True
+                    break
+
+            # "/coder " consumes the next token as the variant name.
+            # Aliases small/big -> 30b/80b for natural-language ergonomics.
+            if effects.get("set_variant"):
+                remaining = text[len(cmd):].strip()
+                parts = remaining.split(None, 1)
+                if parts:
+                    raw = parts[0].strip().lower()
+                    aliases = {"small": "30b", "big": "80b", "large": "80b"}
+                    result.set_variant = aliases.get(raw, raw)
                     result.applied.append(f"{cmd.strip()} {parts[0]}")
                     text = parts[1] if len(parts) > 1 else ""
                     changed = True
@@ -239,10 +254,18 @@ def route(
     if tier_name in ("fast", "vision"):
         multi_agent = False
 
+    # Variant override: only honored when the resolved tier declares the
+    # named variant. Silently dropped otherwise so a stray /coder on a
+    # non-coding tier doesn't error.
+    variant: str | None = None
+    if parsed.set_variant and parsed.set_variant in tier.variants:
+        variant = parsed.set_variant
+
     decision = RouteDecision(
         tier_name=tier_name,
         think=think,
         multi_agent=multi_agent,
+        variant=variant,
         slash_commands_applied=parsed.applied,
         overrides={
             k: v for k, v in {
@@ -250,6 +273,7 @@ def route(
                 "slash_think": parsed.think_override,
                 "slash_multi_agent": parsed.multi_agent_override,
                 "clear_memory": parsed.clear_memory or None,
+                "slash_variant": parsed.set_variant,
             }.items() if v is not None
         },
         specialist_reason=specialist_reason,

@@ -167,8 +167,14 @@ class TierVariant(BaseModel):
     All fields are optional — only the ones explicitly set are applied.
     Keep this surface narrow: variants exist to swap the model + its
     immediate runtime sizing, not to reconfigure the tier wholesale.
+
+    `source` names an entry in model-sources.yaml whose resolved gguf_path
+    is copied into this variant's gguf_path at config load time. Lets
+    each variant point at its own GGUF without duplicating model_resolver
+    plumbing.
     """
 
+    source: str | None = None
     model_tag: str | None = None
     gguf_path: str | None = None
     vram_estimate_gb: float | None = None
@@ -485,6 +491,20 @@ def _apply_resolved_models(models_cfg: "ModelsConfig") -> None:
         path = draft_info.get("gguf_path")
         if path:
             tier.draft_gguf_path = path
+
+    # Variant gguf_paths: each TierVariant.source names a model-sources
+    # entry; we copy that entry's resolved gguf_path into the variant.
+    # Variants without a `source` keep whatever gguf_path was declared in
+    # YAML (typically empty for the default variant — it inherits from
+    # the parent tier).
+    for tier in models_cfg.tiers.values():
+        for variant in tier.variants.values():
+            if not variant.source or variant.gguf_path:
+                continue
+            src_info = tiers.get(variant.source) or {}
+            path = src_info.get("gguf_path")
+            if path:
+                variant.gguf_path = path
 
 
 @lru_cache(maxsize=1)

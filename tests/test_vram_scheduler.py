@@ -357,3 +357,47 @@ async def test_mark_tier_dirty_evicts_idle(cfg):
     await sched.mark_tier_dirty("fast")
     # Evicted since refcount==0
     assert "fast" not in sched.loaded
+
+
+# ── Variant switching ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_variant_switch_evicts_when_idle(cfg):
+    """Switching variants on an idle tier evicts the previous variant
+    so the new one can spawn."""
+    from backend.config import TierVariant
+    # Set up fake variants on the coding tier (the production YAML has
+    # them too, but be explicit so the test doesn't drift).
+    cfg.models.tiers["coding"].variants = {
+        "30b": TierVariant(model_tag="qwen3-coder-30b-a3b", vram_estimate_gb=6.5),
+        "80b": TierVariant(model_tag="qwen3-coder-next-80b-a3b", vram_estimate_gb=14.5),
+    }
+    cfg.models.tiers["coding"].default_variant = "30b"
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("coding", variant="30b"):
+        pass
+    assert sched.loaded["coding"].variant == "30b"
+    assert sched.loaded["coding"].model_tag == "qwen3-coder-30b-a3b"
+
+    async with sched.reserve("coding", variant="80b"):
+        # The previous 30b entry was evicted and replaced
+        assert sched.loaded["coding"].variant == "80b"
+        assert sched.loaded["coding"].model_tag == "qwen3-coder-next-80b-a3b"
+
+
+@pytest.mark.asyncio
+async def test_variant_unset_uses_default(cfg):
+    """When acquire(variant=None), the tier's default_variant is recorded
+    on the LoadedModel so subsequent default-variant requests share it."""
+    from backend.config import TierVariant
+    cfg.models.tiers["coding"].variants = {
+        "30b": TierVariant(model_tag="qwen3-coder-30b-a3b", vram_estimate_gb=6.5),
+    }
+    cfg.models.tiers["coding"].default_variant = "30b"
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("coding"):
+        assert sched.loaded["coding"].variant == "30b"

@@ -255,6 +255,27 @@ tiers:
       type: yarn
       factor: 4.0
       orig_ctx: 32768
+    # ── Per-request variants ──────────────────────────────────────────
+    # The coding tier can run either of two MoE coder models. Default
+    # is the smaller 30B (faster, fits with plenty of slack); users opt
+    # into the larger 80B for harder refactors via the `/coder big`
+    # slash command. Both variants share the same -ot expert-offload
+    # pattern, the same Qwen3-0.6B draft, the same KV cache type.
+    # Switching variants triggers a re-spawn of the tier's llama-server.
+    default_variant: "30b"
+    variants:
+      30b:
+        # Default. `source` omitted on purpose: this variant inherits
+        # gguf_path from the parent coding tier's model_resolver entry.
+        model_tag: "qwen3-coder-30b-a3b"
+        vram_estimate_gb: 6.5
+      80b:
+        # The big variant — points at the `coding_80b` entry in
+        # model-sources.yaml. Re-uses the same -ot pattern (configured
+        # on the parent tier; not duplicated here).
+        source: "coding_80b"
+        model_tag: "qwen3-coder-next-80b-a3b"
+        vram_estimate_gb: 14.5
 
   # ── Vision — Qwen3.6 35B-A3B + mmproj via llama.cpp ─────────────────────────
   vision:

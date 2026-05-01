@@ -73,6 +73,10 @@ slash_commands:
     multi_agent: true
   '/tier':                              # usage: /tier coding
     set_tier: true                      # value comes from next token
+  '/coder':                             # usage: /coder big | /coder small
+    set_variant: true                   # value comes from next token; only
+                                        # honored when the resolved tier has
+                                        # a matching variant (otherwise no-op)
   '/forget':
     clear_memory: true
   '/quick':

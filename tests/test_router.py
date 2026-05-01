@@ -60,6 +60,26 @@ def test_slash_tier_override(cfg):
     assert r.cleaned_message == "write a sort function"
 
 
+def test_slash_coder_big(cfg):
+    r = parse_slash_commands("/coder big refactor this", cfg.router.slash_commands)
+    assert r.set_variant == "80b"
+    assert r.cleaned_message == "refactor this"
+    assert "/coder big" in r.applied
+
+
+def test_slash_coder_small(cfg):
+    r = parse_slash_commands("/coder small quick fix", cfg.router.slash_commands)
+    assert r.set_variant == "30b"
+    assert r.cleaned_message == "quick fix"
+
+
+def test_slash_coder_explicit_variant_name(cfg):
+    """Users can pass the canonical variant name directly."""
+    r = parse_slash_commands("/coder 80b do thing", cfg.router.slash_commands)
+    assert r.set_variant == "80b"
+    assert r.cleaned_message == "do thing"
+
+
 def test_slash_chained(cfg):
     r = parse_slash_commands("/think off /solo hello", cfg.router.slash_commands)
     assert r.think_override is False

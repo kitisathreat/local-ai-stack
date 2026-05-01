@@ -96,6 +96,22 @@ tiers:
       revision: "main"
       file: "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
 
+  # Qwen3-Coder-Next 80B-A3B — optional "big" variant for the coding
+  # tier. Selectable at request time via `/coder big`. Same architecture
+  # (MoE, 3B active, standard attention) as the 30B default; just
+  # bigger, slower, more capable on long-context refactors. Now feasible
+  # on 24 GB hardware because the -ot expert offload pattern (added in
+  # the patch series) keeps VRAM at ~14 GB even for the 80B file.
+  # Default tier remains the 30B; users opt into the 80B per turn.
+  coding_80b:
+    source: huggingface
+    repo: "unsloth/Qwen3-Coder-Next-80B-A3B-Instruct-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "Qwen3-Coder-Next-80B-A3B-Instruct-UD-Q4_K_XL.gguf"
+
   # Qwen3.6 35B + mmproj — images / charts. Same base weights as the
   # versatile tier (Unsloth UD-Q4_K_XL); the runtime spawns a separate
   # llama-server with the mmproj attached so it can process vision input.
