@@ -189,8 +189,8 @@ async def lifespan(app: FastAPI):
 
     clients = {"llama_cpp": state.llama_cpp}
 
-    async def _llama_load(tier):
-        await state.llama_cpp.ensure_loaded(tier)
+    async def _llama_load(tier, free_vram_gb=None):
+        await state.llama_cpp.ensure_loaded(tier, free_vram_gb=free_vram_gb)
 
     async def _llama_unload(tier):
         await state.llama_cpp.unload(tier)

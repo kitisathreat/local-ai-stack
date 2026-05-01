@@ -357,7 +357,15 @@ class VRAMScheduler:
                     try:
                         loader = self.loaders.get(tier.backend)
                         if loader:
-                            await loader(tier)
+                            # New optional kwarg: pass free_vram_gb so loaders
+                            # can consult the residency planner. Loaders that
+                            # don't accept it (older signatures) fall back
+                            # via the TypeError handler below.
+                            try:
+                                await loader(tier, free_vram_gb=before_free)
+                            except TypeError:
+                                # Backward-compat: loader didn't accept the kwarg
+                                await loader(tier)
                     except Exception:
                         async with self._lock:
                             new_entry.state = ModelState.EVICTING

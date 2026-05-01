@@ -228,6 +228,20 @@ Secrets (`AUTH_SECRET_KEY`, `HISTORY_SECRET_KEY`, SMTP creds, Hugging
 Face token) live in `.env` at the repo root, written by the setup
 wizard or `-InitEnv`. Never committed.
 
+### Optional environment variables
+
+- `LAI_RESIDENCY_PLANNER` (default: unset) — When set to `1`, the
+  llama-server spawn path consults `backend/model_residency.py` to
+  compute `n_gpu_layers` / `use_mmap` / `use_mlock` per spawn based on
+  live free VRAM and (eventually) request complexity. Otherwise (the
+  default), the YAML-declared values in `config/models.yaml` are used
+  verbatim. Useful for testing partial-offload behavior on dense tiers
+  without changing the YAML.
+- `OFFLINE=1` — Skips upstream HuggingFace polling; uses pinned
+  revisions only.
+- `MODEL_UPDATE_POLICY` — `auto`, `prompt`, or `skip` for detected
+  upstream model updates.
+
 ## API endpoints
 
 OpenAI-compatible streaming chat is the headline; the rest is the
