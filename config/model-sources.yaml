@@ -30,25 +30,34 @@
 # config/models.yaml does not need to track exact filenames.
 
 tiers:
-  # Qwen3 32B — hardest reasoning that fits cleanly in 24 GB VRAM.
+  # Qwen3 72B at IQ4_XS — preserved 72B for hardest-reasoning tier
+  # using stability overrides that make partial CPU/GPU offload work
+  # on a 24 GB GPU.
   #
-  # Originally targeted Qwen3-72B-Q4_K_M (~46 GB), but that's larger
-  # than a 24 GB GPU and llama.cpp's auto partial-offload (35 of 80
-  # layers on GPU, 45 on CPU) produced numerically corrupted attention
-  # — output was repetitive number tokens and broken fragments rather
-  # than coherent text. Swapped to 32B at the same quant: full GPU
-  # offload, ~20 GB resident, leaves ~4 GB headroom for KV cache and
-  # compute buffer. The 32B is still Qwen3's frontier dense model and
-  # delivers the "highest quality" the tier name promises on this
-  # hardware class.
+  # Three things working together vs. the Q4_K_M attempt that produced
+  # garbage output:
+  #   1. IQ4_XS (~37 GB) instead of Q4_K_M (~46 GB) — about 50 of 80
+  #      layers fit on GPU instead of 35; the smaller CPU residue is
+  #      less likely to corrupt attention numerics at the boundary.
+  #   2. mradermacher's i1-GGUF (imatrix-calibrated) instead of plain
+  #      quants — imatrix uses calibration data to keep activations
+  #      in a tighter distribution per quant block, measurably more
+  #      numerically stable than the naive variants.
+  #   3. Runtime flags (in config/models.yaml): --no-mmap + --mlock
+  #      pin the CPU-resident layers in real RAM (no disk paging
+  #      latency); flash_attention: false avoids the FA boundary
+  #      bug between GPU and CPU layers.
+  #
+  # Tradeoff vs. the 32B option: ~5-10 t/s instead of ~30 t/s, and
+  # needs ~50 GB system RAM. Quality is 72B-class.
   highest_quality:
     source: huggingface
-    repo: "lmstudio-community/Qwen3-32B-GGUF"
-    file: "*Q4_K_M.gguf"
+    repo: "mradermacher/Qwen3-72B-Instruct-i1-GGUF"
+    file: "*i1-IQ4_XS.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-32B-Q4_K_M.gguf"
+      file: "Qwen3-72B-Instruct.i1-IQ4_XS.gguf"
 
   # Qwen3.6 35B-A3B (MoE) — default + orchestrator. Same repo as the
   # vision tier; we download the Q4_K_M weights once and the vision
