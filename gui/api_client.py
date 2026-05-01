@@ -203,6 +203,21 @@ class BackendClient:
             r.raise_for_status()
             return r.json()
 
+    async def model_pull_status(self) -> dict:
+        """Per-tier download progress for the Models tab progress bars.
+
+        Returns {tier_name: {downloaded_bytes, expected_bytes, percent,
+        complete, in_progress, repo, filename}}. Endpoint reads the
+        on-disk GGUF size + the largest partial blob in the HF cache,
+        so it surfaces in-flight downloads even before they're symlinked
+        into snapshots/."""
+        async with self._client() as c:
+            r = await c.get("/admin/model-pull-status")
+            if r.status_code == 404:
+                return {}
+            r.raise_for_status()
+            return r.json()
+
     # ── Chat streaming ─────────────────────────────────────────────────
 
     async def stream_chat(

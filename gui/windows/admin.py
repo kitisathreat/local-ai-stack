@@ -11,9 +11,9 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
-    QDoubleSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
-    QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
 from gui.api_client import BackendClient
@@ -232,30 +232,83 @@ class AdminWindow(QMainWindow):
     # ── Models tab ─────────────────────────────────────────────────────────
 
     def _build_models_tab(self) -> QWidget:
-        self._models_table = QTableWidget(0, 5)
+        # Six-column layout: the new "Progress" column hosts a per-tier
+        # QProgressBar that polls /admin/model-pull-status. The bar is
+        # the user's at-a-glance view of "is everything downloaded yet?"
+        # while the wizard / backend auto-pull runs in the background.
+        self._models_table = QTableWidget(0, 6)
         self._models_table.setHorizontalHeaderLabels(
-            ["Tier", "Source", "Identifier", "Origin", "Update?"]
+            ["Tier", "Source", "Identifier", "Origin", "Update?", "Progress"]
         )
         self._models_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._models_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
+        # Progress bars per tier, keyed by tier name. Reused across
+        # refreshes so the bar instance — and its smooth animation —
+        # survives the table re-population.
+        self._progress_bars: dict[str, QProgressBar] = {}
+        # Drive a 5-second poll while ANY tier is incomplete. Stops
+        # itself once everything reaches 100%.
+        self._pull_timer = QTimer(self)
+        self._pull_timer.setInterval(5000)
+        self._pull_timer.timeout.connect(
+            lambda: asyncio.ensure_future(self._refresh_pull_progress())
+        )
         w = QWidget()
         QVBoxLayout(w).addWidget(self._models_table)
         return w
+
+    def _make_progress_bar(self, tier: str) -> QProgressBar:
+        bar = self._progress_bars.get(tier)
+        if bar is None:
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(True)
+            bar.setFormat("…")
+            self._progress_bars[tier] = bar
+        return bar
+
+    @staticmethod
+    def _fmt_bytes(n: int | float) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    def _update_bar(self, tier: str, status: dict) -> None:
+        bar = self._make_progress_bar(tier)
+        complete = status.get("complete", False)
+        in_progress = status.get("in_progress", False)
+        pct = status.get("percent")
+        downloaded = status.get("downloaded_bytes") or 0
+        expected = status.get("expected_bytes")
+        if complete:
+            bar.setRange(0, 100); bar.setValue(100)
+            bar.setFormat("✓ done")
+        elif pct is not None:
+            bar.setRange(0, 100); bar.setValue(int(pct))
+            bar.setFormat(f"{pct:.1f}% — {self._fmt_bytes(downloaded)}"
+                          + (f" / {self._fmt_bytes(expected)}" if expected else ""))
+        elif in_progress:
+            # No expected size yet (HF API hasn't answered) — show an
+            # indeterminate spinner so the user sees activity.
+            bar.setRange(0, 0); bar.setFormat(self._fmt_bytes(downloaded))
+        else:
+            bar.setRange(0, 100); bar.setValue(0)
+            bar.setFormat("queued")
 
     async def _refresh_models(self) -> None:
         try:
             data = await self._client.resolved_models()
         except Exception:
             data = {}
-        tiers = (data.get("tiers") or {}).items()
+        tiers = list((data.get("tiers") or {}).items())
         self._models_table.setRowCount(0)
         for row, (tier, info) in enumerate(tiers):
             self._models_table.insertRow(row)
-            # The /resolved-models payload has separate repo + filename
-            # fields rather than a single 'identifier'. Compose them so
-            # the user sees what's actually on disk for that tier.
             repo = info.get("repo") or info.get("model_id") or ""
             filename = info.get("filename") or ""
             if repo and filename:
@@ -270,6 +323,36 @@ class AdminWindow(QMainWindow):
                 "yes" if info.get("update_available") else "",
             ]):
                 self._models_table.setItem(row, col, QTableWidgetItem(str(val)))
+            # Progress bar in column 5 — set after insertRow so the
+            # widget is parented to the right cell.
+            bar = self._make_progress_bar(tier)
+            # Seed from the available flag so the row isn't blank
+            # before the first /admin/model-pull-status round trip.
+            seed_complete = bool(info.get("available"))
+            if seed_complete:
+                bar.setRange(0, 100); bar.setValue(100); bar.setFormat("✓ done")
+            elif bar.format() == "…":
+                bar.setRange(0, 100); bar.setValue(0); bar.setFormat("checking…")
+            self._models_table.setCellWidget(row, 5, bar)
+        # Kick off the first detailed poll and start the timer if any
+        # tier is still incomplete.
+        asyncio.ensure_future(self._refresh_pull_progress())
+        if hasattr(self, "_pull_timer") and not self._pull_timer.isActive():
+            self._pull_timer.start()
+
+    async def _refresh_pull_progress(self) -> None:
+        """Poll /admin/model-pull-status and update each row's bar."""
+        try:
+            statuses = await self._client.model_pull_status()
+        except Exception:
+            return
+        all_done = bool(statuses) and all(
+            s.get("complete") for s in statuses.values()
+        )
+        for tier, status in statuses.items():
+            self._update_bar(tier, status)
+        if all_done and hasattr(self, "_pull_timer"):
+            self._pull_timer.stop()
 
     # ── Tools tab ──────────────────────────────────────────────────────────
 
