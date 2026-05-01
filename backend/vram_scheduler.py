@@ -234,6 +234,7 @@ class VRAMScheduler:
         tier_id: str,
         on_event: OnEventFn | None = None,
         variant: str | None = None,
+        live_user_text: str = "",
     ) -> AsyncIterator[str]:
         """Hold a slot on the tier's loaded model for the duration of the
         `with` block. If the model is not loaded, loads it. If all slots are
@@ -249,7 +250,9 @@ class VRAMScheduler:
         the new variant can spawn. When non-idle, the request waits via
         the standard queue — on busy variant churn this serializes naturally.
         """
-        await self.acquire(tier_id, on_event, variant=variant)
+        await self.acquire(
+            tier_id, on_event, variant=variant, live_user_text=live_user_text,
+        )
         try:
             yield tier_id
         finally:
@@ -260,6 +263,7 @@ class VRAMScheduler:
         tier_id: str,
         on_event: OnEventFn | None = None,
         variant: str | None = None,
+        live_user_text: str = "",
     ) -> None:
         if tier_id not in self.tiers:
             raise KeyError(f"Unknown tier: {tier_id}")
@@ -390,21 +394,31 @@ class VRAMScheduler:
                     try:
                         loader = self.loaders.get(effective_tier.backend)
                         if loader:
-                            # Optional kwargs: free_vram_gb (residency planner)
-                            # and variant (per-tier model variant). Loaders
-                            # that don't accept either fall through the
-                            # TypeError ladder below into older signatures.
+                            # Optional kwargs: free_vram_gb (residency
+                            # planner), variant (per-tier model variant),
+                            # and live_user_text (the latest user message,
+                            # used by the residency planner for complexity
+                            # estimation). Older loader signatures fall
+                            # through the TypeError ladder.
                             try:
                                 await loader(
                                     tier,
                                     free_vram_gb=before_free,
                                     variant=active_variant,
+                                    live_user_text=live_user_text,
                                 )
                             except TypeError:
                                 try:
-                                    await loader(tier, free_vram_gb=before_free)
+                                    await loader(
+                                        tier,
+                                        free_vram_gb=before_free,
+                                        variant=active_variant,
+                                    )
                                 except TypeError:
-                                    await loader(tier)
+                                    try:
+                                        await loader(tier, free_vram_gb=before_free)
+                                    except TypeError:
+                                        await loader(tier)
                     except Exception:
                         async with self._lock:
                             new_entry.state = ModelState.EVICTING

@@ -401,3 +401,39 @@ async def test_variant_unset_uses_default(cfg):
 
     async with sched.reserve("coding"):
         assert sched.loaded["coding"].variant == "30b"
+
+
+# ── live_user_text plumbing ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_acquire_forwards_live_user_text_to_loader(cfg):
+    """The user text passed to reserve() reaches the loader unchanged."""
+    captured: dict = {}
+
+    async def loader(tier, free_vram_gb=None, variant=None, live_user_text=""):
+        captured["model_tag"] = tier.model_tag
+        captured["free_vram_gb"] = free_vram_gb
+        captured["variant"] = variant
+        captured["live_user_text"] = live_user_text
+
+    async def unloader(tier):
+        pass
+
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = VRAMScheduler(
+        config=cfg,
+        loaders={"llama_cpp": loader},
+        unloaders={"llama_cpp": unloader},
+        probe=probe,
+    )
+
+    async with sched.reserve(
+        "fast",
+        live_user_text="prove the chain rule for partial derivatives",
+    ):
+        pass
+
+    assert captured["model_tag"] == "qwen3.5-9b"
+    assert captured["live_user_text"] == "prove the chain rule for partial derivatives"
+    assert captured["free_vram_gb"] is not None  # also forwarded
+    assert captured["variant"] is None           # default for non-variant tier
