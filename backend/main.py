@@ -726,23 +726,19 @@ async def _single_agent_sse(
 
     tool_schemas: list[dict] | None = None
     if req.tools is None:
-        # Per-request whitelist (the chat composer's 🔧 Tools popover)
-        # takes priority over the registry's default-enabled set when
-        # supplied. An empty list explicitly means "no tools this turn"
-        # — pass None to suppress the `tools` field entirely so the
-        # model doesn't see a confusing empty list.
-        if req.enabled_tools is not None:
-            if req.enabled_tools:
-                enabled = state.tools.all_schemas(
-                    airgap=airgap.is_enabled(),
-                    names=req.enabled_tools,
-                )
-                if enabled:
-                    tool_schemas = enabled
-            # else: empty whitelist → no tools
-        else:
+        # Per-request whitelist via the chat composer's 🔧 Tools popover.
+        # Three cases:
+        #   enabled_tools=None  → NO tools (default). Tool schemas
+        #     can swell to 25k+ tokens once the registry has 200+ entries,
+        #     which with --parallel 4 + ctx 65k blows past the per-slot
+        #     16k window before the user message even hits. Better to let
+        #     the user opt in explicitly via the popover.
+        #   enabled_tools=[]    → also no tools (matches user intent).
+        #   enabled_tools=[…]   → exactly those names.
+        if req.enabled_tools:
             enabled = state.tools.all_schemas(
-                only_enabled=True, airgap=airgap.is_enabled(),
+                airgap=airgap.is_enabled(),
+                names=req.enabled_tools,
             )
             if enabled:
                 tool_schemas = enabled
