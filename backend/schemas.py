@@ -154,6 +154,12 @@ class AgentEvent(BaseModel):
         "agent.refine_start",
         "agent.synthesis_start", "agent.synthesis_done",
         "route.decision", "vram.eviction", "token", "error",
+        # Pre-stream status events surfaced by _reserve_with_sse so the
+        # chat UI can show "Loading <model>..." / "Unloading idle
+        # models..." while the scheduler is working off-band. New in
+        # the b8992 / Qwen3 lineup; older clients silently ignore types
+        # they don't recognize.
+        "tier.loading", "vram.making_room", "queue",
     ]
     data: dict[str, Any] = Field(default_factory=dict)
 
