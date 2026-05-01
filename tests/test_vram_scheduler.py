@@ -127,7 +127,17 @@ async def test_vram_exhausted_when_cant_evict(cfg):
 
 @pytest.mark.asyncio
 async def test_pinned_not_evicted(cfg):
-    """Vision is pinned — Coding request must fail rather than evict Vision."""
+    """A pinned tier must not be evicted to make room for a request that
+    would otherwise displace it.
+
+    Production config used to pin vision (21 GB), but that left only
+    ~2 GB for any other chat tier on a 24 GB GPU and blocked versatile/
+    highest_quality/coding from loading at all. Vision is now pinned=False
+    by default. We still want to verify the scheduler's pin semantics —
+    so we override `cfg.models.tiers["vision"].pinned = True` in-test,
+    decoupling the test from the YAML default.
+    """
+    cfg.models.tiers["vision"].pinned = True
     probe = FakeProbe(total_gb=24.0, loaded_costs={})
     sched = make_scheduler(cfg, probe)
 
