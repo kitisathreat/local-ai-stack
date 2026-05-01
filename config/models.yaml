@@ -380,27 +380,47 @@ tiers:
       factor: 2.0                       # 65536 = 2.0 × orig_ctx 32768.
       orig_ctx: 32768
 
-  # ── Embedding — nomic-embed-text-v1.5, pre-spawned, pinned ──────────────────
+  # ── Embedding — Qwen3-Embedding-4B, pre-spawned, pinned ────────────────────
+  # Upgraded from nomic-embed-text-v1.5 (137 M, 768-dim, 8 k ctx,
+  # MTEB ~62.4) to Qwen3-Embedding-4B (4 B params, 2 560-dim, 32 k ctx,
+  # MTEB ~70.0). Substantial retrieval-quality jump, plus 4x context
+  # window so long documents chunk fewer times — better recall on
+  # multi-paragraph references. Shares the Qwen3 tokenizer with the chat
+  # tiers, so chunk-token-count semantics are consistent across the
+  # embedder and the generator.
+  #
+  # Migration: the 768 -> 2560 dimension change makes existing Qdrant
+  # collections incompatible. Run scripts/reembed_knowledge.py after
+  # the new GGUF lands via -Setup. The script recreates each user's
+  # collections at 2560 and re-embeds the original chunk text from the
+  # Qdrant payloads.
   embedding:
-    name: "Embedding (nomic-embed-text-v1.5)"
-    description: "Always-on embedding server for RAG and memory distillation."
+    name: "Embedding (Qwen3-Embedding-4B)"
+    description: "Always-on embedding server for RAG and memory distillation. 2560-dim, 32k ctx, MTEB ~70.0."
     backend: llama_cpp
     role: embedding
     port: 8090
-    model_tag: "nomic-embed-text-v1.5"
-    context_window: 8192
+    model_tag: "qwen3-embedding-4b"
+    context_window: 32768                # native; chunks larger documents in
+                                         # one shot — better recall.
     think_supported: false
-    vram_estimate_gb: 1
+    vram_estimate_gb: 2.8                # was 1 — the 4 B Qwen3 embedder is
+                                         # ~2.4 GB weights + ~0.4 GB KV at the
+                                         # 32 k ctx with 4 parallel slots.
     pinned: true                        # pre-spawned by the launcher; never evicted
     parallel_slots: 4
     n_gpu_layers: -1
-    flash_attention: false              # nomic-embed is unstable with -fa in some builds
-    cache_type_k: f16
+    # Qwen3-Embedding handles -fa fine (Qwen3 attention is well-tested).
+    flash_attention: true
+    cache_type_k: f16                    # f16 stays — embedding accuracy is
+                                         # sensitive to KV quantization.
     cache_type_v: f16
     extra_args:
       - "--embedding"
       - "--pooling"
-      - "mean"
+      - "last"                           # Qwen3-Embedding's official pooling
+                                         # is last-token (it's a decoder-style
+                                         # embedder, not BERT-style mean-pool).
 
 # Backwards compat — map old profile names to new tiers
 aliases:

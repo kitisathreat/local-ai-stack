@@ -126,14 +126,29 @@ tiers:
       file: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
       mmproj: "mmproj-Qwen3.6-35B-A3B-BF16.gguf"
 
+  # Qwen3-Embedding-4B — replaces nomic-embed-text-v1.5 (137 M, 768-dim).
+  # The 4 B variant gives substantially better retrieval quality (MTEB
+  # ~70.0 vs nomic ~62.4), 32 k native context (vs nomic's 8 k), and 2560
+  # output dimensions (vs 768) for richer representations. Same Qwen3
+  # tokenizer family as the chat tiers — no token-count drift between
+  # embedder and generator when chunking long documents.
+  #
+  # Q4_K_M GGUF lands at ~2.4 GB on disk; ~2.8 GB resident as the pinned
+  # embedding tier. Net free VRAM at idle drops from ~23 GB to ~21 GB —
+  # still ample for any single chat tier (largest is highest_quality at
+  # ~14.5 GB).
+  #
+  # Migration: the 768->2560 dimension change invalidates existing
+  # Qdrant collections. Run scripts/reembed_knowledge.py after -Setup
+  # to rebuild user collections at the new dim.
   embedding:
     source: huggingface
-    repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
-    file: "*Q8_0.gguf"
+    repo: "Qwen/Qwen3-Embedding-4B-GGUF"
+    file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "nomic-embed-text-v1.5.Q8_0.gguf"
+      file: "Qwen3-Embedding-4B-Q4_K_M.gguf"
 
   # GPT-OSS-120B — opt-in highest-reasoning tier (reasoning_max). Heavy-
   # weight MoE (5.1 B active out of 117 B) trained on reasoning, RL'd on
