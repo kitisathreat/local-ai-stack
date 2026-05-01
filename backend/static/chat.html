@@ -373,8 +373,15 @@
       try {
         const r = await api('/v1/models');
         const { data } = await r.json();
+        // Preserve the user's current selection across the 30-second
+        // auto-refresh. Without this, switching browser tabs and
+        // returning would silently snap the dropdown back to the first
+        // tier in the list ("Highest quality") because innerHTML='' +
+        // re-populate resets the value to the first option by default.
+        const previousValue = modelEl.value;
         modelEl.innerHTML = '';
         let firstAvailableValue = null;
+        let previousIsAvailable = false;
         (data || []).forEach(m => {
           const o = document.createElement('option');
           o.value = m.id;
@@ -391,14 +398,48 @@
           } else {
             o.textContent = base;
             if (firstAvailableValue === null) firstAvailableValue = m.id;
+            if (m.id === previousValue) previousIsAvailable = true;
           }
           modelEl.appendChild(o);
         });
-        // Default-select the first usable tier so a fresh page-load
-        // doesn't leave the dropdown on a disabled option.
-        if (firstAvailableValue !== null) modelEl.value = firstAvailableValue;
+        if (previousValue && previousIsAvailable) {
+          // Re-apply the user's previous selection if it's still
+          // available. Updates lastSelectedModel below stays in sync.
+          modelEl.value = previousValue;
+        } else if (firstAvailableValue !== null) {
+          // Default-select the first usable tier on first load (or if
+          // the previously selected tier became unavailable mid-flight).
+          modelEl.value = firstAvailableValue;
+        }
+        lastSelectedModel = modelEl.value;
       } catch (_) {}
     }
+
+    // Tracks the last tier the user actively chose (or the page's
+    // default seed). Used by the change-handler to detect mid-chat
+    // tier swaps and to revert if the user cancels the confirm dialog.
+    let lastSelectedModel = null;
+    modelEl.addEventListener('change', () => {
+      const newVal = modelEl.value;
+      if (history.length > 0 && lastSelectedModel && lastSelectedModel !== newVal) {
+        // The user is mid-conversation. Switching tiers cold-spawns
+        // a different llama-server (loading a multi-GB model into
+        // VRAM ≈ 5–30s for fast/versatile, much longer for the 72B
+        // and 80B-A3B tiers). Warn them so they don't think the
+        // first reply after the swap is hung.
+        const ok = window.confirm(
+          "Switching models mid-conversation will load a different model into VRAM. " +
+          "The next reply may take 5–30 seconds for small tiers, longer for 72B / 80B-A3B " +
+          "(and unloads whatever was previously resident).\n\n" +
+          "Continue with the switch?"
+        );
+        if (!ok) {
+          modelEl.value = lastSelectedModel;
+          return;
+        }
+      }
+      lastSelectedModel = newVal;
+    });
 
     // Refresh the tier list every 30 s so download-completed tiers
     // light up without a full page reload. Cheap GET — no streaming.
