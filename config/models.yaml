@@ -18,12 +18,20 @@ tiers:
   # ── Highest Quality — Qwen3 72B dense, hardest reasoning ────────────────────
   highest_quality:
     name: "Highest Quality (Qwen3 72B)"
-    description: "Maximum reasoning quality. Slow (~15-20 t/s with RAM spillover). Use for hardest problems."
+    description: "Maximum reasoning quality. Slow (~5-15 t/s with RAM spillover). Use for hardest problems."
     backend: llama_cpp
     port: 8010
     model_tag: "qwen3-72b"
-    context_window: 32768                # native 32k; q8 KV + parallel=1 fits
-    think_default: true
+    context_window: 16384                # halved from 32k. f16 KV at 32k for a 72B
+                                         # blows the VRAM budget; 16k + f16 fits
+                                         # alongside ~40 GPU-resident layers and
+                                         # produces correct output where 32k+q8 was
+                                         # emitting nonsense.
+    think_default: false                 # was true; Qwen3-72B emits long reasoning
+                                         # blocks via reasoning_content and the
+                                         # web UI silently drops those, making
+                                         # responses appear stuck. User can still
+                                         # opt in via the Think checkbox.
     think_supported: true
     params:
       temperature: 0.7
@@ -35,8 +43,12 @@ tiers:
     parallel_slots: 1
     n_gpu_layers: -1
     flash_attention: true
-    cache_type_k: q8_0
-    cache_type_v: q8_0
+    # f16 KV (was q8_0). q8_0 KV cache + partial CPU/GPU layer split (the file
+    # is 45 GB, GPU is 24 GB, so llama.cpp auto-spills to RAM) produced
+    # numerically corrupted attention → garbled output. f16 KV doubles the
+    # cache footprint but is stable; the smaller ctx above absorbs the cost.
+    cache_type_k: f16
+    cache_type_v: f16
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
