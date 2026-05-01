@@ -26,6 +26,7 @@ import secrets
 import subprocess
 import sys
 import time
+import webbrowser
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ FIELD_SMTP_PORT = "smtp_port"
 FIELD_SMTP_USER = "smtp_user"
 FIELD_SMTP_PASS = "smtp_pass"
 FIELD_SMTP_FROM = "smtp_from"
+FIELD_HF_TOKEN = "hf_token"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +114,7 @@ _PERSISTED_FIELDS = (
     FIELD_SMTP_USER,
     FIELD_SMTP_PASS,
     FIELD_SMTP_FROM,
+    FIELD_HF_TOKEN,
 )
 
 
@@ -387,12 +390,53 @@ class _AdminAccountPage(QWizardPage):
         self._confirm.textChanged.connect(self.completeChanged)
         form.addRow("Confirm:", self._confirm)
 
+        # ── Hugging Face token ────────────────────────────────────────
+        # Several model tiers (e.g. Qwen3-Next-80B) are gated on
+        # Hugging Face and need a personal access token to download.
+        # We let the user paste one here. The "Get one from HF" button
+        # opens https://huggingface.co/settings/tokens in their default
+        # browser — if they're already signed in to HF, it lands them
+        # directly on the token-creation page so they can copy the
+        # value back in seconds. The button only opens the browser
+        # automatically when the field is empty (so re-entering the
+        # wizard after a partial install doesn't keep popping tabs).
+        self._hf_token = QLineEdit()
+        self._hf_token.setEchoMode(QLineEdit.Password)
+        self._hf_token.setPlaceholderText("hf_… (optional, only needed for gated models)")
+        hf_row = QHBoxLayout()
+        hf_row.addWidget(self._hf_token, 1)
+        self._hf_open_btn = QPushButton("Get one from HF")
+        self._hf_open_btn.setToolTip(
+            "Opens https://huggingface.co/settings/tokens in your browser. "
+            "If you're already signed in, you'll land on the token page directly."
+        )
+        self._hf_open_btn.clicked.connect(self._open_hf_token_page)
+        hf_row.addWidget(self._hf_open_btn)
+        hf_widget = QWidget()
+        hf_widget.setLayout(hf_row)
+        form.addRow("HuggingFace token:", hf_widget)
+
         self._hint = QLabel("")
         self._hint.setStyleSheet("color: #e74c3c;")
         form.addRow("", self._hint)
 
         self.registerField(FIELD_EMAIL + "*", self._email)
         self.registerField(FIELD_PASSWORD + "*", self._password)
+        self.registerField(FIELD_HF_TOKEN, self._hf_token)
+
+    def _open_hf_token_page(self) -> None:
+        try:
+            webbrowser.open("https://huggingface.co/settings/tokens")
+        except Exception:
+            pass
+
+    def initializePage(self) -> None:
+        # Auto-open the HF token page on first arrival ONLY when the
+        # field is still empty — repeat visits / restored state should
+        # not keep relaunching browser tabs at the user.
+        super().initializePage()
+        if not self._hf_token.text().strip():
+            QTimer.singleShot(400, self._open_hf_token_page)
 
     def isComplete(self) -> bool:
         email = self._email.text().strip()
@@ -754,6 +798,7 @@ class _FinishPage(QWizardPage):
         smtp_user = wiz.field(FIELD_SMTP_USER) or ""
         smtp_pass = wiz.field(FIELD_SMTP_PASS) or ""
         smtp_from = wiz.field(FIELD_SMTP_FROM) or ""
+        hf_token = wiz.field(FIELD_HF_TOKEN) or ""
 
         # Determine access mode from page 4
         tunnel_page: _TunnelPage = wiz.page(3)  # 0-indexed
@@ -784,6 +829,7 @@ class _FinishPage(QWizardPage):
             f"CLOUDFLARE_TUNNEL_ID={tunnel_uuid}",
             f"CLOUDFLARE_TUNNEL_NAME={tunnel_name}",
             "MODEL_UPDATE_POLICY=prompt",
+            f"HF_TOKEN={hf_token}",
         ]
 
         # The launcher reads .env from the repo root. Installed-mode
