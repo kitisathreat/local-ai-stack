@@ -333,6 +333,12 @@ function Invoke-Setup {
     if (Get-Command Invoke-DownloadLlamaServer -ErrorAction SilentlyContinue) {
         Invoke-DownloadLlamaServer -Version $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server') -Sha256 $LlamaCppSha256
     }
+    if (Get-Command Invoke-DownloadCudaRuntime -ErrorAction SilentlyContinue) {
+        # llama-server is a CUDA 12 build and silently dies (0xC0000135)
+        # when the cudart/cublas DLLs are missing. Provision them next to
+        # the exe unless they're already discoverable on PATH / CUDA_PATH.
+        Invoke-DownloadCudaRuntime -LlamaCppVersion $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server')
+    }
     if (Get-Command Invoke-CreateVenvs -ErrorAction SilentlyContinue) {
         Invoke-CreateVenvs -Root $VendorDir -RepoRoot $RepoRoot
     }

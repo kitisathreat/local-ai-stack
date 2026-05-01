@@ -827,7 +827,11 @@ class _FinishPage(QWizardPage):
                 env={**os.environ, "LAI_DATA_ROOT": str(data_root)},
             )
             if result.returncode == 0:
-                self._log.appendPlainText(f"✓ Admin user created: {email}")
+                username = email.split("@", 1)[0]
+                self._log.appendPlainText(
+                    f"✓ Admin user created.\n"
+                    f"   Log in with username '{username}' (NOT email) and the password you set."
+                )
             else:
                 self._log.appendPlainText(f"! seed_admin: {result.stdout.strip() or result.stderr.strip()}")
         except Exception as e:

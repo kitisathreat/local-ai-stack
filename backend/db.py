@@ -23,7 +23,23 @@ from typing import Any, AsyncIterator
 import aiosqlite
 
 
-DB_PATH = Path(os.getenv("LAI_DB_PATH", "/app/data/lai.db"))
+# Path resolution order:
+#   1. LAI_DB_PATH env var (Docker / explicit override)
+#   2. /app/data/lai.db when running inside the Docker image
+#      (detected by /app/data existing as a directory)
+#   3. <repo>/data/lai.db for native-mode dev (the common case on Windows)
+def _default_db_path() -> Path:
+    env = os.getenv("LAI_DB_PATH")
+    if env:
+        return Path(env)
+    docker_path = Path("/app/data")
+    if docker_path.is_dir():
+        return docker_path / "lai.db"
+    # backend/db.py → repo root is parents[1]
+    return Path(__file__).resolve().parents[1] / "data" / "lai.db"
+
+
+DB_PATH = _default_db_path()
 
 
 SCHEMA = """
