@@ -200,7 +200,7 @@ tiers cold-spawn on first request via the
 
 | Tier | Model | Port | `--ctx-size` | VRAM | Role |
 |---|---|---|---|---|---|
-| `highest_quality` | Qwen3 72B | 8010 | 32 768 | ~24 GB | Hardest reasoning |
+| `highest_quality` | Qwen3-Next 80B-A3B Thinking | 8010 | 65 536 | ~14 GB VRAM + ~33 GB RAM | Hardest reasoning, MoE w/ expert offload |
 | `versatile` | Qwen3.6 35B-A3B (MoE) | 8011 | 65 536 (YaRN ×2) | ~21 GB | Default + orchestrator |
 | `fast` | Qwen3.5 9B | 8012 | 65 536 | ~7 GB | Multi-agent workers |
 | `coding` | Qwen3-Coder-Next 80B-A3B | 8013 | 131 072 (YaRN ×4) | ~24 GB | SWE-bench trained |
