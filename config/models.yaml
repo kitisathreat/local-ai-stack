@@ -83,8 +83,12 @@ tiers:
     parallel_slots: 2
     n_gpu_layers: -1
     flash_attention: true
-    cache_type_k: q8_0
-    cache_type_v: q8_0
+    # Qwen3.6-35B-A3B is hybrid attention: ~75% of layers are Gated
+    # DeltaNet (linear attn, no KV cache); only ~25% have full attention
+    # KV cache. Per llama.cpp #21385, q4_0 K/V is BLEU-1.000 lossless on
+    # this architecture. Symmetric K/V keeps the fused FA kernel active.
+    cache_type_k: q4_0
+    cache_type_v: q4_0
     rope_scaling:
       type: yarn
       factor: 2.0
@@ -111,8 +115,10 @@ tiers:
     parallel_slots: 4
     n_gpu_layers: -1
     flash_attention: true
-    cache_type_k: q8_0
-    cache_type_v: q8_0
+    # Qwen3.5-9B is hybrid attention (Gated DeltaNet + full-attn). Same
+    # rationale as the versatile tier: q4_0 K/V is lossless here.
+    cache_type_k: q4_0
+    cache_type_v: q4_0
 
   # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
   # Was Qwen3-Coder-Next-80B-A3B which couldn't fit on a 24 GB GPU
@@ -181,8 +187,9 @@ tiers:
     parallel_slots: 2
     n_gpu_layers: -1
     flash_attention: true
-    cache_type_k: q8_0
-    cache_type_v: q8_0
+    # Hybrid attention — same architecture as versatile. q4_0 lossless.
+    cache_type_k: q4_0
+    cache_type_v: q4_0
 
   # ── Embedding — nomic-embed-text-v1.5, pre-spawned, pinned ──────────────────
   embedding:
