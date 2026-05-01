@@ -183,8 +183,39 @@
     }
     #signin-err { color: var(--danger); margin-top: 10px; font-size: 13px; min-height: 18px; }
     .hidden { display: none !important; }
+    /* Conversation sidebar — lists the user's past chats. Click an
+       item to resume; the chat history is repopulated and subsequent
+       sends include conversation_id so the backend persists messages
+       to the existing row. */
+    #sidebar {
+      width: 240px; flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      display: flex; flex-direction: column;
+    }
+    #sidebar header {
+      border-right: 0; border-bottom: 1px solid var(--border);
+      justify-content: space-between;
+    }
+    #conv-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .conv-item {
+      padding: 8px 10px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; color: var(--fg);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-bottom: 2px;
+    }
+    .conv-item:hover { background: #22252e; }
+    .conv-item.active { background: #2a2d36; border-left: 2px solid var(--accent); padding-left: 8px; }
+    .conv-item .conv-title { font-weight: 500; }
+    .conv-item .conv-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    #new-conv-btn {
+      margin: 6px; padding: 8px;
+      background: var(--accent); color: white; border: 0;
+      border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
+    }
     @media (max-width: 640px) {
       #log, footer { padding: 10px; }
+      #sidebar { display: none; }
     }
   </style>
 </head>
@@ -201,17 +232,21 @@
     </form>
   </div>
 
-  <div id="chatapp" class="hidden" style="display:flex; flex-direction:column; flex:1; width:100%;">
-    <header>
-      <span class="brand">Local AI Stack</span>
-      <select id="model"></select>
-      <label><input type="checkbox" id="think"> Think</label>
-      <span class="spacer"></span>
-      <span id="who" style="color:var(--muted);"></span>
-      <button id="newchat">New</button>
-      <button id="logout">Sign out</button>
-    </header>
-    <div id="main"><div id="log"></div></div>
+  <div id="chatapp" class="hidden" style="display:flex; flex-direction:row; flex:1; width:100%;">
+    <aside id="sidebar">
+      <button id="new-conv-btn">+ New chat</button>
+      <div id="conv-list"></div>
+    </aside>
+    <div style="display:flex; flex-direction:column; flex:1; min-width:0;">
+      <header>
+        <span class="brand">Local AI Stack</span>
+        <select id="model"></select>
+        <label><input type="checkbox" id="think"> Think</label>
+        <span class="spacer"></span>
+        <span id="who" style="color:var(--muted);"></span>
+        <button id="logout">Sign out</button>
+      </header>
+      <div id="main"><div id="log"></div></div>
     <footer>
       <div id="composer-wrap">
         <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
@@ -228,6 +263,7 @@
       </div>
       <button id="send">Send</button>
     </footer>
+    </div>
   </div>
 
   <script>
@@ -288,6 +324,7 @@
           whoEl.textContent = me.username;
           await loadModels();
           await loadTools();
+          await loadConversations();
           signinBox.classList.add('hidden');
           app.classList.remove('hidden');
         }
@@ -326,10 +363,87 @@
       signinBox.classList.remove('hidden');
     });
 
-    $('newchat').addEventListener('click', () => {
+    // ── Conversation list (sidebar) ─────────────────────────────────
+    // The backend persists every signed-in chat to SQLite, indexed by
+    // conversation_id. The sidebar is the user's surface to resume
+    // those — clicking an item refills `history` from the server's
+    // stored messages and sets `currentConversationId` so subsequent
+    // sends append to the same row.
+    let currentConversationId = null;
+    const convListEl = $('conv-list');
+
+    async function loadConversations() {
+      try {
+        const r = await api('/chats');
+        if (!r.ok) return;
+        const j = await r.json();
+        const items = j.data || [];
+        convListEl.innerHTML = '';
+        items.forEach(c => {
+          const div = document.createElement('div');
+          div.className = 'conv-item' + (c.id === currentConversationId ? ' active' : '');
+          div.dataset.id = c.id;
+          const title = c.title || 'Untitled';
+          const ts = c.updated_at || c.created_at;
+          const when = ts ? new Date(ts * 1000).toLocaleString(undefined, {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          }) : '';
+          div.innerHTML = `<div class="conv-title">${escapeHtml(title)}</div>`
+            + (when ? `<div class="conv-meta">${escapeHtml(when)}${c.tier ? ' • ' + escapeHtml(c.tier) : ''}</div>` : '');
+          div.addEventListener('click', () => loadConversation(c.id));
+          convListEl.appendChild(div);
+        });
+        if (items.length === 0) {
+          convListEl.innerHTML = '<div style="padding:10px; color:var(--muted); font-size:12px;">No previous chats.</div>';
+        }
+      } catch (_) {}
+    }
+
+    async function loadConversation(convId) {
+      // Pull the full message history for this conversation and
+      // populate the chat log. Doesn't touch the model dropdown's
+      // current selection — the scheduler decides whether the tier
+      // is already resident and skips reload automatically.
+      try {
+        const r = await api('/chats/' + convId);
+        if (!r.ok) return;
+        const conv = await r.json();
+        currentConversationId = conv.id;
+        history.length = 0;
+        logEl.innerHTML = '';
+        for (const m of (conv.messages || [])) {
+          if (m.role === 'user' || m.role === 'assistant') {
+            history.push({ role: m.role, content: m.content });
+            appendMsg(m.role, m.content);
+          }
+        }
+        // Sync the dropdown to the conversation's tier if available.
+        if (conv.tier) {
+          const want = conv.tier.startsWith('tier.') ? conv.tier : 'tier.' + conv.tier;
+          const opt = Array.from(modelEl.options).find(o => o.value === want && !o.disabled);
+          if (opt) {
+            modelEl.value = want;
+            lastSelectedModel = want;
+          }
+        }
+        // Refresh sidebar to mark the active item.
+        loadConversations();
+      } catch (_) {}
+    }
+
+    async function newConversation() {
+      // Lazy-create on first send: just clear the local state. The
+      // backend will create a row when the chat handler sees no
+      // conversation_id but a signed-in user — see _finalize_conversation.
+      currentConversationId = null;
       history.length = 0;
       logEl.innerHTML = '';
-    });
+      Array.from(convListEl.querySelectorAll('.conv-item.active')).forEach(
+        el => el.classList.remove('active')
+      );
+    }
+
+    $('new-conv-btn').addEventListener('click', newConversation);
 
     // Pretty-name a tier id: "highest_quality" → "Highest quality"
     function tierLabel(id) {
@@ -607,11 +721,31 @@
         // (no key) means "use registry defaults".
         const toolNames = [];
         toolState.forEach((on, name) => { if (on) toolNames.push(name); });
+        // Lazy-create the conversation row on first send so its tier
+        // matches whichever the user picked. Subsequent turns reuse
+        // the same conversation_id.
+        if (currentConversationId === null) {
+          try {
+            const cr = await api('/chats', {
+              method: 'POST',
+              body: JSON.stringify({
+                title: text.slice(0, 60) || 'New chat',
+                tier: modelEl.value.replace(/^tier\./, ''),
+              }),
+            });
+            if (cr.ok) {
+              const conv = await cr.json();
+              currentConversationId = conv.id;
+              loadConversations();
+            }
+          } catch (_) {}
+        }
         const body = {
           model: modelEl.value,
           stream: true,
           messages: history,
           think: thinkEl.checked || undefined,
+          conversation_id: currentConversationId || undefined,
         };
         // Only attach the field when it differs from default; this
         // preserves backwards compat with handlers that don't know
