@@ -323,3 +323,40 @@ def test_knowledge_has_domain(domain):
 
 def test_gitignore_exists():
     assert (ROOT / ".gitignore").exists()
+
+
+# ── TierConfig: override_tensors field ────────────────────────────────────────
+
+def test_tier_config_override_tensors_default_empty():
+    """New override_tensors field defaults to [] and is omittable."""
+    from backend.config import TierConfig
+    tier = TierConfig(name="t", context_window=4096)
+    assert tier.override_tensors == []
+
+
+def test_tier_config_override_tensors_round_trip():
+    """override_tensors deserializes from YAML-shaped dict."""
+    from backend.config import TierConfig
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        override_tensors=[".ffn_.*_exps.=CPU"],
+    )
+    assert tier.override_tensors == [".ffn_.*_exps.=CPU"]
+
+
+def test_tier_config_override_tensors_multiple_patterns():
+    """Multiple patterns are preserved in order."""
+    from backend.config import TierConfig
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        override_tensors=[
+            ".ffn_.*_exps.=CPU",
+            ".ffn_gate_inp.=CPU",
+        ],
+    )
+    assert tier.override_tensors == [
+        ".ffn_.*_exps.=CPU",
+        ".ffn_gate_inp.=CPU",
+    ]

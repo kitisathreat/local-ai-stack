@@ -76,6 +76,18 @@ class TierConfig(BaseModel):
     cache_type_v: str = "q8_0"
     rope_scaling: RopeScaling | None = None
     extra_args: list[str] = Field(default_factory=list)
+    # Tensor-level offload override. When set, each pattern is passed to
+    # llama-server as a separate `-ot <pattern>` flag. The canonical MoE
+    # spillover pattern is ".ffn_.*_exps.=CPU" — keeps attention, KV
+    # cache, embeddings, and non-expert MLP on the GPU; offloads only
+    # the routed-expert tensors to system RAM. Use with n_gpu_layers: -1
+    # (everything to GPU as the base, then -ot selectively pulls experts
+    # back). Combine with flash_attention: true — FA stays correct
+    # because every attention layer is GPU-resident.
+    #
+    # For dense models (no expert tensors), leave this empty and control
+    # spillover via n_gpu_layers / use_mmap / use_mlock as before.
+    override_tensors: list[str] = Field(default_factory=list)
     use_mmap: bool = True
     use_mlock: bool = False
     spawn_timeout_sec: int = 180
