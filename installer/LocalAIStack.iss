@@ -2,6 +2,13 @@
 ; Build with: ISCC.exe installer\LocalAIStack.iss
 ; Or: .\LocalAIStack.ps1 -BuildInstaller
 ;
+; Ship model: ONE installer EXE (LocalAIStackInstaller-<ver>.exe). After
+; install, the only EXE on disk is the runtime LocalAIStack.exe — the
+; installer is not redistributed alongside the app. To reconfigure or
+; repair, the user re-runs the installer (Apps & Features → Modify, or
+; double-clicks the same EXE again); the installer detects the existing
+; install via {#AppId} and edits it in place.
+;
 ; Layout after install:
 ;   %PROGRAMFILES%\LocalAIStack\   — code + binaries (read-only, per-machine)
 ;   %LOCALAPPDATA%\LocalAIStack\   — .env, database, logs, models (per-user, preserved on uninstall)
@@ -33,6 +40,17 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Registry flag so the launcher knows it is running in installed mode
 ChangesEnvironment=yes
+; Repair-in-place: when the same AppId is detected, reuse the prior
+; install dir and shut the running app down before overwriting files.
+UsePreviousAppDir=yes
+UsePreviousGroup=yes
+UsePreviousTasks=yes
+CloseApplications=force
+RestartApplications=no
+; Same-version upgrades: prevent two side-by-side installs by routing
+; everything through the standard upgrade flow keyed off {#AppId}.
+DisableDirPage=auto
+DisableProgramGroupPage=auto
 
 [Registry]
 Root: HKLM; Subkey: "SOFTWARE\LocalAIStack"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
@@ -50,14 +68,11 @@ Name: "desktopicon";   Description: "Create a &desktop shortcut";   GroupDescrip
 Name: "startmenuicon"; Description: "Create &Start menu entries";   GroupDescription: "Additional shortcuts:"
 
 [Files]
-; Compiled launcher (day-to-day runtime — what the desktop / Start
-; menu shortcuts target).
+; Compiled launcher — the ONLY EXE installed on disk. Handles every
+; mode the app needs (start, stop, setup, reconfigure, test) via
+; switches. The installer EXE itself is not bundled into {app}; users
+; who want to reconfigure re-run the installer from Apps & Features.
 Source: "..\LocalAIStack.exe";         DestDir: "{app}";                    Flags: ignoreversion
-
-; Compiled installer (first-time setup + reconfiguration). Reachable
-; from the "Reconfigure Local AI Stack" Start menu entry and from
-; Apps & Features → Modify; not given a desktop shortcut.
-Source: "..\LocalAIStackInstaller.exe"; DestDir: "{app}";                   Flags: ignoreversion skipifsourcedoesntexist
 
 ; Frozen GUI (PyInstaller one-folder)
 Source: "..\dist\gui\*";               DestDir: "{app}\gui";                Flags: ignoreversion recursesubdirs createallsubdirs
@@ -81,32 +96,32 @@ Source: "..\vendor\inno-setup\*";      DestDir: "{app}\vendor\inno-setup";  Flag
 Source: "..\assets\*";                 DestDir: "{app}\assets";             Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
-; Start Menu — runtime shortcuts (LocalAIStack.exe). The installer EXE
-; only appears as a "Reconfigure" entry, never as the primary launch.
-Name: "{group}\{#AppName}";        Filename: "{app}\{#ExeName}";  Tasks: startmenuicon
-Name: "{group}\Admin Console";     Filename: "{app}\{#ExeName}";  Parameters: "-Admin"; Tasks: startmenuicon
-Name: "{group}\Health Check";      Filename: "{app}\{#ExeName}";  Parameters: "-Test"; Tasks: startmenuicon
-Name: "{group}\Reconfigure {#AppName}"; Filename: "{app}\LocalAIStackInstaller.exe"; Parameters: "-Reconfigure"; Tasks: startmenuicon
+; Start Menu — every entry targets LocalAIStack.exe (the only EXE on
+; disk). Reconfigure / Repair are switches, not separate binaries.
+Name: "{group}\{#AppName}";             Filename: "{app}\{#ExeName}";  Tasks: startmenuicon
+Name: "{group}\Admin Console";          Filename: "{app}\{#ExeName}";  Parameters: "-Admin"; Tasks: startmenuicon
+Name: "{group}\Health Check";           Filename: "{app}\{#ExeName}";  Parameters: "-Test"; Tasks: startmenuicon
+Name: "{group}\Reconfigure {#AppName}"; Filename: "{app}\{#ExeName}";  Parameters: "-SetupGui"; Tasks: startmenuicon
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 
-; Desktop (single shortcut for the runtime EXE — no installer on
-; the desktop).
+; Desktop (single shortcut for the runtime EXE).
 Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#ExeName}";  Tasks: desktopicon
 
 [Run]
 ; Phase 1 (silent, hidden, always runs): create the Python venvs and
 ; download non-model vendor binaries. Models are skipped here and
-; pulled later in phase 2 via the wizard.
-Filename: "{app}\LocalAIStackInstaller.exe"; Parameters: "-RepairOnly"; \
+; pulled later in phase 2 via the wizard. Runs through the runtime
+; EXE so we don't ship a second binary.
+Filename: "{app}\{#ExeName}"; Parameters: "-Setup -SkipModels"; \
     Description: "Create Python environments"; \
     Flags: runhidden waituntilterminated; \
     StatusMsg: "Creating Python environments and downloading binaries…"
 
-; Phase 2 (post-install, optional): launch the setup wizard. The
-; installer EXE runs the wizard, kicks off the model pull in the
-; background, and exits. The user can deselect this checkbox if they
+; Phase 2 (post-install, optional): launch the setup wizard via the
+; runtime EXE's -SetupGui mode. Kicks off the model pull in the
+; background and exits. The user can deselect this checkbox if they
 ; prefer to run setup later from the Start menu.
-Filename: "{app}\LocalAIStackInstaller.exe"; \
+Filename: "{app}\{#ExeName}"; Parameters: "-SetupGui"; \
     Description: "Run the setup wizard now (admin user, Cloudflare, model download)"; \
     Flags: nowait postinstall skipifsilent
 
@@ -135,16 +150,27 @@ Type: filesandordirs; Name: "{app}\tools\__pycache__"
 ; The user must delete it manually if they want a clean slate.
 
 [Code]
-// Detect a previous installation and offer upgrade path.
+// Detect a previous installation. We never run side-by-side — the same
+// {#AppId} ensures Inno reuses the prior install dir and overwrites in
+// place. Show a single confirmation so the user knows they're editing
+// an existing installation rather than creating a new one.
 function InitializeSetup(): Boolean;
 var
-  PrevVersion: String;
+  PrevVersion, PrevDir: String;
+  Msg: String;
 begin
   Result := True;
-  if RegQueryStringValue(HKLM, 'SOFTWARE\LocalAIStack', 'AppVersion', PrevVersion) then begin
-    if PrevVersion = '{#AppVersion}' then begin
-      MsgBox('Version {#AppVersion} is already installed. Reinstalling will overwrite the application files.' + #13#10 +
-             'Your data in %LOCALAPPDATA%\LocalAIStack will not be affected.', mbInformation, MB_OK);
+  if RegQueryStringValue(HKLM, 'SOFTWARE\LocalAIStack', 'InstallDir', PrevDir) then begin
+    RegQueryStringValue(HKLM, 'SOFTWARE\LocalAIStack', 'AppVersion', PrevVersion);
+    if PrevVersion = '' then PrevVersion := '(unknown)';
+    Msg := 'An existing Local AI Stack installation was detected:' + #13#10 + #13#10 +
+           '    Location: ' + PrevDir + #13#10 +
+           '    Version:  ' + PrevVersion + #13#10 + #13#10 +
+           'Setup will repair / upgrade this installation in place.' + #13#10 +
+           'Your data in %LOCALAPPDATA%\LocalAIStack (database, models, .env)' + #13#10 +
+           'will be preserved. Continue?';
+    if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then begin
+      Result := False;
     end;
   end;
 end;
