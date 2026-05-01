@@ -78,7 +78,8 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 4096
-    vram_estimate_gb: 21
+    vram_estimate_gb: 6                  # was 21 — experts now spill to RAM via -ot.
+                                         # GPU holds attention + KV + embeddings only.
     is_orchestrator: true
     parallel_slots: 2
     n_gpu_layers: -1
@@ -89,6 +90,11 @@ tiers:
     # this architecture. Symmetric K/V keeps the fused FA kernel active.
     cache_type_k: q4_0
     cache_type_v: q4_0
+    # MoE expert offload — keeps every attention layer on the GPU
+    # (so FA stays correct) and offloads only routed-expert tensors
+    # to system RAM. ~22GB GGUF -> ~6GB VRAM + ~16GB RAM at idle.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"
     rope_scaling:
       type: yarn
       factor: 2.0
@@ -147,13 +153,20 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 20                # ~18 GB weights + ~2 GB KV/compute
+    vram_estimate_gb: 6                  # was 20 — experts now spill to RAM via -ot.
+                                         # GPU holds attention + KV + embeddings only.
     reasoning_format: none              # strip <think> tags from API output
     parallel_slots: 1
     n_gpu_layers: -1
     flash_attention: true
     cache_type_k: q8_0
     cache_type_v: q8_0
+    # MoE expert offload — keeps every attention layer on the GPU
+    # (so FA stays correct) and offloads only routed-expert tensors
+    # to system RAM. Note: Qwen3-Coder-30B is older Qwen3 family with
+    # standard (non-hybrid) attention — q8_0 KV stays put.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"
     rope_scaling:
       type: yarn
       factor: 4.0
@@ -177,7 +190,8 @@ tiers:
       top_p: 0.95
       top_k: 20
       num_predict: 4096
-    vram_estimate_gb: 21
+    vram_estimate_gb: 6                  # was 21 — experts now spill to RAM via -ot.
+                                         # Same architecture as versatile, same offload.
     # Was `pinned: true` — but at 21 GB, pinning vision on a 24 GB GPU
     # leaves only ~2 GB for every other chat tier, blocking versatile
     # (21 GB), highest_quality (24 GB), and coding (24 GB) from ever
@@ -190,6 +204,9 @@ tiers:
     # Hybrid attention — same architecture as versatile. q4_0 lossless.
     cache_type_k: q4_0
     cache_type_v: q4_0
+    # MoE expert offload — same pattern as versatile.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"
 
   # ── Embedding — nomic-embed-text-v1.5, pre-spawned, pinned ──────────────────
   embedding:
