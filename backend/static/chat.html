@@ -52,6 +52,39 @@
     .msg code { background: #22252e; padding: 1px 4px; border-radius: 3px; }
     .msg a { color: var(--accent); }
     .role { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    /* "Thinking…" placeholder shown while the assistant message is
+       still streaming nothing — replaced by the first real token. */
+    .thinking { color: var(--muted); font-style: italic; }
+    .thinking .dots::after {
+      content: '';
+      display: inline-block;
+      width: 1.2em;
+      animation: dots 1.4s steps(4, end) infinite;
+      content: '';
+    }
+    @keyframes dots {
+      0%   { content: ''; }
+      25%  { content: '.'; }
+      50%  { content: '..'; }
+      75%  { content: '...'; }
+      100% { content: ''; }
+    }
+    /* The browser doesn't actually animate `content` via @keyframes —
+       use a bouncy span instead. Replace with three pulsing dots: */
+    .thinking .dots {
+      display: inline-block;
+      margin-left: 2px;
+    }
+    .thinking .dots::before {
+      content: '...';
+      letter-spacing: 1px;
+      display: inline-block;
+      animation: pulse-dots 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse-dots {
+      0%, 100% { opacity: 0.2; }
+      50%      { opacity: 1.0; }
+    }
     footer {
       border-top: 1px solid var(--border); padding: 10px 16px;
       background: var(--panel); display: flex; gap: 8px;
@@ -514,9 +547,14 @@
       history.push({ role: 'user', content: text || '(attachment only)' });
       appendMsg('user', visibleText);
       const targetBody = appendMsg('assistant', '');
+      // Initial "thinking" state — replaced by streamed tokens or by
+      // backend status events (queue position, model spawn, etc.).
+      // The pulsing dot animates without JS via the @keyframes below.
+      targetBody.innerHTML = '<span class="thinking">Thinking<span class="dots"></span></span>';
       streaming = true;
       sendEl.disabled = true;
       let buffered = '';
+      let firstTokenSeen = false;
       try {
         // Per-request enabled tools: only send the names the user
         // toggled on. Empty array means "no tools this turn"; null
@@ -551,15 +589,58 @@
           carry += dec.decode(value, { stream: true });
           const lines = carry.split('\n');
           carry = lines.pop() || '';
+          // Track the SSE event type across lines. Backend sends both
+          // OpenAI-style `data:` chunks AND `event: agent`/`data: {...}`
+          // status pairs (route.decision, queue.update, model.spawn,
+          // error). We surface human-readable status while the model
+          // is starting up so the user knows their message wasn't lost.
+          let currentEvent = null;
           for (const line of lines) {
-            if (!line.startsWith('data:')) continue;
+            if (line.startsWith('event:')) {
+              currentEvent = line.slice(6).trim();
+              continue;
+            }
+            if (!line.startsWith('data:')) {
+              if (line === '') currentEvent = null;
+              continue;
+            }
             const body = line.slice(5).trim();
             if (body === '[DONE]') continue;
             try {
               const chunk = JSON.parse(body);
+              if (currentEvent === 'agent' && !firstTokenSeen) {
+                // Pre-stream status update from the orchestrator.
+                const t = chunk.type || '';
+                let label = null;
+                if (t === 'route.decision') {
+                  label = `Routing to ${chunk.data && chunk.data.tier ? chunk.data.tier : 'tier'}…`;
+                } else if (t === 'queue.update') {
+                  const pos = chunk.data && (chunk.data.position ?? chunk.data.ahead);
+                  label = pos != null ? `Queued (#${pos} ahead)…` : 'Queued…';
+                } else if (t === 'model.spawn' || t === 'tier.loading') {
+                  label = 'Loading model into VRAM…';
+                } else if (t === 'tool.call') {
+                  const name = chunk.data && chunk.data.name;
+                  label = name ? `Calling tool: ${name}…` : 'Calling tool…';
+                } else if (t === 'error') {
+                  const msg = (chunk.data && chunk.data.message) || 'Unknown error';
+                  targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(msg) + '</em>';
+                  firstTokenSeen = true;   // suppress further status
+                  continue;
+                }
+                if (label) {
+                  targetBody.innerHTML = '<span class="thinking">'
+                    + escapeHtml(label) + '<span class="dots"></span></span>';
+                }
+                continue;
+              }
               for (const ch of (chunk.choices || [])) {
                 const delta = (ch.delta || {}).content;
                 if (delta) {
+                  if (!firstTokenSeen) {
+                    firstTokenSeen = true;
+                    targetBody.innerHTML = '';
+                  }
                   buffered += delta;
                   targetBody.innerHTML = renderMarkdown(buffered);
                   logEl.scrollTop = logEl.scrollHeight;

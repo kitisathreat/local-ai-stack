@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -62,6 +63,35 @@ def llama_server_binary() -> str:
     return found or exe_name
 
 
+_jinja_supported_cache: bool | None = None
+
+
+def _llama_supports_jinja() -> bool:
+    """Run `llama-server --help` once and check whether the binary
+    accepts the --jinja flag. Older builds (≤ b4499) emit only
+    `--chat-template`; newer ones list `--jinja` separately. Result is
+    cached for the process lifetime."""
+    global _jinja_supported_cache
+    if _jinja_supported_cache is not None:
+        return _jinja_supported_cache
+    import subprocess
+    try:
+        out = subprocess.run(
+            [llama_server_binary(), "--help"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        haystack = (out.stdout or "") + (out.stderr or "")
+        # Look for `--jinja` as a standalone flag, not the substring
+        # inside `--chat-template JINJA_TEMPLATE` help text.
+        _jinja_supported_cache = bool(
+            re.search(r"(?m)^\s*--jinja\b", haystack)
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _jinja_supported_cache = False
+    return _jinja_supported_cache
+
+
 def build_argv(tier: TierConfig) -> list[str]:
     """Produce the llama-server argv for `tier`."""
     if not tier.gguf_path:
@@ -81,10 +111,21 @@ def build_argv(tier: TierConfig) -> list[str]:
         "-ngl", str(tier.n_gpu_layers),
         "--cache-type-k", tier.cache_type_k,
         "--cache-type-v", tier.cache_type_v,
-        "--jinja",
     ]
+    # `--jinja` enables strict Jinja2-template-driven tool-call grammar
+    # but only exists in llama.cpp ≥ b4500 (early 2025). Older builds
+    # (e.g. b4404, the launcher's current pin) reject it with
+    # "error: invalid argument: --jinja" and exit during startup,
+    # killing every chat tier. Probe the binary's --help once and only
+    # add the flag when supported. Without it, llama-server falls back
+    # to the model's built-in chat template which is fine for Qwen.
+    if _llama_supports_jinja():
+        argv.append("--jinja")
     if tier.flash_attention:
-        argv.append("-fa")
+        # llama.cpp ≥ b8992 requires -fa to take a value (on/off/auto);
+        # older builds accepted bare -fa. Always pass `on` — both old
+        # and new builds tolerate it.
+        argv += ["-fa", "on"]
     if tier.mmproj_path:
         argv += ["--mmproj", tier.mmproj_path]
     if tier.use_mlock:

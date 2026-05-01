@@ -120,11 +120,22 @@ function Invoke-DownloadCudaRuntime {
     }
     if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest -Force | Out-Null }
     # ggml-org/llama.cpp ships the matching cudart redist on every release.
-    $asset = "cudart-llama-bin-win-cu12.4-x64.zip"
-    $url = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaCppVersion/$asset"
+    # Asset naming changed mid-2025: older releases used `cudart-llama-bin-win-cu12.4-x64.zip`,
+    # newer ones use `cudart-llama-bin-win-cuda-12.4-x64.zip`. Try the new pattern first
+    # (since the launcher's pinned version is now b8992); fall back to the old one for
+    # users who pin LAI_LLAMACPP_VERSION to a pre-mid-2025 tag.
+    $assetCandidates = @(
+        "cudart-llama-bin-win-cuda-12.4-x64.zip",
+        "cudart-llama-bin-win-cu12.4-x64.zip"
+    )
     $zip = Join-Path $Dest 'cudart.zip'
-    Write-Host "==> Downloading CUDA runtime redist from $url" -ForegroundColor Cyan
-    if (-not (Invoke-SafeDownload -Url $url -OutFile $zip -Sha256 $Sha256)) {
+    $downloaded = $false
+    foreach ($asset in $assetCandidates) {
+        $url = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaCppVersion/$asset"
+        Write-Host "==> Trying CUDA runtime redist: $url" -ForegroundColor Cyan
+        if (Invoke-SafeDownload -Url $url -OutFile $zip -Sha256 $Sha256) { $downloaded = $true; break }
+    }
+    if (-not $downloaded) {
         Write-Host "      llama-server requires CUDA 12 runtime DLLs. Install the" -ForegroundColor Yellow
         Write-Host "      CUDA 12 Toolkit from NVIDIA, or drop cudart64_12.dll +" -ForegroundColor Yellow
         Write-Host "      cublas64_12.dll + cublasLt64_12.dll into $Dest manually." -ForegroundColor Yellow
@@ -152,11 +163,20 @@ function Invoke-DownloadLlamaServer {
         return
     }
     if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest -Force | Out-Null }
-    $asset = "llama-$Version-bin-win-cuda-cu12.4-x64.zip"
-    $url = "https://github.com/ggml-org/llama.cpp/releases/download/$Version/$asset"
+    # Asset naming changed mid-2025 from `cuda-cu12.4` → `cuda-12.4`. Try
+    # both patterns so a user can pin either an old or new release tag.
+    $assetCandidates = @(
+        "llama-$Version-bin-win-cuda-12.4-x64.zip",
+        "llama-$Version-bin-win-cuda-cu12.4-x64.zip"
+    )
     $zip = Join-Path $Dest 'llama.zip'
-    Write-Host "==> Downloading llama.cpp $Version from $url" -ForegroundColor Cyan
-    if (-not (Invoke-SafeDownload -Url $url -OutFile $zip -Sha256 $Sha256)) {
+    $downloaded = $false
+    foreach ($asset in $assetCandidates) {
+        $url = "https://github.com/ggml-org/llama.cpp/releases/download/$Version/$asset"
+        Write-Host "==> Trying llama.cpp $Version from $url" -ForegroundColor Cyan
+        if (Invoke-SafeDownload -Url $url -OutFile $zip -Sha256 $Sha256) { $downloaded = $true; break }
+    }
+    if (-not $downloaded) {
         Write-Host "      Set LAI_LLAMACPP_VERSION to a valid release tag." -ForegroundColor Yellow
         return
     }

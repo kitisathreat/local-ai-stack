@@ -70,7 +70,7 @@ $Script:PidFile   = Join-Path $AppData 'pids.json'
 # verification (dev only). Ship updated hashes when bumping versions.
 $Script:QdrantVersion    = if ($env:LAI_QDRANT_VERSION)    { $env:LAI_QDRANT_VERSION }    else { 'v1.12.4' }
 $Script:QdrantSha256     = if ($env:LAI_QDRANT_SHA256)     { $env:LAI_QDRANT_SHA256 }     else { '' }
-$Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b4404' }
+$Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b8992' }
 $Script:LlamaCppSha256   = if ($env:LAI_LLAMACPP_SHA256)   { $env:LAI_LLAMACPP_SHA256 }   else { '' }
 
 # ── Tiny helpers (dedupe pattern from setup.ps1/launcher) ────────────────────
@@ -490,9 +490,18 @@ function Invoke-Start {
     $visionGguf = Join-Path $DataDir 'models\vision.gguf'
     $visionMmproj = Join-Path $DataDir 'models\vision.mmproj.gguf'
     if ((Test-Path $llamaBin) -and (Test-Path $visionGguf)) {
+        # NOTE: --jinja was added in llama.cpp ≥ b4500. The launcher's
+        # pinned build (b4404) rejects it and the tier crashes. Probe
+        # the binary's --help output and only pass the flag when
+        # supported, so a future bump to LAI_LLAMACPP_VERSION picks it
+        # up automatically.
+        # `-fa on` (b8992+) instead of bare `-fa` (b4404). Both
+        # old and new binaries accept the explicit form.
         $visionArgs = @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf,
-                        '--ctx-size', '16384', '--parallel', '2', '-ngl', '-1', '-fa',
-                        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0', '--jinja')
+                        '--ctx-size', '16384', '--parallel', '2', '-ngl', '-1', '-fa', 'on',
+                        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0')
+        $help = & $llamaBin --help 2>&1 | Out-String
+        if ($help -match '(?m)^\s*--jinja\b') { $visionArgs += '--jinja' }
         if (Test-Path $visionMmproj) { $visionArgs += @('--mmproj', $visionMmproj) }
         $pids['llama-server'] = Record-PidEntry (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
             -Args $visionArgs -LogDir $LogsDir)
