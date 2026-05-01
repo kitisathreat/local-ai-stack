@@ -470,6 +470,22 @@ def _apply_resolved_models(models_cfg: "ModelsConfig") -> None:
         if mmproj:
             tier.mmproj_path = mmproj
 
+    # Speculative-decode drafts are resolved as ordinary entries in
+    # model-sources.yaml (e.g. `draft_qwen3_06b`). For every chat tier
+    # that declares `draft_model_tag`, look up that name in the resolved
+    # manifest and copy its gguf_path into the tier's `draft_gguf_path`.
+    # Done here rather than in the resolver so a missing draft (offline,
+    # not-yet-downloaded) doesn't block tier setup — build_argv only
+    # emits -md when the path is set, so absent drafts cleanly disable
+    # spec decode without breaking startup.
+    for tier in models_cfg.tiers.values():
+        if not tier.draft_model_tag or tier.draft_gguf_path:
+            continue
+        draft_info = tiers.get(tier.draft_model_tag) or {}
+        path = draft_info.get("gguf_path")
+        if path:
+            tier.draft_gguf_path = path
+
 
 @lru_cache(maxsize=1)
 def get_config() -> AppConfig:

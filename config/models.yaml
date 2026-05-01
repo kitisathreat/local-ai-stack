@@ -68,10 +68,20 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 14                 # attention + KV cache + embeddings on
-                                         # GPU (~12-14 GB at 65k ctx, parallel=1).
-                                         # MoE experts (~33 GB) live in system RAM.
+    vram_estimate_gb: 14.5               # attention + KV cache + embeddings on
+                                         # GPU (~12-14 GB at 65k ctx, parallel=1)
+                                         # plus ~0.5 GB for the speculative-decode
+                                         # draft (Qwen3-0.6B). MoE experts (~33 GB)
+                                         # live in system RAM via -ot.
     parallel_slots: 1
+    # Speculative decoding: Qwen3-0.6B draft. Lossless rejection-sampling
+    # against this 80B target — output distribution is exact-equal to
+    # running the target alone, only the throughput changes. 80B/0.6B ≈
+    # 133× ratio is excellent for spec decode (large gap = high acceptance).
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
     n_gpu_layers: -1                     # base case = everything to GPU; the
                                          # -ot below pulls the experts back to CPU.
     flash_attention: true                # Re-enabled (was false on the dense 72B).
@@ -115,9 +125,19 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 4096
-    vram_estimate_gb: 6                  # was 21 — experts now spill to RAM via -ot.
-                                         # GPU holds attention + KV + embeddings only.
+    vram_estimate_gb: 6.5                # was 21 — experts now spill to RAM via -ot.
+                                         # GPU holds attention + KV + embeddings, plus
+                                         # ~0.5 GB for the Qwen3-0.6B spec-decode draft.
     is_orchestrator: true
+    # Speculative decoding: Qwen3-0.6B draft (same Qwen3 tokenizer). Note that
+    # at parallel_slots=3 spec-decode speedup is reduced — concurrent slots
+    # share batch capacity. Still net positive on single-slot turns; the orches-
+    # trator's typical workload is a stream of sequential subtasks where this
+    # matters most.
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
     parallel_slots: 3                    # was 2; the q4_0 KV on hybrid attention
                                          # is so cheap (~1 GB at 131k × 3 slots)
                                          # that adding a third slot is essentially
@@ -158,9 +178,18 @@ tiers:
       top_k: 20
       repeat_penalty: 1.0
       num_predict: 2048
-    vram_estimate_gb: 7
+    vram_estimate_gb: 7.5                # 7 GB weights + KV plus 0.5 GB
+                                         # for the spec-decode draft.
     parallel_workers_max: 3
     parallel_slots: 4
+    # Speculative decoding: Qwen3-0.6B draft. Smaller draft-max (6) since the
+    # 9B target is itself fast — over-aggressive drafting eats more cycles than
+    # it saves on a target this small. Same draft binary as the larger tiers
+    # (single Qwen3-0.6B GGUF on disk shared via mmap across spawns).
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 6
+    draft_min: 3
     n_gpu_layers: -1
     flash_attention: true
     # Qwen3.5-9B is hybrid attention (Gated DeltaNet + full-attn). Same
@@ -198,9 +227,19 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 6                  # was 20 — experts now spill to RAM via -ot.
-                                         # GPU holds attention + KV + embeddings only.
+    vram_estimate_gb: 6.5                # was 20 — experts now spill to RAM via -ot.
+                                         # GPU holds attention + KV + embeddings, plus
+                                         # ~0.5 GB for the Qwen3-0.6B spec-decode draft.
+                                         # Note: the 80b variant (defined in `variants:`
+                                         # below) bumps this to 14.5 GB.
     reasoning_format: none              # strip <think> tags from API output
+    # Speculative decoding: Qwen3-0.6B draft. Tokenizer-compatible with
+    # Qwen3-Coder-30B-A3B (both Qwen3 family vocab 151936). Lossless
+    # rejection-sampling — output matches running the target alone.
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
     parallel_slots: 1
     n_gpu_layers: -1
     flash_attention: true
@@ -238,14 +277,25 @@ tiers:
       top_p: 0.95
       top_k: 20
       num_predict: 4096
-    vram_estimate_gb: 6                  # was 21 — experts now spill to RAM via -ot.
-                                         # Same architecture as versatile, same offload.
+    vram_estimate_gb: 6.5                # was 21 — experts now spill to RAM via -ot.
+                                         # Same architecture as versatile, same offload,
+                                         # plus ~0.5 GB for the spec-decode draft.
     # Was `pinned: true` — but at 21 GB, pinning vision on a 24 GB GPU
     # leaves only ~2 GB for every other chat tier, blocking versatile
     # (21 GB), highest_quality (24 GB), and coding (24 GB) from ever
     # loading. Cold-spawn on demand instead; vision sees real use only
     # when an image is in the message and the auto-route kicks in.
     pinned: false
+    # Speculative decoding: Qwen3-0.6B draft. Lower draft-max (6) because
+    # mmproj-injected vision tokens make the early-position context less
+    # predictable for the draft, dropping its acceptance rate. Lossless
+    # guarantee unaffected — only the speedup amount is at risk. If
+    # vision spec-decode shows zero benefit in practice, clear the
+    # draft_* fields here to disable on this tier alone.
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 6
+    draft_min: 3
     parallel_slots: 2
     n_gpu_layers: -1
     flash_attention: true

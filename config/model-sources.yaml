@@ -118,3 +118,20 @@ tiers:
     pinned:
       revision: "main"
       file: "nomic-embed-text-v1.5.Q8_0.gguf"
+
+  # Qwen3-0.6B-Instruct — universal speculative-decode draft for every
+  # Qwen3-family chat tier (highest_quality, versatile, fast, coding, vision).
+  # Speculative decoding requires the draft and target to share a tokenizer,
+  # otherwise rejection sampling is undefined. All Qwen3 family models
+  # (and Qwen3-Coder) share vocab 151936 — a single 0.6B draft works for
+  # every tier. ~600 MB on disk at UD-Q4_K_XL; ~0.5 GB extra VRAM at
+  # spawn time. NOT compatible with reasoning_max (GPT-OSS uses a different
+  # tokenizer family) — that tier intentionally has no draft.
+  draft_qwen3_06b:
+    source: huggingface
+    repo: "unsloth/Qwen3-0.6B-Instruct-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "Qwen3-0.6B-Instruct-UD-Q4_K_XL.gguf"
