@@ -656,15 +656,44 @@
               const chunk = JSON.parse(body);
               if (currentEvent === 'agent' && !firstTokenSeen) {
                 // Pre-stream status update from the orchestrator.
+                // Status labels are crafted to NOT imply "loading the
+                // wrong model first" — when the routed tier matches
+                // what the user picked, we just say "Connecting…";
+                // when an auto-route specialised it, we surface the
+                // reason explicitly.
                 const t = chunk.type || '';
+                const userPickedTier = (modelEl.value || '').replace(/^tier\./, '');
                 let label = null;
                 if (t === 'route.decision') {
-                  label = `Routing to ${chunk.data && chunk.data.tier ? chunk.data.tier : 'tier'}…`;
-                } else if (t === 'queue.update') {
-                  const pos = chunk.data && (chunk.data.position ?? chunk.data.ahead);
-                  label = pos != null ? `Queued (#${pos} ahead)…` : 'Queued…';
-                } else if (t === 'model.spawn' || t === 'tier.loading') {
-                  label = 'Loading model into VRAM…';
+                  const tier = chunk.data && chunk.data.tier;
+                  const reason = chunk.data && chunk.data.specialist_reason;
+                  if (!tier || tier === userPickedTier) {
+                    label = 'Connecting to model…';
+                  } else if (reason) {
+                    const reasonText = {
+                      image_in_message: 'image attached',
+                      code_block_present: 'code block detected',
+                    }[reason] || reason;
+                    label = `Auto-routed to ${tierLabel(tier)} (${reasonText})…`;
+                  } else {
+                    label = `Routing to ${tierLabel(tier)}…`;
+                  }
+                } else if (t === 'queue' || t === 'queue.update') {
+                  const d = chunk.data || {};
+                  const pos = d.position ?? d.ahead ?? d.queue_position;
+                  label = pos != null
+                    ? `Queued (${pos} request${pos == 1 ? '' : 's'} ahead)…`
+                    : 'Queued for VRAM slot…';
+                } else if (t === 'tier.loading' || t === 'model.spawn') {
+                  const tag = chunk.data && (chunk.data.model_tag || chunk.data.tier_id);
+                  label = tag
+                    ? `Loading ${tag} into VRAM (first request takes 5–30s)…`
+                    : 'Loading model into VRAM (first request takes 5–30s)…';
+                } else if (t === 'vram.making_room') {
+                  const tag = chunk.data && chunk.data.tier_id;
+                  label = tag
+                    ? `Unloading idle models to make room for ${tag}…`
+                    : 'Unloading idle models to make VRAM room…';
                 } else if (t === 'tool.call') {
                   const name = chunk.data && chunk.data.name;
                   label = name ? `Calling tool: ${name}…` : 'Calling tool…';

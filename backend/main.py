@@ -668,6 +668,12 @@ async def _reserve_with_sse(
     async def on_event(ev: dict) -> None:
         await evs.put(ev)
 
+    def _ev_type(ev: dict) -> str:
+        """Forward scheduler events with their original type when set
+        (e.g. 'tier.loading'), else default to 'queue' for queue
+        position updates. Lets the chat UI label them differently."""
+        return str(ev.get("type") or "queue")
+
     acquire_task = asyncio.create_task(scheduler.acquire(tier_id, on_event))
     try:
         while not acquire_task.done():
@@ -676,7 +682,7 @@ async def _reserve_with_sse(
             except asyncio.TimeoutError:
                 continue
             yield _agent_event_sse(
-                AgentEvent(type="queue", data=ev), model_id,
+                AgentEvent(type=_ev_type(ev), data=ev), model_id,
             )
         # Drain any events that arrived after acquisition.
         while not evs.empty():
@@ -685,7 +691,7 @@ async def _reserve_with_sse(
             except asyncio.QueueEmpty:
                 break
             yield _agent_event_sse(
-                AgentEvent(type="queue", data=ev), model_id,
+                AgentEvent(type=_ev_type(ev), data=ev), model_id,
             )
         # Propagate QueueFull/QueueTimeout/VRAMExhausted/etc.
         await acquire_task

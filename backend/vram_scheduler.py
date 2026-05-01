@@ -288,6 +288,18 @@ class VRAMScheduler:
                                 )
                             self._waiters[tier_id] = self._waiters.get(tier_id, 0) + 1
                             entered_queue = True
+                        # Pre-eviction event for the chat UI so the
+                        # user sees "Making room for <tier>..." while
+                        # _make_room_for is unloading other models.
+                        if on_event:
+                            try:
+                                await on_event({
+                                    "type": "vram.making_room",
+                                    "tier_id": tier_id,
+                                    "needs_gb": tier.vram_estimate_gb,
+                                })
+                            except Exception:
+                                logger.debug("on_event vram.making_room raised; continuing")
                         await self._make_room_for(tier)
                         new_entry = LoadedModel(
                             tier_id=tier_id,
@@ -327,6 +339,20 @@ class VRAMScheduler:
 
                 # Step 2: Perform load outside the lock.
                 if load_needed:
+                    # Emit a "loading" event so the chat UI can show
+                    # "Loading <model> into VRAM..." while llama-server
+                    # streams weights from disk → GPU. Without this the
+                    # user sees a 5-30s silent gap between "Routing to..."
+                    # and the first token.
+                    if on_event:
+                        try:
+                            await on_event({
+                                "type": "tier.loading",
+                                "tier_id": tier_id,
+                                "model_tag": tier.model_tag,
+                            })
+                        except Exception:
+                            logger.debug("on_event tier.loading raised; continuing")
                     before_free = self.probe.free_gb(self.vram.total_vram_gb)
                     try:
                         loader = self.loaders.get(tier.backend)

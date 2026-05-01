@@ -141,7 +141,12 @@ tiers:
       top_k: 20
       num_predict: 4096
     vram_estimate_gb: 21
-    pinned: true                        # pre-spawned by the launcher; never evicted
+    # Was `pinned: true` — but at 21 GB, pinning vision on a 24 GB GPU
+    # leaves only ~2 GB for every other chat tier, blocking versatile
+    # (21 GB), highest_quality (24 GB), and coding (24 GB) from ever
+    # loading. Cold-spawn on demand instead; vision sees real use only
+    # when an image is in the message and the auto-route kicks in.
+    pinned: false
     parallel_slots: 2
     n_gpu_layers: -1
     flash_attention: true
