@@ -30,52 +30,67 @@
 # config/models.yaml does not need to track exact filenames.
 
 tiers:
+  # Qwen3 72B — hardest reasoning. Repo: mradermacher's GGUF mirror
+  # (the official Qwen org doesn't ship a 72B GGUF directly).
   highest_quality:
     source: huggingface
-    repo: "bartowski/Qwen2.5-72B-Instruct-GGUF"
+    repo: "mradermacher/Qwen3-72B-Instruct-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen2.5-72B-Instruct-Q4_K_M.gguf"
+      file: "Qwen3-72B-Instruct.Q4_K_M.gguf"
 
+  # Qwen3.6 35B-A3B (MoE) — default + orchestrator. Same repo as the
+  # vision tier; we download the Q4_K_M weights once and the vision
+  # tier tacks on the mmproj companion. lmstudio-community releases
+  # ship the mmproj alongside the weights.
   versatile:
     source: huggingface
-    repo: "bartowski/Qwen2.5-32B-Instruct-GGUF"
+    repo: "lmstudio-community/Qwen3.6-35B-A3B-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen2.5-32B-Instruct-Q4_K_M.gguf"
+      file: "Qwen3.6-35B-A3B-Q4_K_M.gguf"
 
+  # Qwen3.5 9B — multi-agent workers. lmstudio-community publishes both
+  # the weights and an mmproj-BF16; we only pull the weights here.
   fast:
     source: huggingface
-    repo: "bartowski/Qwen2.5-7B-Instruct-GGUF"
+    repo: "lmstudio-community/Qwen3.5-9B-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+      file: "Qwen3.5-9B-Q4_K_M.gguf"
 
+  # Qwen3-Coder-Next 80B-A3B — SWE-bench trained. unsloth's release.
+  # Note: the official Qwen/Qwen3-Coder-Next-GGUF ships sharded
+  # (00001-of-00004 ... 00004-of-00004), which the resolver doesn't
+  # yet stitch — we use unsloth's single-file build.
   coding:
     source: huggingface
-    repo: "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"
+    repo: "unsloth/Qwen3-Coder-Next-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"
+      file: "Qwen3-Coder-Next-Q4_K_M.gguf"
 
+  # Qwen3.6 35B + mmproj — images / charts. Same base weights as the
+  # versatile tier; the runtime spawns a separate llama-server with
+  # the mmproj attached so it can process vision input.
   vision:
     source: huggingface
-    repo: "bartowski/Qwen2-VL-7B-Instruct-GGUF"
+    repo: "lmstudio-community/Qwen3.6-35B-A3B-GGUF"
     file: "*Q4_K_M.gguf"
-    mmproj: "*mmproj*f16.gguf"
+    mmproj: "mmproj-*BF16.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
-      mmproj: "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+      file: "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+      mmproj: "mmproj-Qwen3.6-35B-A3B-BF16.gguf"
 
   embedding:
     source: huggingface
