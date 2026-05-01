@@ -91,6 +91,13 @@ async def test_reserve_twice_shares_loaded(cfg):
 
 @pytest.mark.asyncio
 async def test_evict_lru_when_pressure(cfg):
+    # The post-Step-5 production config drops MoE tiers to ~6 GB VRAM
+    # via expert offload, so versatile (6) + highest_quality (14) fits
+    # in the 24 GB card with no eviction needed. To exercise the
+    # eviction LOGIC, we override the tier costs in-test to recreate
+    # the pre-optimization pressure scenario.
+    cfg.models.tiers["versatile"].vram_estimate_gb = 21.0
+    cfg.models.tiers["highest_quality"].vram_estimate_gb = 24.0
     probe = FakeProbe(total_gb=24.0, loaded_costs={})
     sched = make_scheduler(cfg, probe)
 
@@ -109,6 +116,11 @@ async def test_evict_lru_when_pressure(cfg):
 async def test_vram_exhausted_when_cant_evict(cfg):
     """If another tier is actively in use (refcount > 0) and there's no
     room for the new request, raise VRAMExhausted."""
+    # Same rationale as test_evict_lru_when_pressure: the optimized
+    # post-Step-5 config no longer triggers exhaustion at these tier
+    # combinations. Override in-test to recreate pressure.
+    cfg.models.tiers["highest_quality"].vram_estimate_gb = 24.0
+    cfg.models.tiers["coding"].vram_estimate_gb = 20.0
     probe = FakeProbe(total_gb=24.0, loaded_costs={})
     sched = make_scheduler(cfg, probe)
 
@@ -138,6 +150,11 @@ async def test_pinned_not_evicted(cfg):
     decoupling the test from the YAML default.
     """
     cfg.models.tiers["vision"].pinned = True
+    # Override costs: post-Step-5, vision is 6GB and coding is 6GB so
+    # they coexist trivially. Restore the pre-optimization sizes so
+    # the pin-vs-eviction race is actually exercised.
+    cfg.models.tiers["vision"].vram_estimate_gb = 21.0
+    cfg.models.tiers["coding"].vram_estimate_gb = 24.0
     probe = FakeProbe(total_gb=24.0, loaded_costs={})
     sched = make_scheduler(cfg, probe)
 
@@ -340,3 +357,83 @@ async def test_mark_tier_dirty_evicts_idle(cfg):
     await sched.mark_tier_dirty("fast")
     # Evicted since refcount==0
     assert "fast" not in sched.loaded
+
+
+# ── Variant switching ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_variant_switch_evicts_when_idle(cfg):
+    """Switching variants on an idle tier evicts the previous variant
+    so the new one can spawn."""
+    from backend.config import TierVariant
+    # Set up fake variants on the coding tier (the production YAML has
+    # them too, but be explicit so the test doesn't drift).
+    cfg.models.tiers["coding"].variants = {
+        "30b": TierVariant(model_tag="qwen3-coder-30b-a3b", vram_estimate_gb=6.5),
+        "80b": TierVariant(model_tag="qwen3-coder-next-80b-a3b", vram_estimate_gb=14.5),
+    }
+    cfg.models.tiers["coding"].default_variant = "30b"
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("coding", variant="30b"):
+        pass
+    assert sched.loaded["coding"].variant == "30b"
+    assert sched.loaded["coding"].model_tag == "qwen3-coder-30b-a3b"
+
+    async with sched.reserve("coding", variant="80b"):
+        # The previous 30b entry was evicted and replaced
+        assert sched.loaded["coding"].variant == "80b"
+        assert sched.loaded["coding"].model_tag == "qwen3-coder-next-80b-a3b"
+
+
+@pytest.mark.asyncio
+async def test_variant_unset_uses_default(cfg):
+    """When acquire(variant=None), the tier's default_variant is recorded
+    on the LoadedModel so subsequent default-variant requests share it."""
+    from backend.config import TierVariant
+    cfg.models.tiers["coding"].variants = {
+        "30b": TierVariant(model_tag="qwen3-coder-30b-a3b", vram_estimate_gb=6.5),
+    }
+    cfg.models.tiers["coding"].default_variant = "30b"
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("coding"):
+        assert sched.loaded["coding"].variant == "30b"
+
+
+# ── live_user_text plumbing ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_acquire_forwards_live_user_text_to_loader(cfg):
+    """The user text passed to reserve() reaches the loader unchanged."""
+    captured: dict = {}
+
+    async def loader(tier, free_vram_gb=None, variant=None, live_user_text=""):
+        captured["model_tag"] = tier.model_tag
+        captured["free_vram_gb"] = free_vram_gb
+        captured["variant"] = variant
+        captured["live_user_text"] = live_user_text
+
+    async def unloader(tier):
+        pass
+
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = VRAMScheduler(
+        config=cfg,
+        loaders={"llama_cpp": loader},
+        unloaders={"llama_cpp": unloader},
+        probe=probe,
+    )
+
+    async with sched.reserve(
+        "fast",
+        live_user_text="prove the chain rule for partial derivatives",
+    ):
+        pass
+
+    assert captured["model_tag"] == "qwen3.5-9b"
+    assert captured["live_user_text"] == "prove the chain rule for partial derivatives"
+    assert captured["free_vram_gb"] is not None  # also forwarded
+    assert captured["variant"] is None           # default for non-variant tier

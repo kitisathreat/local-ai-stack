@@ -15,50 +15,143 @@
 default: versatile
 
 tiers:
-  # ── Highest Quality — Qwen3 72B dense, hardest reasoning ────────────────────
+  # ── Highest Quality — Qwen3-Next 80B-A3B Thinking, MoE w/ hybrid attention ──
+  # Replacement for the previous Qwen3-72B dense tier. The 72B was kept
+  # alive on this 24 GB GPU via partial-layer offload + stability hacks
+  # (flash_attention: false, --no-mmap, --mlock). Those are workarounds
+  # for *dense* partial offload corruption — they don't apply here
+  # because Qwen3-Next is MoE: only the routed expert tensors spill to
+  # system RAM via -ot, while every attention layer stays GPU-resident.
+  #
+  # Why this model:
+  #   - 80B total / 3B active → ~45-55 tok/s on Kit's DDR5 even with
+  #     experts in RAM. Faster than the old 72B (~5-10 t/s) by ~6-10x.
+  #   - Hybrid attention (Gated DeltaNet + Gated Attention) → q4_0 KV
+  #     cache is lossless (per llama.cpp #21385); enables longer ctx
+  #     without VRAM pressure.
+  #   - Thinking mode (separate variant from -Instruct) — strong
+  #     reasoning despite smaller total parameter count than 72B dense.
+  #   - 256K native context, extensible to 1M with YaRN.
+  #
+  # Alternatives considered:
+  #   - GPT-OSS-120B: higher peak quality on hard reasoning, native
+  #     MXFP4 (no quant loss), but 5.1B active = ~25-35 t/s (1.7x
+  #     slower); standard attention forces q8_0 KV cache; heavier
+  #     safety tuning. Documented as the swap if Qwen3-Next reasoning
+  #     proves too thin.
+  #   - Qwen3.5-122B-A10B: more total params but 10B active = ~12-18
+  #     t/s, much slower on RAM offload.
+  #   - Qwen3.6-35B-A3B (newer than Qwen3-Next): same 3B active, same
+  #     speed, BETTER benchmarks (AIME 92.7, GPQA 86.0) — but smaller
+  #     total (35B) and ALREADY used by the versatile tier. Could be
+  #     considered as a "highest_quality = same model + thinking on"
+  #     setup if 80B-Next feels heavy in practice.
   highest_quality:
-    name: "Highest Quality (Qwen3 72B)"
-    description: "Maximum reasoning quality. Slow (~5-10 t/s with partial CPU offload). Use for hardest problems."
+    name: "Highest Quality (Qwen3-Next 80B-A3B Thinking)"
+    description: "MoE with 3B active params, hybrid attention, thinking mode. ~45-55 t/s with expert offload to RAM."
     backend: llama_cpp
     port: 8010
-    model_tag: "qwen3-72b"
-    context_window: 32768
-    think_default: false                 # Qwen3 emits long reasoning_content the
-                                         # web UI silently drops; defaults to off.
-                                         # User opts in via the Think checkbox.
+    model_tag: "qwen3-next-80b-a3b-thinking"
+    context_window: 131072               # 131k via YaRN factor 4.0 below; the
+                                         # model is native 256K but we cap here
+                                         # to keep KV cache bounded at parallel=1.
+                                         # ~2-3 GB KV cache at q4_0 on the 12 full-
+                                         # attn layers of the 48-layer hybrid stack.
+    think_default: true                  # Thinking variant — defaults on; user
+                                         # can opt out via the Think checkbox.
     think_supported: true
+    preserve_thinking: true
     params:
-      temperature: 0.7
-      top_p: 0.9
+      temperature: 0.6
+      top_p: 0.95
       top_k: 20
+      min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 24                 # near-full GPU offload at IQ4_XS
-                                         # (~50 of 80 layers fit; 30 on CPU)
+    vram_estimate_gb: 14.5               # attention + KV cache + embeddings on
+                                         # GPU (~12-14 GB at 65k ctx, parallel=1)
+                                         # plus ~0.5 GB for the speculative-decode
+                                         # draft (Qwen3-0.6B). MoE experts (~33 GB)
+                                         # live in system RAM via -ot.
     parallel_slots: 1
-    n_gpu_layers: -1
-    # ── Partial-offload stability overrides ─────────────────────────
-    # The 72B model at IQ4_XS is ~37 GB — too large to fit on a 24 GB
-    # GPU. llama.cpp will auto-offload ~50 layers to GPU and ~30 to
-    # CPU. The plain settings (flash-attn on, mmap on, no mlock)
-    # produced numerically corrupted attention at that split. These
-    # three overrides together restored coherent output:
-    flash_attention: false               # FA between GPU and CPU layers can
-                                         # mishandle the boundary, corrupting
-                                         # attention scores. Slower without it
-                                         # but stable.
-    use_mmap: false                      # → --no-mmap. Forces full RAM load
-                                         # of the CPU-resident layers; without
-                                         # this they're paged from disk and
-                                         # variable latency desyncs the GPU
-                                         # compute pipeline.
-    use_mlock: true                      # → --mlock. Pins those layers in
-                                         # RAM so the OS can't swap them out
-                                         # under memory pressure.
-    cache_type_k: q8_0                   # KV cache fp16 worked too but q8_0
-                                         # is tighter and the imatrix-calibrated
-                                         # weights keep activations in range.
+    # Speculative decoding: Qwen3-0.6B draft. Lossless rejection-sampling
+    # against this 80B target — output distribution is exact-equal to
+    # running the target alone, only the throughput changes. 80B/0.6B ≈
+    # 133× ratio is excellent for spec decode (large gap = high acceptance).
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
+    n_gpu_layers: -1                     # base case = everything to GPU; the
+                                         # -ot below pulls the experts back to CPU.
+    flash_attention: true                # Re-enabled (was false on the dense 72B).
+                                         # Safe here because every attention layer
+                                         # is GPU-resident — no FA boundary issue.
+    use_mmap: true                       # Re-enabled. MoE expert tensors stream
+                                         # from mmap'd file into RAM lazily; the
+                                         # OS page cache absorbs hot experts.
+    use_mlock: false                     # Don't pin — let the page cache evict
+                                         # cold experts under memory pressure.
+    cache_type_k: q4_0                   # Hybrid attention → q4_0 lossless.
+    cache_type_v: q4_0                   # Symmetric K/V keeps fused FA active.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"              # The single line that makes spillover
+                                         # quality good: experts to RAM, every-
+                                         # thing else (attention, KV, embed,
+                                         # non-expert MLP) stays on the GPU.
+    rope_scaling:
+      type: yarn
+      factor: 4.0
+      orig_ctx: 32768
+
+  # ── Reasoning Max — GPT-OSS-120B, opt-in for hardest reasoning ──────────────
+  # A heavyweight alternative to highest_quality. Higher peak quality on
+  # math derivations and architecture-design prompts than Qwen3-Next-
+  # Thinking, at the cost of being ~1.7x slower (5.1 B active vs 3 B).
+  # Cold-spawn only — never the default; users opt in via /tier reasoning
+  # when they want maximum quality and accept the latency.
+  #
+  # Architecture: MoE, 117 B total / 5.1 B active. Standard (non-hybrid)
+  # attention so KV cache stays at q8_0 (q4_0 is not lossless here, unlike
+  # the Qwen3.x family).
+  #
+  # NO speculative draft: GPT-OSS uses OpenAI's o200k_harmony tokenizer,
+  # which is incompatible with the Qwen3-0.6B draft used by every other
+  # tier. Speculative decoding requires a tokenizer-compatible draft;
+  # without one this tier runs target-only at ~25-35 tok/s. Adding a
+  # GPT-OSS-family draft is feasible (e.g. a hypothetical GPT-OSS-2B)
+  # but no such GGUF exists at time of writing.
+  reasoning_max:
+    name: "Reasoning Max (GPT-OSS-120B)"
+    description: "OpenAI's open-weight 120 B MoE (5.1 B active). Highest peak quality on hard reasoning; ~25-35 t/s with expert offload."
+    backend: llama_cpp
+    port: 8014
+    model_tag: "gpt-oss-120b"
+    context_window: 131072               # native context
+    think_default: true
+    think_supported: true
+    preserve_thinking: true
+    params:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 8192
+    vram_estimate_gb: 14                  # attention + KV + embeddings on GPU.
+                                          # MoE experts (~50 GB) live in system RAM.
+    parallel_slots: 1
+    n_gpu_layers: -1                      # base case = everything to GPU; -ot
+                                          # below pulls experts back to CPU.
+    flash_attention: true
+    use_mmap: true
+    use_mlock: false
+    cache_type_k: q8_0                    # Standard attention — q8_0 stays.
     cache_type_v: q8_0
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"               # Same MoE expert offload as the
+                                          # Qwen3 MoE tiers — keeps every
+                                          # attention layer GPU-resident.
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
@@ -67,7 +160,10 @@ tiers:
     backend: llama_cpp
     port: 8011
     model_tag: "qwen3.6-35b-a3b"
-    context_window: 65536                # was 16384; YaRN-extended
+    context_window: 131072               # was 65536; doubled now that expert
+                                         # offload (Step 5) freed ~15 GB of
+                                         # VRAM. Qwen3.6 is native 262K so
+                                         # this is well within trained range.
     think_default: false
     think_supported: true
     preserve_thinking: true             # Qwen3.6 feature — carries reasoning across agent turns
@@ -78,16 +174,41 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 4096
-    vram_estimate_gb: 21
+    vram_estimate_gb: 6.5                # was 21 — experts now spill to RAM via -ot.
+                                         # GPU holds attention + KV + embeddings, plus
+                                         # ~0.5 GB for the Qwen3-0.6B spec-decode draft.
     is_orchestrator: true
-    parallel_slots: 2
+    # Speculative decoding: Qwen3-0.6B draft (same Qwen3 tokenizer). Note that
+    # at parallel_slots=3 spec-decode speedup is reduced — concurrent slots
+    # share batch capacity. Still net positive on single-slot turns; the orches-
+    # trator's typical workload is a stream of sequential subtasks where this
+    # matters most.
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
+    parallel_slots: 3                    # was 2; the q4_0 KV on hybrid attention
+                                         # is so cheap (~1 GB at 131k × 3 slots)
+                                         # that adding a third slot is essentially
+                                         # free. Lets the orchestrator host more
+                                         # concurrent multi-agent subtasks.
     n_gpu_layers: -1
     flash_attention: true
-    cache_type_k: q8_0
-    cache_type_v: q8_0
+    # Qwen3.6-35B-A3B is hybrid attention: ~75% of layers are Gated
+    # DeltaNet (linear attn, no KV cache); only ~25% have full attention
+    # KV cache. Per llama.cpp #21385, q4_0 K/V is BLEU-1.000 lossless on
+    # this architecture. Symmetric K/V keeps the fused FA kernel active.
+    cache_type_k: q4_0
+    cache_type_v: q4_0
+    # MoE expert offload — keeps every attention layer on the GPU
+    # (so FA stays correct) and offloads only routed-expert tensors
+    # to system RAM. ~22GB GGUF -> ~6GB VRAM + ~16GB RAM at idle.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"
     rope_scaling:
       type: yarn
-      factor: 2.0
+      factor: 4.0                       # was 2.0; updated for context_window
+                                         # 131072 (= 4.0 × orig_ctx 32768).
       orig_ctx: 32768
 
   # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
@@ -106,13 +227,24 @@ tiers:
       top_k: 20
       repeat_penalty: 1.0
       num_predict: 2048
-    vram_estimate_gb: 7
+    vram_estimate_gb: 7.5                # 7 GB weights + KV plus 0.5 GB
+                                         # for the spec-decode draft.
     parallel_workers_max: 3
     parallel_slots: 4
+    # Speculative decoding: Qwen3-0.6B draft. Smaller draft-max (6) since the
+    # 9B target is itself fast — over-aggressive drafting eats more cycles than
+    # it saves on a target this small. Same draft binary as the larger tiers
+    # (single Qwen3-0.6B GGUF on disk shared via mmap across spawns).
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 6
+    draft_min: 3
     n_gpu_layers: -1
     flash_attention: true
-    cache_type_k: q8_0
-    cache_type_v: q8_0
+    # Qwen3.5-9B is hybrid attention (Gated DeltaNet + full-attn). Same
+    # rationale as the versatile tier: q4_0 K/V is lossless here.
+    cache_type_k: q4_0
+    cache_type_v: q4_0
 
   # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
   # Was Qwen3-Coder-Next-80B-A3B which couldn't fit on a 24 GB GPU
@@ -126,9 +258,12 @@ tiers:
     port: 8013
     model_tag: "qwen3-coder-30b-a3b"
     fallback_tag: "qwen2.5-coder-32b"
-    context_window: 65536               # 30B-A3B fits 64k ctx in 24 GB VRAM
-                                        # alongside the model. The 80B variant's
-                                        # 256k YaRN context isn't reachable here.
+    context_window: 131072              # was 65536; doubled now that expert
+                                        # offload (Step 5) freed ~14 GB. With
+                                        # standard (non-hybrid) attention, KV
+                                        # cache at q8_0 lands at ~6.5 GB at
+                                        # 131k × 1 slot — fits comfortably.
+                                        # Bigger ctx = more of a codebase fits.
     think_default: false                # was true (80B); 30B coder is faster and
                                         # users typically don't want reasoning
                                         # blocks on simple coding turns. User
@@ -141,17 +276,55 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 20                # ~18 GB weights + ~2 GB KV/compute
+    vram_estimate_gb: 6.5                # was 20 — experts now spill to RAM via -ot.
+                                         # GPU holds attention + KV + embeddings, plus
+                                         # ~0.5 GB for the Qwen3-0.6B spec-decode draft.
+                                         # Note: the 80b variant (defined in `variants:`
+                                         # below) bumps this to 14.5 GB.
     reasoning_format: none              # strip <think> tags from API output
+    # Speculative decoding: Qwen3-0.6B draft. Tokenizer-compatible with
+    # Qwen3-Coder-30B-A3B (both Qwen3 family vocab 151936). Lossless
+    # rejection-sampling — output matches running the target alone.
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
     parallel_slots: 1
     n_gpu_layers: -1
     flash_attention: true
     cache_type_k: q8_0
     cache_type_v: q8_0
+    # MoE expert offload — keeps every attention layer on the GPU
+    # (so FA stays correct) and offloads only routed-expert tensors
+    # to system RAM. Note: Qwen3-Coder-30B is older Qwen3 family with
+    # standard (non-hybrid) attention — q8_0 KV stays put.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"
     rope_scaling:
       type: yarn
       factor: 4.0
       orig_ctx: 32768
+    # ── Per-request variants ──────────────────────────────────────────
+    # The coding tier can run either of two MoE coder models. Default
+    # is the smaller 30B (faster, fits with plenty of slack); users opt
+    # into the larger 80B for harder refactors via the `/coder big`
+    # slash command. Both variants share the same -ot expert-offload
+    # pattern, the same Qwen3-0.6B draft, the same KV cache type.
+    # Switching variants triggers a re-spawn of the tier's llama-server.
+    default_variant: "30b"
+    variants:
+      30b:
+        # Default. `source` omitted on purpose: this variant inherits
+        # gguf_path from the parent coding tier's model_resolver entry.
+        model_tag: "qwen3-coder-30b-a3b"
+        vram_estimate_gb: 6.5
+      80b:
+        # The big variant — points at the `coding_80b` entry in
+        # model-sources.yaml. Re-uses the same -ot pattern (configured
+        # on the parent tier; not duplicated here).
+        source: "coding_80b"
+        model_tag: "qwen3-coder-next-80b-a3b"
+        vram_estimate_gb: 14.5
 
   # ── Vision — Qwen3.6 35B-A3B + mmproj via llama.cpp ─────────────────────────
   vision:
@@ -161,7 +334,10 @@ tiers:
     port: 8001
     model_tag: "qwen3.6-35b-a3b"
     mmproj_path: "data/models/vision.mmproj.gguf"
-    context_window: 16384
+    context_window: 65536                # was 16384; quadrupled now that
+                                         # expert offload freed ~15 GB. Lets
+                                         # the vision tier carry larger
+                                         # documents and multi-image conversations.
     think_default: false
     think_supported: true
     chat_template_kwargs:
@@ -171,40 +347,80 @@ tiers:
       top_p: 0.95
       top_k: 20
       num_predict: 4096
-    vram_estimate_gb: 21
+    vram_estimate_gb: 6.5                # was 21 — experts now spill to RAM via -ot.
+                                         # Same architecture as versatile, same offload,
+                                         # plus ~0.5 GB for the spec-decode draft.
     # Was `pinned: true` — but at 21 GB, pinning vision on a 24 GB GPU
     # leaves only ~2 GB for every other chat tier, blocking versatile
     # (21 GB), highest_quality (24 GB), and coding (24 GB) from ever
     # loading. Cold-spawn on demand instead; vision sees real use only
     # when an image is in the message and the auto-route kicks in.
     pinned: false
+    # Speculative decoding: Qwen3-0.6B draft. Lower draft-max (6) because
+    # mmproj-injected vision tokens make the early-position context less
+    # predictable for the draft, dropping its acceptance rate. Lossless
+    # guarantee unaffected — only the speedup amount is at risk. If
+    # vision spec-decode shows zero benefit in practice, clear the
+    # draft_* fields here to disable on this tier alone.
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 6
+    draft_min: 3
     parallel_slots: 2
     n_gpu_layers: -1
     flash_attention: true
-    cache_type_k: q8_0
-    cache_type_v: q8_0
+    # Hybrid attention — same architecture as versatile. q4_0 lossless.
+    cache_type_k: q4_0
+    cache_type_v: q4_0
+    # MoE expert offload — same pattern as versatile.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"
+    rope_scaling:
+      type: yarn
+      factor: 2.0                       # 65536 = 2.0 × orig_ctx 32768.
+      orig_ctx: 32768
 
-  # ── Embedding — nomic-embed-text-v1.5, pre-spawned, pinned ──────────────────
+  # ── Embedding — Qwen3-Embedding-4B, pre-spawned, pinned ────────────────────
+  # Upgraded from nomic-embed-text-v1.5 (137 M, 768-dim, 8 k ctx,
+  # MTEB ~62.4) to Qwen3-Embedding-4B (4 B params, 2 560-dim, 32 k ctx,
+  # MTEB ~70.0). Substantial retrieval-quality jump, plus 4x context
+  # window so long documents chunk fewer times — better recall on
+  # multi-paragraph references. Shares the Qwen3 tokenizer with the chat
+  # tiers, so chunk-token-count semantics are consistent across the
+  # embedder and the generator.
+  #
+  # Migration: the 768 -> 2560 dimension change makes existing Qdrant
+  # collections incompatible. Run scripts/reembed_knowledge.py after
+  # the new GGUF lands via -Setup. The script recreates each user's
+  # collections at 2560 and re-embeds the original chunk text from the
+  # Qdrant payloads.
   embedding:
-    name: "Embedding (nomic-embed-text-v1.5)"
-    description: "Always-on embedding server for RAG and memory distillation."
+    name: "Embedding (Qwen3-Embedding-4B)"
+    description: "Always-on embedding server for RAG and memory distillation. 2560-dim, 32k ctx, MTEB ~70.0."
     backend: llama_cpp
     role: embedding
     port: 8090
-    model_tag: "nomic-embed-text-v1.5"
-    context_window: 8192
+    model_tag: "qwen3-embedding-4b"
+    context_window: 32768                # native; chunks larger documents in
+                                         # one shot — better recall.
     think_supported: false
-    vram_estimate_gb: 1
+    vram_estimate_gb: 2.8                # was 1 — the 4 B Qwen3 embedder is
+                                         # ~2.4 GB weights + ~0.4 GB KV at the
+                                         # 32 k ctx with 4 parallel slots.
     pinned: true                        # pre-spawned by the launcher; never evicted
     parallel_slots: 4
     n_gpu_layers: -1
-    flash_attention: false              # nomic-embed is unstable with -fa in some builds
-    cache_type_k: f16
+    # Qwen3-Embedding handles -fa fine (Qwen3 attention is well-tested).
+    flash_attention: true
+    cache_type_k: f16                    # f16 stays — embedding accuracy is
+                                         # sensitive to KV quantization.
     cache_type_v: f16
     extra_args:
       - "--embedding"
       - "--pooling"
-      - "mean"
+      - "last"                           # Qwen3-Embedding's official pooling
+                                         # is last-token (it's a decoder-style
+                                         # embedder, not BERT-style mean-pool).
 
 # Backwards compat — map old profile names to new tiers
 aliases:
@@ -215,4 +431,6 @@ aliases:
   creative: fast
   roleplay: fast
   summarizer: fast
+  reasoning: reasoning_max
+  oss: reasoning_max
   # `fast` and `coding` keep their names; no alias entry needed

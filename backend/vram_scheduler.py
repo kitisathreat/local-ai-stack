@@ -86,6 +86,10 @@ class LoadedModel:
     # slot_capacity so a concurrent in-flight config edit doesn't confuse
     # in-flight acquires.
     loaded_slots: int = 1
+    # Currently-active variant name (None = default / no variants declared).
+    # Variant changes trigger eviction on next idle so the next reserve
+    # reloads with the new variant — same pattern as a parallel_slots edit.
+    variant: str | None = None
 
     def effective_cost(self) -> float:
         """Use max(estimate, observed) for eviction math to be safe."""
@@ -229,6 +233,8 @@ class VRAMScheduler:
         self,
         tier_id: str,
         on_event: OnEventFn | None = None,
+        variant: str | None = None,
+        live_user_text: str = "",
     ) -> AsyncIterator[str]:
         """Hold a slot on the tier's loaded model for the duration of the
         `with` block. If the model is not loaded, loads it. If all slots are
@@ -237,8 +243,16 @@ class VRAMScheduler:
 
         Raises QueueFull if the queue is already at max_depth_per_tier and
         QueueTimeout if the total wait exceeds queue.max_wait_sec.
+
+        `variant` selects a per-tier model variant (e.g. coding/30b vs
+        coding/80b). When the currently-loaded variant differs from the
+        requested one and the tier is idle (refcount=0), it's evicted so
+        the new variant can spawn. When non-idle, the request waits via
+        the standard queue — on busy variant churn this serializes naturally.
         """
-        await self.acquire(tier_id, on_event)
+        await self.acquire(
+            tier_id, on_event, variant=variant, live_user_text=live_user_text,
+        )
         try:
             yield tier_id
         finally:
@@ -248,11 +262,21 @@ class VRAMScheduler:
         self,
         tier_id: str,
         on_event: OnEventFn | None = None,
+        variant: str | None = None,
+        live_user_text: str = "",
     ) -> None:
         if tier_id not in self.tiers:
             raise KeyError(f"Unknown tier: {tier_id}")
         tier = self.tiers[tier_id]
-        slot_cap = max(1, int(getattr(tier, "parallel_slots", 1)))
+        # Resolve to the variant-effective tier so VRAM math + slot count
+        # match what build_argv will actually spawn.
+        effective_tier = tier.resolve_variant(variant)
+        # The variant key we'll record on LoadedModel — falls back to the
+        # tier's default_variant when the caller passed None so that
+        # repeated default-requests don't churn against an explicit
+        # default variant request.
+        active_variant = variant or tier.default_variant
+        slot_cap = max(1, int(getattr(effective_tier, "parallel_slots", 1)))
         qcfg = self.cfg.vram.queue
         deadline = time.time() + max(1, qcfg.max_wait_sec)
         entered_queue = False
@@ -268,12 +292,23 @@ class VRAMScheduler:
                 async with self._lock:
                     m = self.loaded.get(tier_id)
                     if m and m.state == ModelState.RESIDENT:
+                        # Variant mismatch is treated like a config change:
+                        # the wrong variant is loaded, so evict and reload.
+                        # If non-idle, fall through into the queue path.
+                        variant_mismatch = (
+                            active_variant is not None
+                            and m.variant is not None
+                            and m.variant != active_variant
+                        )
                         # Config changed under us? Evict so we reload with
-                        # the new slot count.
-                        if m.loaded_slots != slot_cap and m.refcount == 0:
+                        # the new slot count or variant.
+                        if (m.loaded_slots != slot_cap or variant_mismatch) and m.refcount == 0:
                             await self._unload(m)
                             m = None
-                        elif m.refcount < m.slot_capacity:
+                        elif (
+                            not variant_mismatch
+                            and m.refcount < m.slot_capacity
+                        ):
                             m.refcount += 1
                             m.last_used = time.time()
                             return
@@ -300,18 +335,19 @@ class VRAMScheduler:
                                 })
                             except Exception:
                                 logger.debug("on_event vram.making_room raised; continuing")
-                        await self._make_room_for(tier)
+                        await self._make_room_for(effective_tier)
                         new_entry = LoadedModel(
                             tier_id=tier_id,
-                            backend=tier.backend,
-                            model_tag=tier.model_tag,
-                            vram_estimate_gb=tier.vram_estimate_gb,
+                            backend=effective_tier.backend,
+                            model_tag=effective_tier.model_tag,
+                            vram_estimate_gb=effective_tier.vram_estimate_gb,
                             observed_cost_gb=self._observed.get(tier_id),
                             state=ModelState.LOADING,
                             refcount=0,  # bumped after successful load
-                            pinned=tier.pinned,
+                            pinned=effective_tier.pinned,
                             slot_capacity=slot_cap,
                             loaded_slots=slot_cap,
+                            variant=active_variant,
                         )
                         self.loaded[tier_id] = new_entry
                         load_needed = True
@@ -349,15 +385,40 @@ class VRAMScheduler:
                             await on_event({
                                 "type": "tier.loading",
                                 "tier_id": tier_id,
-                                "model_tag": tier.model_tag,
+                                "model_tag": effective_tier.model_tag,
+                                "variant": active_variant,
                             })
                         except Exception:
                             logger.debug("on_event tier.loading raised; continuing")
                     before_free = self.probe.free_gb(self.vram.total_vram_gb)
                     try:
-                        loader = self.loaders.get(tier.backend)
+                        loader = self.loaders.get(effective_tier.backend)
                         if loader:
-                            await loader(tier)
+                            # Optional kwargs: free_vram_gb (residency
+                            # planner), variant (per-tier model variant),
+                            # and live_user_text (the latest user message,
+                            # used by the residency planner for complexity
+                            # estimation). Older loader signatures fall
+                            # through the TypeError ladder.
+                            try:
+                                await loader(
+                                    tier,
+                                    free_vram_gb=before_free,
+                                    variant=active_variant,
+                                    live_user_text=live_user_text,
+                                )
+                            except TypeError:
+                                try:
+                                    await loader(
+                                        tier,
+                                        free_vram_gb=before_free,
+                                        variant=active_variant,
+                                    )
+                                except TypeError:
+                                    try:
+                                        await loader(tier, free_vram_gb=before_free)
+                                    except TypeError:
+                                        await loader(tier)
                     except Exception:
                         async with self._lock:
                             new_entry.state = ModelState.EVICTING

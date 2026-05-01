@@ -41,7 +41,7 @@ from .middleware.rate_limit import rate_limiter
 from .middleware.response_mode import inject_response_mode
 from .middleware.web_search import inject_web_results
 from .orchestrator import Orchestrator
-from .router import route
+from .router import last_user_text, route
 from .schemas import ChatMessage, MessagePart
 from .tools import executor as tool_executor
 from .tools.registry import ToolRegistry, build_registry
@@ -189,8 +189,15 @@ async def lifespan(app: FastAPI):
 
     clients = {"llama_cpp": state.llama_cpp}
 
-    async def _llama_load(tier):
-        await state.llama_cpp.ensure_loaded(tier)
+    async def _llama_load(tier, free_vram_gb=None, variant=None, live_user_text=""):
+        # Resolve to the variant-effective tier so build_argv sees the
+        # right model_tag / gguf_path / vram_estimate_gb / draft fields.
+        effective = tier.resolve_variant(variant) if variant else tier
+        await state.llama_cpp.ensure_loaded(
+            effective,
+            free_vram_gb=free_vram_gb,
+            live_user_text=live_user_text,
+        )
 
     async def _llama_unload(tier):
         await state.llama_cpp.unload(tier)
@@ -350,6 +357,12 @@ async def healthz():
 
 @app.get("/v1/models", response_model=ModelsListResponse)
 async def list_models():
+    """Return user-selectable chat tiers as virtual OpenAI-compatible models.
+
+    Skips any tier whose `role` is "embedding" — the always-on embedding
+    server is RAG infrastructure, not a chat tier the user picks. This
+    keeps the GUI's tier dropdown clean.
+    """
     tiers = state.config.models.tiers
     return ModelsListResponse(data=[
         TierInfo(
@@ -362,6 +375,7 @@ async def list_models():
             vram_estimate_gb=tier.vram_estimate_gb,
         )
         for name, tier in tiers.items()
+        if tier.role != "embedding"
     ])
 
 
@@ -564,7 +578,20 @@ async def chat_completions(
     )
 
     tier = state.config.models.tiers[decision.tier_name]
+    # If the router picked a variant (e.g. /coder big -> '80b'), point the
+    # request payload at the variant-effective tier — same llama-server
+    # endpoint, but build_argv-relevant fields (model_tag, draft, vram)
+    # come from the variant. The scheduler has already loaded the right
+    # variant by this point via decision.variant.
+    if decision.variant:
+        tier = tier.resolve_variant(decision.variant)
     client = state.llama_cpp
+
+    # Extract the latest user message text (post-slash-stripping) for the
+    # residency planner's complexity heuristic. Truncate to 4 KB so a
+    # pathologically large message doesn't cost CPU in plan_residency —
+    # the planner only needs a representative sample of the request.
+    user_text_for_planner = last_user_text(req.messages)[:4096]
 
     started = time.time()
 
@@ -655,6 +682,8 @@ async def _reserve_with_sse(
     scheduler: VRAMScheduler,
     tier_id: str,
     model_id: str,
+    variant: str | None = None,
+    live_user_text: str = "",
 ) -> AsyncIterator[str]:
     """Acquire a scheduler slot, forwarding queue-progress events as SSE.
 
@@ -674,7 +703,13 @@ async def _reserve_with_sse(
         position updates. Lets the chat UI label them differently."""
         return str(ev.get("type") or "queue")
 
-    acquire_task = asyncio.create_task(scheduler.acquire(tier_id, on_event))
+    acquire_task = asyncio.create_task(
+        scheduler.acquire(
+            tier_id, on_event,
+            variant=variant,
+            live_user_text=live_user_text,
+        ),
+    )
     try:
         while not acquire_task.done():
             try:
@@ -758,6 +793,8 @@ async def _single_agent_sse(
             # queue-progress events to the client while we wait.
             async for sse in _reserve_with_sse(
                 state.scheduler, decision.tier_name, model_id,
+                variant=decision.variant,
+                live_user_text=user_text_for_planner,
             ):
                 yield sse
             accumulator = ToolCallAccumulator()

@@ -76,9 +76,52 @@ class TierConfig(BaseModel):
     cache_type_v: str = "q8_0"
     rope_scaling: RopeScaling | None = None
     extra_args: list[str] = Field(default_factory=list)
+    # Tensor-level offload override. When set, each pattern is passed to
+    # llama-server as a separate `-ot <pattern>` flag. The canonical MoE
+    # spillover pattern is ".ffn_.*_exps.=CPU" — keeps attention, KV
+    # cache, embeddings, and non-expert MLP on the GPU; offloads only
+    # the routed-expert tensors to system RAM. Use with n_gpu_layers: -1
+    # (everything to GPU as the base, then -ot selectively pulls experts
+    # back). Combine with flash_attention: true — FA stays correct
+    # because every attention layer is GPU-resident.
+    #
+    # For dense models (no expert tensors), leave this empty and control
+    # spillover via n_gpu_layers / use_mmap / use_mlock as before.
+    override_tensors: list[str] = Field(default_factory=list)
     use_mmap: bool = True
     use_mlock: bool = False
     spawn_timeout_sec: int = 180
+
+    # ── Speculative decoding ───────────────────────────────────────────
+    # When `draft_gguf_path` is set at runtime (resolved from
+    # `draft_model_tag` via model-sources.yaml), build_argv emits
+    # `-md / -ngld / --draft-max / --draft-min` flags so llama-server
+    # runs speculative decoding against the draft model. The algorithm
+    # is the standard Leviathan et al. 2023 rejection-sampling variant
+    # implemented in llama.cpp — mathematically equivalent to sampling
+    # from the target alone, so output quality is unchanged. Speedup
+    # comes from amortizing memory bandwidth across `--draft-max`
+    # parallel-evaluated tokens per target step.
+    #
+    # Tokenizer compatibility is REQUIRED: the draft and target must
+    # share a tokenizer (same vocab + merges) or rejection sampling is
+    # undefined. Qwen3-0.6B is the universal draft for the Qwen3 family.
+    draft_model_tag: str | None = None
+    draft_gguf_path: str | None = None
+    draft_n_gpu_layers: int = -1
+    draft_max: int = 8
+    draft_min: int = 4
+
+    # ── Per-tier model variants (e.g. coding 30B vs 80B) ───────────────
+    # When a tier defines `variants:`, each entry overrides a small set
+    # of fields (model_tag/gguf_path/vram/draft_*). At request time the
+    # router can set a variant override (slash command); the loader
+    # calls `resolve_variant(name)` to obtain a TierConfig copy with
+    # the variant fields applied before spawning. The base TierConfig
+    # itself acts as the fallback when no variant is requested AND
+    # `default_variant` is None.
+    variants: dict[str, "TierVariant"] = Field(default_factory=dict)
+    default_variant: str | None = None
 
     def resolved_endpoint(self) -> str:
         """Return the OpenAI-compatible base URL for this tier.
@@ -93,6 +136,58 @@ class TierConfig(BaseModel):
         if self.port is None:
             raise ValueError(f"tier {self.name!r} has no port or endpoint")
         return f"http://127.0.0.1:{self.port}/v1"
+
+    def resolve_variant(self, variant: str | None) -> "TierConfig":
+        """Return a TierConfig with the requested variant's overrides applied.
+
+        Selection order:
+          1. explicit `variant` arg
+          2. `self.default_variant`
+          3. fall through to `self` unchanged
+        """
+        chosen = variant or self.default_variant
+        if not chosen or chosen not in self.variants:
+            return self
+        v = self.variants[chosen]
+        updates: dict[str, Any] = {}
+        for field in (
+            "model_tag", "gguf_path", "vram_estimate_gb",
+            "draft_model_tag", "draft_gguf_path", "draft_max", "draft_min",
+            "context_window", "override_tensors",
+        ):
+            value = getattr(v, field, None)
+            if value is not None and value != [] and value != {}:
+                updates[field] = value
+        return self.model_copy(update=updates)
+
+
+class TierVariant(BaseModel):
+    """A named override set for a TierConfig (e.g. coding tier's 30B vs 80B).
+
+    All fields are optional — only the ones explicitly set are applied.
+    Keep this surface narrow: variants exist to swap the model + its
+    immediate runtime sizing, not to reconfigure the tier wholesale.
+
+    `source` names an entry in model-sources.yaml whose resolved gguf_path
+    is copied into this variant's gguf_path at config load time. Lets
+    each variant point at its own GGUF without duplicating model_resolver
+    plumbing.
+    """
+
+    source: str | None = None
+    model_tag: str | None = None
+    gguf_path: str | None = None
+    vram_estimate_gb: float | None = None
+    draft_model_tag: str | None = None
+    draft_gguf_path: str | None = None
+    draft_max: int | None = None
+    draft_min: int | None = None
+    context_window: int | None = None
+    override_tensors: list[str] = Field(default_factory=list)
+
+
+# Forward-ref resolution: TierConfig.variants references TierVariant.
+TierConfig.model_rebuild()
 
 
 class ModelsConfig(BaseModel):
@@ -380,6 +475,36 @@ def _apply_resolved_models(models_cfg: "ModelsConfig") -> None:
         mmproj = (info or {}).get("mmproj_path")
         if mmproj:
             tier.mmproj_path = mmproj
+
+    # Speculative-decode drafts are resolved as ordinary entries in
+    # model-sources.yaml (e.g. `draft_qwen3_06b`). For every chat tier
+    # that declares `draft_model_tag`, look up that name in the resolved
+    # manifest and copy its gguf_path into the tier's `draft_gguf_path`.
+    # Done here rather than in the resolver so a missing draft (offline,
+    # not-yet-downloaded) doesn't block tier setup — build_argv only
+    # emits -md when the path is set, so absent drafts cleanly disable
+    # spec decode without breaking startup.
+    for tier in models_cfg.tiers.values():
+        if not tier.draft_model_tag or tier.draft_gguf_path:
+            continue
+        draft_info = tiers.get(tier.draft_model_tag) or {}
+        path = draft_info.get("gguf_path")
+        if path:
+            tier.draft_gguf_path = path
+
+    # Variant gguf_paths: each TierVariant.source names a model-sources
+    # entry; we copy that entry's resolved gguf_path into the variant.
+    # Variants without a `source` keep whatever gguf_path was declared in
+    # YAML (typically empty for the default variant — it inherits from
+    # the parent tier).
+    for tier in models_cfg.tiers.values():
+        for variant in tier.variants.values():
+            if not variant.source or variant.gguf_path:
+                continue
+            src_info = tiers.get(variant.source) or {}
+            path = src_info.get("gguf_path")
+            if path:
+                variant.gguf_path = path
 
 
 @lru_cache(maxsize=1)

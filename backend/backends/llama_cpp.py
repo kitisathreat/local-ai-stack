@@ -36,6 +36,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from ..config import TierConfig
+from ..model_residency import plan_residency, ResidencyPolicy
 from ..schemas import ChatMessage
 
 
@@ -139,6 +140,25 @@ def build_argv(tier: TierConfig) -> list[str]:
             argv += ["--yarn-orig-ctx", str(tier.rope_scaling.orig_ctx)]
     if tier.extra_args:
         argv += list(tier.extra_args)
+    for pattern in tier.override_tensors:
+        argv += ["-ot", pattern]
+    # Speculative decoding. When a draft GGUF is resolved for this tier,
+    # llama-server runs Leviathan-style spec decode against it: the
+    # draft proposes draft_max tokens, the target verifies them in one
+    # parallel batch, rejection-sampling keeps the joint distribution
+    # identical to running the target alone. Quality is preserved
+    # exactly — speedup is purely from amortizing memory bandwidth.
+    # Required: draft and target must share a tokenizer (caller's
+    # responsibility — the YAML wires Qwen3-0.6B for Qwen3-family tiers
+    # only). Flag spelling matches llama.cpp ≥ b8992 (LocalAIStack.ps1
+    # pinned version).
+    if tier.draft_gguf_path:
+        argv += [
+            "-md", tier.draft_gguf_path,
+            "-ngld", str(tier.draft_n_gpu_layers),
+            "--draft-max", str(tier.draft_max),
+            "--draft-min", str(tier.draft_min),
+        ]
     return argv
 
 
@@ -344,7 +364,14 @@ class LlamaCppClient:
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
-    async def ensure_loaded(self, tier: TierConfig, *, spawn_timeout: float | None = None) -> float:
+    async def ensure_loaded(
+        self,
+        tier: TierConfig,
+        *,
+        free_vram_gb: float | None = None,
+        live_user_text: str = "",
+        spawn_timeout: float | None = None,
+    ) -> float:
         """Make sure the per-tier llama-server is up + healthy.
 
         Returns elapsed seconds (useful for VRAMScheduler observed-cost
@@ -353,6 +380,12 @@ class LlamaCppClient:
         If a process is already listening on `tier.port` (e.g. pre-spawned by
         the launcher for vision/embedding), the client adopts it instead of
         spawning a duplicate.
+
+        When ``LAI_RESIDENCY_PLANNER=1`` is set in the environment AND
+        ``free_vram_gb`` is provided, the per-spawn ``n_gpu_layers /
+        use_mmap / use_mlock`` are computed by ``plan_residency`` instead
+        of read from YAML. Otherwise the YAML values are used verbatim
+        (existing behavior).
         """
         endpoint = tier.resolved_endpoint()
         timeout = spawn_timeout if spawn_timeout is not None else float(tier.spawn_timeout_sec)
@@ -371,6 +404,38 @@ class LlamaCppClient:
                     _externally_managed=True,
                 )
                 return time.monotonic() - t0
+
+            # Residency planner — gated by LAI_RESIDENCY_PLANNER env flag
+            # for safe rollout. When enabled and free_vram_gb is provided,
+            # compute a per-spawn layer-count + mmap/mlock plan instead
+            # of using the YAML-hardcoded values.
+            if (
+                os.getenv("LAI_RESIDENCY_PLANNER") == "1"
+                and free_vram_gb is not None
+            ):
+                from ..config import get_config
+                cfg = get_config()
+                policy = ResidencyPolicy(
+                    full_headroom_multiplier=cfg.vram.residency.full_headroom_multiplier,
+                    partial_min_ratio=cfg.vram.residency.partial_min_ratio,
+                    minimal_ratio=cfg.vram.residency.minimal_ratio,
+                    low_complexity_savings=cfg.vram.residency.low_complexity_savings,
+                    mlock_full_mode=cfg.vram.residency.mlock_full_mode,
+                    mlock_partial_mode=cfg.vram.residency.mlock_partial_mode,
+                )
+                plan = plan_residency(
+                    tier,
+                    free_vram_gb=free_vram_gb,
+                    live_user_text=live_user_text,
+                    policy=policy,
+                )
+                # Apply the plan to a tier copy (don't mutate the registry singleton)
+                tier = tier.model_copy(update=plan.to_backend_options())
+                logger.info(
+                    "Residency plan for %s: mode=%s layers=%d/%d reason=%s",
+                    tier.name, plan.mode.value,
+                    plan.num_gpu_layers, plan.total_layers, plan.reason,
+                )
 
             argv = build_argv(tier)
             proc = LlamaServerProcess(

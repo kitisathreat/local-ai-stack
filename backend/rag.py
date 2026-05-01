@@ -6,8 +6,10 @@ via the always-on `embedding` tier (a llama-server pre-spawned with
 ``--embedding``), and upsert into Qdrant. On chat we retrieve top-K and
 return them as a context block to inject into the system prompt.
 
-Vector size is determined by the embedding model — nomic-embed-text
-emits 768-dim vectors.
+Vector size is determined by the embedding model — Qwen3-Embedding-4B
+emits 2 560-dim vectors. (Was nomic-embed-text-v1.5 at 768 dim before
+the migration; if you have legacy 768-dim collections, run
+``scripts/reembed_knowledge.py`` to rebuild them at the new dim.)
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-EMBED_DIM = int(os.getenv("RAG_EMBED_DIM", "768"))
+EMBED_DIM = int(os.getenv("RAG_EMBED_DIM", "2560"))
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))

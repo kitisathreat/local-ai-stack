@@ -151,6 +151,25 @@ def test_models_yaml_orchestrator_flag():
     )
 
 
+def test_reasoning_max_tier_present_and_valid():
+    """The optional GPT-OSS-120B tier must declare a unique port + model_tag."""
+    data = _load_yaml("config/models.yaml")
+    tiers = data.get("tiers", {})
+    assert "reasoning_max" in tiers, "reasoning_max tier missing from models.yaml"
+    rmax = tiers["reasoning_max"]
+    assert rmax.get("model_tag") == "gpt-oss-120b"
+    assert rmax.get("port") == 8014
+    # Should NOT have a speculative draft (tokenizer incompatible with Qwen3)
+    assert not rmax.get("draft_model_tag")
+
+
+def test_all_chat_tier_ports_are_unique():
+    data = _load_yaml("config/models.yaml")
+    tiers = data.get("tiers", {})
+    ports = [t.get("port") for t in tiers.values() if t.get("port")]
+    assert len(ports) == len(set(ports)), f"Duplicate ports: {ports}"
+
+
 @pytest.mark.parametrize("alias", REQUIRED_ALIASES)
 def test_models_yaml_aliases_resolve_to_real_tiers(alias):
     data = _load_yaml("config/models.yaml")
@@ -323,3 +342,145 @@ def test_knowledge_has_domain(domain):
 
 def test_gitignore_exists():
     assert (ROOT / ".gitignore").exists()
+
+
+# ── TierConfig: override_tensors field ────────────────────────────────────────
+
+def test_tier_config_override_tensors_default_empty():
+    """New override_tensors field defaults to [] and is omittable."""
+    from backend.config import TierConfig
+    tier = TierConfig(name="t", context_window=4096)
+    assert tier.override_tensors == []
+
+
+def test_tier_config_override_tensors_round_trip():
+    """override_tensors deserializes from YAML-shaped dict."""
+    from backend.config import TierConfig
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        override_tensors=[".ffn_.*_exps.=CPU"],
+    )
+    assert tier.override_tensors == [".ffn_.*_exps.=CPU"]
+
+
+def test_tier_config_override_tensors_multiple_patterns():
+    """Multiple patterns are preserved in order."""
+    from backend.config import TierConfig
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        override_tensors=[
+            ".ffn_.*_exps.=CPU",
+            ".ffn_gate_inp.=CPU",
+        ],
+    )
+    assert tier.override_tensors == [
+        ".ffn_.*_exps.=CPU",
+        ".ffn_gate_inp.=CPU",
+    ]
+
+
+# ── TierConfig: speculative-decode draft fields ───────────────────────────────
+
+def test_tier_config_draft_fields_default_none():
+    """Spec-decode fields default to None / sane values; no -md emitted."""
+    from backend.config import TierConfig
+    tier = TierConfig(name="t", context_window=4096)
+    assert tier.draft_model_tag is None
+    assert tier.draft_gguf_path is None
+    assert tier.draft_n_gpu_layers == -1
+    assert tier.draft_max == 8
+    assert tier.draft_min == 4
+
+
+def test_tier_config_draft_fields_round_trip():
+    from backend.config import TierConfig
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        draft_model_tag="qwen3-0.6b",
+        draft_gguf_path="/tmp/draft.gguf",
+        draft_n_gpu_layers=-1,
+        draft_max=6,
+        draft_min=3,
+    )
+    assert tier.draft_model_tag == "qwen3-0.6b"
+    assert tier.draft_gguf_path == "/tmp/draft.gguf"
+    assert tier.draft_max == 6
+    assert tier.draft_min == 3
+
+
+# ── TierConfig: per-tier variants ─────────────────────────────────────────────
+
+def test_tier_variants_default_empty():
+    from backend.config import TierConfig
+    tier = TierConfig(name="t", context_window=4096)
+    assert tier.variants == {}
+    assert tier.default_variant is None
+
+
+def test_tier_variants_round_trip():
+    from backend.config import TierConfig, TierVariant
+    tier = TierConfig(
+        name="coding",
+        context_window=131072,
+        model_tag="qwen3-coder-30b-a3b",
+        vram_estimate_gb=6.5,
+        variants={
+            "30b": TierVariant(model_tag="qwen3-coder-30b-a3b", vram_estimate_gb=6.5),
+            "80b": TierVariant(model_tag="qwen3-coder-next-80b-a3b", vram_estimate_gb=14.5),
+        },
+        default_variant="30b",
+    )
+    assert set(tier.variants.keys()) == {"30b", "80b"}
+    assert tier.default_variant == "30b"
+
+
+def test_resolve_variant_applies_overrides():
+    """resolve_variant returns a tier copy with the variant's fields applied."""
+    from backend.config import TierConfig, TierVariant
+    tier = TierConfig(
+        name="coding",
+        context_window=131072,
+        model_tag="qwen3-coder-30b-a3b",
+        vram_estimate_gb=6.5,
+        variants={
+            "80b": TierVariant(
+                model_tag="qwen3-coder-next-80b-a3b",
+                vram_estimate_gb=14.5,
+            ),
+        },
+        default_variant=None,
+    )
+    big = tier.resolve_variant("80b")
+    assert big.model_tag == "qwen3-coder-next-80b-a3b"
+    assert big.vram_estimate_gb == 14.5
+    # Untouched fields preserved
+    assert big.context_window == 131072
+    # Original tier not mutated
+    assert tier.model_tag == "qwen3-coder-30b-a3b"
+
+
+def test_resolve_variant_falls_through_to_self_when_unset():
+    from backend.config import TierConfig
+    tier = TierConfig(name="t", context_window=4096, model_tag="foo")
+    assert tier.resolve_variant(None) is tier
+    # Unknown variant name also falls through (loader is lenient)
+    assert tier.resolve_variant("nonexistent") is tier
+
+
+def test_resolve_variant_uses_default_when_arg_none():
+    from backend.config import TierConfig, TierVariant
+    tier = TierConfig(
+        name="coding",
+        context_window=131072,
+        model_tag="qwen3-coder-30b-a3b",
+        variants={
+            "30b": TierVariant(model_tag="qwen3-coder-30b-a3b"),
+            "80b": TierVariant(model_tag="qwen3-coder-next-80b-a3b"),
+        },
+        default_variant="30b",
+    )
+    resolved = tier.resolve_variant(None)
+    assert resolved.model_tag == "qwen3-coder-30b-a3b"

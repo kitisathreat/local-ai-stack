@@ -30,58 +30,50 @@
 # config/models.yaml does not need to track exact filenames.
 
 tiers:
-  # Qwen3 72B at IQ4_XS — preserved 72B for hardest-reasoning tier
-  # using stability overrides that make partial CPU/GPU offload work
-  # on a 24 GB GPU.
+  # Qwen3-Next 80B-A3B Thinking — MoE w/ hybrid attention.
+  # Replaces the old Qwen3-72B dense + mradermacher i1 setup.
+  # Unsloth's GGUF release ships UD-Q4_K_XL with critical layers
+  # (attention, embed, output) at 8-bit even in the 4-bit file — this
+  # is what keeps coherence intact when the experts spill to RAM.
   #
-  # Three things working together vs. the Q4_K_M attempt that produced
-  # garbage output:
-  #   1. IQ4_XS (~37 GB) instead of Q4_K_M (~46 GB) — about 50 of 80
-  #      layers fit on GPU instead of 35; the smaller CPU residue is
-  #      less likely to corrupt attention numerics at the boundary.
-  #   2. mradermacher's i1-GGUF (imatrix-calibrated) instead of plain
-  #      quants — imatrix uses calibration data to keep activations
-  #      in a tighter distribution per quant block, measurably more
-  #      numerically stable than the naive variants.
-  #   3. Runtime flags (in config/models.yaml): --no-mmap + --mlock
-  #      pin the CPU-resident layers in real RAM (no disk paging
-  #      latency); flash_attention: false avoids the FA boundary
-  #      bug between GPU and CPU layers.
+  # File size: ~45 GB on disk. VRAM resident: ~12-14 GB. RAM resident
+  # (experts): ~33 GB. Active per token: 3B → DDR5-bandwidth-bound,
+  # not compute-bound, so the 70W TDP of the RTX Pro 4000 SFF doesn't
+  # matter much here.
   #
-  # Tradeoff vs. the 32B option: ~5-10 t/s instead of ~30 t/s, and
-  # needs ~50 GB system RAM. Quality is 72B-class.
+  # If Unsloth hasn't published a UD-Q4_K_XL of the Thinking variant
+  # yet, the resolver falls back to the pinned filename below; if that
+  # also misses, it'll try bartowski's mirror automatically.
   highest_quality:
     source: huggingface
-    repo: "mradermacher/Qwen3-72B-Instruct-i1-GGUF"
-    file: "*i1-IQ4_XS.gguf"
+    repo: "unsloth/Qwen3-Next-80B-A3B-Thinking-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-72B-Instruct.i1-IQ4_XS.gguf"
+      file: "Qwen3-Next-80B-A3B-Thinking-UD-Q4_K_XL.gguf"
 
-  # Qwen3.6 35B-A3B (MoE) — default + orchestrator. Same repo as the
-  # vision tier; we download the Q4_K_M weights once and the vision
-  # tier tacks on the mmproj companion. lmstudio-community releases
-  # ship the mmproj alongside the weights.
+  # Qwen3.6 35B-A3B (MoE) — default + orchestrator. Unsloth UD-Q4_K_XL
+  # keeps attention/embed/output layers at 8-bit even in the 4-bit file
+  # — measurably better than plain Q4_K_M on MoE coherence under load.
   versatile:
     source: huggingface
-    repo: "lmstudio-community/Qwen3.6-35B-A3B-GGUF"
-    file: "*Q4_K_M.gguf"
+    repo: "unsloth/Qwen3.6-35B-A3B-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+      file: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
 
-  # Qwen3.5 9B — multi-agent workers. lmstudio-community publishes both
-  # the weights and an mmproj-BF16; we only pull the weights here.
+  # Qwen3.5 9B — multi-agent workers. Unsloth UD-Q4_K_XL.
   fast:
     source: huggingface
-    repo: "lmstudio-community/Qwen3.5-9B-GGUF"
-    file: "*Q4_K_M.gguf"
+    repo: "unsloth/Qwen3.5-9B-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3.5-9B-Q4_K_M.gguf"
+      file: "Qwen3.5-9B-UD-Q4_K_XL.gguf"
 
   # Qwen3-Coder-Next 80B-A3B — SWE-bench trained. unsloth's release.
   # Note: the official Qwen/Qwen3-Coder-Next-GGUF ships sharded
@@ -98,31 +90,97 @@ tiers:
   coding:
     source: huggingface
     repo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
-    file: "*Q4_K_M.gguf"
+    file: "*UD-Q4_K_XL.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
+      file: "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
+
+  # Qwen3-Coder-Next 80B-A3B — optional "big" variant for the coding
+  # tier. Selectable at request time via `/coder big`. Same architecture
+  # (MoE, 3B active, standard attention) as the 30B default; just
+  # bigger, slower, more capable on long-context refactors. Now feasible
+  # on 24 GB hardware because the -ot expert offload pattern (added in
+  # the patch series) keeps VRAM at ~14 GB even for the 80B file.
+  # Default tier remains the 30B; users opt into the 80B per turn.
+  coding_80b:
+    source: huggingface
+    repo: "unsloth/Qwen3-Coder-Next-80B-A3B-Instruct-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "Qwen3-Coder-Next-80B-A3B-Instruct-UD-Q4_K_XL.gguf"
 
   # Qwen3.6 35B + mmproj — images / charts. Same base weights as the
-  # versatile tier; the runtime spawns a separate llama-server with
-  # the mmproj attached so it can process vision input.
+  # versatile tier (Unsloth UD-Q4_K_XL); the runtime spawns a separate
+  # llama-server with the mmproj attached so it can process vision input.
   vision:
     source: huggingface
-    repo: "lmstudio-community/Qwen3.6-35B-A3B-GGUF"
-    file: "*Q4_K_M.gguf"
+    repo: "unsloth/Qwen3.6-35B-A3B-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
     mmproj: "mmproj-*BF16.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+      file: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
       mmproj: "mmproj-Qwen3.6-35B-A3B-BF16.gguf"
 
+  # Qwen3-Embedding-4B — replaces nomic-embed-text-v1.5 (137 M, 768-dim).
+  # The 4 B variant gives substantially better retrieval quality (MTEB
+  # ~70.0 vs nomic ~62.4), 32 k native context (vs nomic's 8 k), and 2560
+  # output dimensions (vs 768) for richer representations. Same Qwen3
+  # tokenizer family as the chat tiers — no token-count drift between
+  # embedder and generator when chunking long documents.
+  #
+  # Q4_K_M GGUF lands at ~2.4 GB on disk; ~2.8 GB resident as the pinned
+  # embedding tier. Net free VRAM at idle drops from ~23 GB to ~21 GB —
+  # still ample for any single chat tier (largest is highest_quality at
+  # ~14.5 GB).
+  #
+  # Migration: the 768->2560 dimension change invalidates existing
+  # Qdrant collections. Run scripts/reembed_knowledge.py after -Setup
+  # to rebuild user collections at the new dim.
   embedding:
     source: huggingface
-    repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
-    file: "*Q8_0.gguf"
+    repo: "Qwen/Qwen3-Embedding-4B-GGUF"
+    file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "nomic-embed-text-v1.5.Q8_0.gguf"
+      file: "Qwen3-Embedding-4B-Q4_K_M.gguf"
+
+  # GPT-OSS-120B — opt-in highest-reasoning tier (reasoning_max). Heavy-
+  # weight MoE (5.1 B active out of 117 B) trained on reasoning, RL'd on
+  # tool use. Native MXFP4 release (lossless 4-bit), but llama.cpp on
+  # b8992 doesn't support MXFP4 yet — use the bartowski Q4_K_M GGUF. ~58
+  # GB on disk. VRAM with -ot expert offload: ~14 GB. RAM: ~50 GB. Slower
+  # than Qwen3-Next-80B-A3B-Thinking (~1.7x — 5.1 B active vs 3 B), but
+  # higher peak quality on hard reasoning. No speculative draft because
+  # GPT-OSS uses OpenAI's o200k_harmony tokenizer which is incompatible
+  # with the Qwen3 family draft.
+  reasoning_max:
+    source: huggingface
+    repo: "bartowski/openai_gpt-oss-120b-GGUF"
+    file: "*Q4_K_M.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "openai_gpt-oss-120b-Q4_K_M.gguf"
+
+  # Qwen3-0.6B-Instruct — universal speculative-decode draft for every
+  # Qwen3-family chat tier (highest_quality, versatile, fast, coding, vision).
+  # Speculative decoding requires the draft and target to share a tokenizer,
+  # otherwise rejection sampling is undefined. All Qwen3 family models
+  # (and Qwen3-Coder) share vocab 151936 — a single 0.6B draft works for
+  # every tier. ~600 MB on disk at UD-Q4_K_XL; ~0.5 GB extra VRAM at
+  # spawn time. NOT compatible with reasoning_max (GPT-OSS uses a different
+  # tokenizer family) — that tier intentionally has no draft.
+  draft_qwen3_06b:
+    source: huggingface
+    repo: "unsloth/Qwen3-0.6B-Instruct-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "Qwen3-0.6B-Instruct-UD-Q4_K_XL.gguf"

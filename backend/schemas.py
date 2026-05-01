@@ -140,6 +140,10 @@ class RouteDecision(BaseModel):
     tier_name: str
     think: bool
     multi_agent: bool
+    # Variant override resolved from the slash command (e.g. /coder big -> '80b').
+    # When None, the tier's default_variant (or self) is used at spawn time.
+    # Only meaningful for tiers that declare `variants:` in models.yaml.
+    variant: str | None = None
     slash_commands_applied: list[str] = Field(default_factory=list)
     overrides: dict[str, Any] = Field(default_factory=dict)
     specialist_reason: str | None = None   # "image_in_message" | "code_block_present" | None
