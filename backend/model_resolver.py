@@ -201,21 +201,55 @@ def load_sources(path: Path | None = None) -> dict[str, dict]:
     return data.get("tiers") or {}
 
 
-def resolve(*, force: bool = False, offline: bool | None = None) -> ResolveResult:
+def resolve(
+    *,
+    force: bool = False,
+    offline: bool | None = None,
+    tiers: list[str] | None = None,
+) -> ResolveResult:
+    """Resolve model versions for all tiers (or just *tiers* when provided).
+
+    `tiers` is an optional allow-list of tier names from
+    `config/model-sources.yaml`. When set, resolution and pull are
+    restricted to those tiers — the wizard's "Select which models to
+    download" checkboxes use this.
+    """
     if offline is None:
         offline = os.getenv("OFFLINE", "").strip() in {"1", "true", "yes"}
     sources = load_sources()
+
+    # Build the tier allow-list once; both fresh-resolve and cache-hit
+    # branches need it. (Earlier the cache branch ignored the filter
+    # AND the local `tiers = {…}` rebind shadowed the parameter.)
+    wanted: set[str] | None = None
+    if tiers:
+        # Tolerate common alias the wizard sends ('embed' → 'embedding')
+        # and case variations. Unknown names are silently dropped.
+        wanted = {t.strip().lower() for t in tiers if t}
+        if "embed" in wanted:
+            wanted.discard("embed")
+            wanted.add("embedding")
+        sources = {k: v for k, v in sources.items() if k.lower() in wanted}
+
     cache_path = _data_dir() / "model-cache.json"
 
     if not force and cache_path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
             if time.time() - cached.get("resolved_at", 0) < CACHE_TTL_SECONDS:
-                tiers = {
+                cached_tiers = cached.get("tiers") or {}
+                if wanted is not None:
+                    cached_tiers = {
+                        k: v for k, v in cached_tiers.items()
+                        if k.lower() in wanted
+                    }
+                resolved_from_cache = {
                     k: Resolved(**{**v, "origin": "cache"})
-                    for k, v in (cached.get("tiers") or {}).items()
+                    for k, v in cached_tiers.items()
                 }
-                return ResolveResult(resolved=tiers, cached=True, offline=offline)
+                return ResolveResult(
+                    resolved=resolved_from_cache, cached=True, offline=offline,
+                )
         except Exception as exc:
             logger.debug("Model cache read failed: %s", exc)
 
@@ -293,6 +327,63 @@ def pull_missing_hf_files(
     target_root = _models_dir()
     token = os.getenv("HF_TOKEN") or None
 
+    def _download_with_retry(**kwargs) -> Path:
+        """hf_hub_download wrapper with hf_transfer fallback + N retries.
+
+        Two failure modes we hit on multi-GB GGUFs:
+          1. hf_transfer (Rust parallel downloader) bombs on any
+             transient error — no built-in retry. We give it one shot
+             then disable it process-wide.
+          2. The pure-Python downloader gets `IncompleteRead` when the
+             CDN connection drops mid-stream. It does NOT auto-resume
+             across calls in our setup — but a fresh call resumes from
+             the partial blob in ~/.cache/huggingface, so we just retry.
+
+        For multi-GB GGUFs the CDN tends to drop connections every
+        ~100 MB / 60 s, so an 8-attempt budget never finishes — a 46 GB
+        file would need ~500 retries to stitch through. We allow up to
+        500 attempts and back off shorter (capped at 10 s) so wall-clock
+        progress dominates over wait time. This is fine for the
+        IncompleteRead / timeout class of errors; genuine 4xx-style
+        failures are still surfaced after the budget is exhausted.
+        """
+        max_attempts = 500
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return Path(hf_hub_download(**kwargs))
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                if "hf_transfer" in msg or "HF_HUB_ENABLE_HF_TRANSFER" in msg:
+                    logger.warning(
+                        "hf_transfer failed (attempt %d) — disabling and retrying",
+                        attempt,
+                    )
+                    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+                    continue   # retry immediately with the pure-Python path
+                if attempt >= max_attempts:
+                    break
+                # Backoff for transient network errors. The next call
+                # will pick up the partial blob from ~/.cache/huggingface
+                # so we don't lose what already streamed in.
+                # Short backoff: HF CDN drops are transient and
+                # waiting longer just costs throughput. Capped at 10 s.
+                sleep_s = min(10, 2 + (attempt % 4))
+                # Only log every 10th retry past attempt 10 — these can
+                # accumulate to hundreds for a 46 GB file and we don't
+                # want to flood the log with the same one-liner.
+                if attempt <= 10 or attempt % 10 == 0:
+                    logger.warning(
+                        "hf_hub_download attempt %d/%d failed (%s) — retrying in %ds",
+                        attempt, max_attempts,
+                        msg.splitlines()[0][:140] if msg else type(exc).__name__,
+                        sleep_s,
+                    )
+                time.sleep(sleep_s)
+        assert last_exc is not None
+        raise last_exc
+
     for tier, r in result.resolved.items():
         if r.source != "huggingface" or not r.repo or not r.filename:
             continue
@@ -319,13 +410,13 @@ def pull_missing_hf_files(
         revision = r.revision or "main"
         try:
             if need_gguf:
-                downloaded = Path(hf_hub_download(
+                downloaded = _download_with_retry(
                     repo_id=r.repo,
                     filename=r.filename,
                     revision=revision,
                     local_dir=str(target_root),
                     token=token,
-                ))
+                )
                 _link_or_copy(downloaded, target_gguf)
                 r.gguf_path = str(target_gguf)
             if need_mmproj:
@@ -376,10 +467,16 @@ def _main() -> int:
         help="with --pull, enumerate would-be-pulled tiers without downloading. "
              "Exits non-zero if any tier resolved with an error.",
     )
+    r.add_argument(
+        "--tier", action="append", dest="tiers", default=None, metavar="NAME",
+        help="Restrict resolve+pull to specific tier(s). Repeatable. "
+             "If unspecified, all tiers in model-sources.yaml are processed. "
+             "Aliases: 'embed' → 'embedding'.",
+    )
     args = parser.parse_args()
 
     if args.cmd == "resolve":
-        result = resolve(force=args.force, offline=args.offline)
+        result = resolve(force=args.force, offline=args.offline, tiers=args.tiers)
         for tier, info in result.resolved.items():
             flag = " (update!)" if info.update_available else ""
             err = f"  ERROR: {info.error}" if info.error else ""

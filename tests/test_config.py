@@ -126,7 +126,18 @@ def test_models_yaml_vision_tier_has_mmproj():
     vision = data.get("tiers", {}).get("vision", {})
     assert vision.get("backend") == "llama_cpp", "Vision tier must use llama_cpp backend"
     assert vision.get("mmproj_path"), "Vision tier must declare mmproj_path"
-    assert vision.get("pinned") is True, "Vision tier must be pinned (llama.cpp can't unload)"
+    # vision is intentionally NOT pinned: at 21 GB on a 24 GB GPU,
+    # pinning it leaves only ~2 GB free for chat tiers and blocks
+    # versatile / highest_quality / coding from ever loading. Vision
+    # cold-spawns on demand (auto-routed when an image is in the
+    # message) and joins the LRU eviction pool. The runtime evicts
+    # via the scheduler's _make_room_for path which DOES safely
+    # unload llama.cpp tiers (the original "llama.cpp can't unload"
+    # claim was about an earlier pre-VRAMScheduler design).
+    assert not vision.get("pinned"), (
+        "Vision tier must NOT be pinned — pinning the 21 GB tier blocks every "
+        "other chat tier from loading on a 24 GB GPU."
+    )
 
 
 def test_models_yaml_orchestrator_flag():

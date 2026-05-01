@@ -30,52 +30,93 @@
 # config/models.yaml does not need to track exact filenames.
 
 tiers:
+  # Qwen3 72B at IQ4_XS — preserved 72B for hardest-reasoning tier
+  # using stability overrides that make partial CPU/GPU offload work
+  # on a 24 GB GPU.
+  #
+  # Three things working together vs. the Q4_K_M attempt that produced
+  # garbage output:
+  #   1. IQ4_XS (~37 GB) instead of Q4_K_M (~46 GB) — about 50 of 80
+  #      layers fit on GPU instead of 35; the smaller CPU residue is
+  #      less likely to corrupt attention numerics at the boundary.
+  #   2. mradermacher's i1-GGUF (imatrix-calibrated) instead of plain
+  #      quants — imatrix uses calibration data to keep activations
+  #      in a tighter distribution per quant block, measurably more
+  #      numerically stable than the naive variants.
+  #   3. Runtime flags (in config/models.yaml): --no-mmap + --mlock
+  #      pin the CPU-resident layers in real RAM (no disk paging
+  #      latency); flash_attention: false avoids the FA boundary
+  #      bug between GPU and CPU layers.
+  #
+  # Tradeoff vs. the 32B option: ~5-10 t/s instead of ~30 t/s, and
+  # needs ~50 GB system RAM. Quality is 72B-class.
   highest_quality:
     source: huggingface
-    repo: "bartowski/Qwen3-72B-GGUF"
-    file: "*Q3_K_M.gguf"
+    repo: "mradermacher/Qwen3-72B-Instruct-i1-GGUF"
+    file: "*i1-IQ4_XS.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-72B-Q3_K_M.gguf"
+      file: "Qwen3-72B-Instruct.i1-IQ4_XS.gguf"
 
+  # Qwen3.6 35B-A3B (MoE) — default + orchestrator. Same repo as the
+  # vision tier; we download the Q4_K_M weights once and the vision
+  # tier tacks on the mmproj companion. lmstudio-community releases
+  # ship the mmproj alongside the weights.
   versatile:
     source: huggingface
-    repo: "Qwen/Qwen3.6-35B-A3B-GGUF"
+    repo: "lmstudio-community/Qwen3.6-35B-A3B-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
       file: "Qwen3.6-35B-A3B-Q4_K_M.gguf"
 
+  # Qwen3.5 9B — multi-agent workers. lmstudio-community publishes both
+  # the weights and an mmproj-BF16; we only pull the weights here.
   fast:
     source: huggingface
-    repo: "bartowski/Qwen3.5-9B-GGUF"
+    repo: "lmstudio-community/Qwen3.5-9B-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
       file: "Qwen3.5-9B-Q4_K_M.gguf"
 
+  # Qwen3-Coder-Next 80B-A3B — SWE-bench trained. unsloth's release.
+  # Note: the official Qwen/Qwen3-Coder-Next-GGUF ships sharded
+  # (00001-of-00004 ... 00004-of-00004), which the resolver doesn't
+  # yet stitch — we use unsloth's single-file build.
+  # Qwen3-Coder-30B-A3B (MoE, 3B active) — fits cleanly on a 24 GB GPU.
+  #
+  # Originally targeted Qwen3-Coder-Next-80B-A3B (~50 GB), but at that
+  # size llama.cpp's partial CPU/GPU offload would only fit ~30 of 80
+  # layers on GPU and produce numerically corrupted attention (same
+  # symptom that broke Qwen3-72B as the highest_quality tier).
+  # The 30B-A3B variant is the larger Qwen3 coder model that still
+  # has full-VRAM headroom for stable output.
   coding:
     source: huggingface
-    repo: "bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF"
-    file: "*Q4_K_XL.gguf"
+    repo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+    file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen_Qwen3-Next-80B-A3B-Thinking-Q4_K_XL.gguf"
+      file: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
 
+  # Qwen3.6 35B + mmproj — images / charts. Same base weights as the
+  # versatile tier; the runtime spawns a separate llama-server with
+  # the mmproj attached so it can process vision input.
   vision:
     source: huggingface
-    repo: "Qwen/Qwen3.6-35B-A3B-VL-GGUF"
+    repo: "lmstudio-community/Qwen3.6-35B-A3B-GGUF"
     file: "*Q4_K_M.gguf"
-    mmproj: "*mmproj*F16.gguf"
+    mmproj: "mmproj-*BF16.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3.6-35B-A3B-VL-Q4_K_M.gguf"
-      mmproj: "mmproj-F16.gguf"
+      file: "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+      mmproj: "mmproj-Qwen3.6-35B-A3B-BF16.gguf"
 
   embedding:
     source: huggingface

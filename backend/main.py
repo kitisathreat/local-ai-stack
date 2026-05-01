@@ -13,9 +13,11 @@ Phase 4+ will add /auth/*, /chats/*, /rag/*, /memory/*.
 from __future__ import annotations
 
 import asyncio
+import sys
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -113,6 +115,41 @@ async def _init_redis(cfg: AppConfig):
         return None
 
 
+async def _auto_pull_missing_tiers() -> None:
+    """Spawn the resolver as a child process to fetch missing tier GGUFs.
+
+    Detached so the FastAPI worker can keep serving requests while
+    multi-GB files stream in. Tiers come online progressively as files
+    land — the LlamaCppClient picks them up on the next chat request.
+    """
+    try:
+        models_dir = Path(os.getenv("LAI_DATA_DIR") or
+                          Path(__file__).resolve().parent.parent / "data") / "models"
+        configured = list((state.config.models.tiers or {}).keys())
+        missing = [t for t in configured if not (models_dir / f"{t}.gguf").exists()]
+        if not missing:
+            return
+        logger.info("Auto-pull starting for missing tiers: %s", ", ".join(missing))
+        # Using sys.executable + -m so we don't depend on the venv's
+        # console_scripts entry being on PATH for the FastAPI worker.
+        cmd = [sys.executable, "-m", "backend.model_resolver", "resolve", "--pull"]
+        for t in missing:
+            cmd += ["--tier", t]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        rc = await proc.wait()
+        if rc == 0:
+            logger.info("Auto-pull finished (exit 0). Re-checking tiers on next request.")
+        else:
+            logger.warning("Auto-pull resolver exited %d — some tiers may still be missing", rc)
+    except Exception as exc:
+        logger.warning("Auto-pull task failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Loading config…")
@@ -174,6 +211,15 @@ async def lifespan(app: FastAPI):
 
     logger.info("Ready. Tiers: %s", list(state.config.models.tiers))
 
+    # Auto-pull missing GGUFs in the background. The launcher already
+    # does this on -Start, but if the user starts the backend any other
+    # way (admin GUI, Docker, dev `uvicorn`), or removed a file by hand,
+    # the running backend should still self-heal toward the configured
+    # tier list. Spawn the resolver as a child process so a slow
+    # multi-GB download doesn't block startup or hold the event loop.
+    if not state.airgap.enabled and os.getenv("OFFLINE", "").strip() not in ("1", "true", "yes"):
+        asyncio.create_task(_auto_pull_missing_tiers())
+
     # Self-diagnostics — results go to the application log only (lai.diagnostics logger).
     # OK results are DEBUG-level (silent at default INFO log level).
     # WARN/FAIL results are WARNING/ERROR so operators see them in logs.
@@ -220,19 +266,27 @@ if _static_dir.exists():
 
 # CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
 # Cloudflare Tunnel hostname is set via setup-cloudflared.sh. Local dev
-# defaults to wildcard. We warn if wildcard+credentials is configured since
-# browsers ignore that combination.
-_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
-if _allowed_origins == ["*"]:
+# defaults to wildcard.
+#
+# Browsers reject `Access-Control-Allow-Origin: *` when the response also
+# carries `Access-Control-Allow-Credentials: true`, so emitting both is
+# never useful — Starlette's startup diagnostics (`security.cors`) flag
+# the combination as a hard FAIL. Auto-disable credentials when the
+# operator hasn't pinned origins; re-enable as soon as they do.
+_allowed_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()
+]
+_cors_allow_credentials = _allowed_origins != ["*"]
+if not _cors_allow_credentials:
     logger.warning(
-        "CORS set to wildcard with credentials=True — browsers will ignore "
-        "credentials. Set ALLOWED_ORIGINS to your Cloudflare hostname in "
-        "production (see scripts/setup-cloudflared.sh)."
+        "CORS origin is wildcard ('*'). Disabling allow_credentials so the "
+        "config is browser-valid. Set ALLOWED_ORIGINS to your Cloudflare "
+        "hostname (e.g. 'https://chat.example.com') to re-enable cookies."
     )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=True,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["content-type"],
@@ -320,15 +374,27 @@ async def vram_status():
 async def resolved_models():
     """Returns data/resolved-models.json — written by backend.model_resolver
     before each -Start. Native GUI reads this to show the tier status tab.
+
+    Annotates each tier with `available: bool` based on whether the
+    GGUF actually exists on disk (the manifest is written eagerly when
+    the resolver decides which file to fetch, before the pull finishes,
+    so `gguf_path` being present does NOT mean the file is downloaded).
+    The chat UI uses this to disable tier options that are still
+    mid-download.
     """
     data_dir = Path(os.getenv("LAI_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
     path = data_dir / "resolved-models.json"
+    empty = {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
     if not path.exists():
-        return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
+        return empty
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
+        return empty
+    for tier_name, info in (data.get("tiers") or {}).items():
+        gguf = info.get("gguf_path")
+        info["available"] = bool(gguf and Path(gguf).exists())
+    return data
 
 
 def _read_meminfo() -> dict[str, int]:
@@ -602,6 +668,12 @@ async def _reserve_with_sse(
     async def on_event(ev: dict) -> None:
         await evs.put(ev)
 
+    def _ev_type(ev: dict) -> str:
+        """Forward scheduler events with their original type when set
+        (e.g. 'tier.loading'), else default to 'queue' for queue
+        position updates. Lets the chat UI label them differently."""
+        return str(ev.get("type") or "queue")
+
     acquire_task = asyncio.create_task(scheduler.acquire(tier_id, on_event))
     try:
         while not acquire_task.done():
@@ -610,7 +682,7 @@ async def _reserve_with_sse(
             except asyncio.TimeoutError:
                 continue
             yield _agent_event_sse(
-                AgentEvent(type="queue", data=ev), model_id,
+                AgentEvent(type=_ev_type(ev), data=ev), model_id,
             )
         # Drain any events that arrived after acquisition.
         while not evs.empty():
@@ -619,7 +691,7 @@ async def _reserve_with_sse(
             except asyncio.QueueEmpty:
                 break
             yield _agent_event_sse(
-                AgentEvent(type="queue", data=ev), model_id,
+                AgentEvent(type=_ev_type(ev), data=ev), model_id,
             )
         # Propagate QueueFull/QueueTimeout/VRAMExhausted/etc.
         await acquire_task
@@ -660,13 +732,22 @@ async def _single_agent_sse(
 
     tool_schemas: list[dict] | None = None
     if req.tools is None:
-        enabled = state.tools.all_schemas(
-            only_enabled=True, airgap=airgap.is_enabled(),
-        )
-        # Only pass tools when the registry isn't empty — some models
-        # degrade with an empty `tools: []` field.
-        if enabled:
-            tool_schemas = enabled
+        # Per-request whitelist via the chat composer's 🔧 Tools popover.
+        # Three cases:
+        #   enabled_tools=None  → NO tools (default). Tool schemas
+        #     can swell to 25k+ tokens once the registry has 200+ entries,
+        #     which with --parallel 4 + ctx 65k blows past the per-slot
+        #     16k window before the user message even hits. Better to let
+        #     the user opt in explicitly via the popover.
+        #   enabled_tools=[]    → also no tools (matches user intent).
+        #   enabled_tools=[…]   → exactly those names.
+        if req.enabled_tools:
+            enabled = state.tools.all_schemas(
+                airgap=airgap.is_enabled(),
+                names=req.enabled_tools,
+            )
+            if enabled:
+                tool_schemas = enabled
     else:
         tool_schemas = req.tools
 
@@ -1010,6 +1091,59 @@ async def delete_chat(conv_id: int, user: dict = Depends(auth.current_user)):
 # ── RAG ─────────────────────────────────────────────────────────────────
 
 from fastapi import UploadFile, File
+
+
+# ── Chat attachments (per-message, ephemeral) ───────────────────────────
+#
+# Different from /rag/upload: chat attachments are scoped to the next
+# chat turn (and at most a handful of follow-ups). They live under
+# data/uploads/<user_id>/<id>.<ext> and the chat composer surfaces them
+# as removable chips. The chat handler picks them up via
+# req.attachment_ids — it inlines text content into the user message and
+# sends image bytes through to the vision tier when one is selected.
+import secrets as _secrets
+
+_ATTACH_MAX_BYTES = 20 * 1024 * 1024   # 20 MB per file, like /rag/upload
+
+
+def _attachments_dir(user_id: int) -> Path:
+    base = Path(os.getenv("LAI_DATA_DIR") or
+                Path(__file__).resolve().parent.parent / "data")
+    d = base / "uploads" / str(user_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@app.post("/api/chat/upload")
+async def chat_upload(
+    file: UploadFile = File(...),
+    user: dict = Depends(auth.current_user),
+):
+    """Stash a file for the user's next chat turn. Returns an opaque id
+    the chat composer attaches to the next /v1/chat/completions request
+    via attachment_ids=[...]. Files are NOT indexed into RAG (use
+    /rag/upload for that)."""
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty file")
+    if len(content) > _ATTACH_MAX_BYTES:
+        raise HTTPException(413, f"File too large (>{_ATTACH_MAX_BYTES // (1024*1024)} MB)")
+    aid = _secrets.token_urlsafe(12)
+    # Preserve a sane suffix so downstream code can sniff text-vs-image
+    # without re-reading the file. We don't trust the original name for
+    # disk path; only the suffix.
+    fname = (file.filename or "upload").lower()
+    ext = Path(fname).suffix[:8] or ""
+    if ext and not re.fullmatch(r"\.[a-z0-9]+", ext):
+        ext = ""
+    dest = _attachments_dir(user["id"]) / f"{aid}{ext}"
+    dest.write_bytes(content)
+    return {
+        "id": aid,
+        "name": file.filename or "upload",
+        "size": len(content),
+        "content_type": file.content_type or "application/octet-stream",
+    }
 
 
 @app.post("/rag/upload")

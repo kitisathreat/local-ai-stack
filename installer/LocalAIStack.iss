@@ -42,12 +42,22 @@ Root: HKLM; Subkey: "SOFTWARE\LocalAIStack"; ValueType: string; ValueName: "Inst
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startmenuicon"; Description: "Create Start Menu shortcut"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+; Both default to OFF — the user must opt in to either. Inno's
+; "checkedonce" flag means "checked the first time the user reaches
+; this page, but only once per machine"; we use plain unchecked so
+; they're a deliberate choice on every install.
+Name: "desktopicon";   Description: "Create a &desktop shortcut";   GroupDescription: "Additional shortcuts:"; Flags: unchecked
+Name: "startmenuicon"; Description: "Create &Start menu entries";   GroupDescription: "Additional shortcuts:"
 
 [Files]
-; Compiled launcher
+; Compiled launcher (day-to-day runtime — what the desktop / Start
+; menu shortcuts target).
 Source: "..\LocalAIStack.exe";         DestDir: "{app}";                    Flags: ignoreversion
+
+; Compiled installer (first-time setup + reconfiguration). Reachable
+; from the "Reconfigure Local AI Stack" Start menu entry and from
+; Apps & Features → Modify; not given a desktop shortcut.
+Source: "..\LocalAIStackInstaller.exe"; DestDir: "{app}";                   Flags: ignoreversion skipifsourcedoesntexist
 
 ; Frozen GUI (PyInstaller one-folder)
 Source: "..\dist\gui\*";               DestDir: "{app}\gui";                Flags: ignoreversion recursesubdirs createallsubdirs
@@ -71,26 +81,41 @@ Source: "..\vendor\inno-setup\*";      DestDir: "{app}\vendor\inno-setup";  Flag
 Source: "..\assets\*";                 DestDir: "{app}\assets";             Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
-; Start Menu
+; Start Menu — runtime shortcuts (LocalAIStack.exe). The installer EXE
+; only appears as a "Reconfigure" entry, never as the primary launch.
 Name: "{group}\{#AppName}";        Filename: "{app}\{#ExeName}";  Tasks: startmenuicon
 Name: "{group}\Admin Console";     Filename: "{app}\{#ExeName}";  Parameters: "-Admin"; Tasks: startmenuicon
 Name: "{group}\Health Check";      Filename: "{app}\{#ExeName}";  Parameters: "-Test"; Tasks: startmenuicon
+Name: "{group}\Reconfigure {#AppName}"; Filename: "{app}\LocalAIStackInstaller.exe"; Parameters: "-Reconfigure"; Tasks: startmenuicon
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 
-; Desktop
+; Desktop (single shortcut for the runtime EXE — no installer on
+; the desktop).
 Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#ExeName}";  Tasks: desktopicon
 
 [Run]
-; Run -Setup -SkipModels as admin during install:
-; creates vendor venvs, skips model downloads (done later via wizard)
-Filename: "{app}\{#ExeName}"; Parameters: "-Setup -SkipModels"; \
+; Phase 1 (silent, hidden, always runs): create the Python venvs and
+; download non-model vendor binaries. Models are skipped here and
+; pulled later in phase 2 via the wizard.
+Filename: "{app}\LocalAIStackInstaller.exe"; Parameters: "-RepairOnly"; \
     Description: "Create Python environments"; \
-    Flags: runhidden waituntilterminated
+    Flags: runhidden waituntilterminated; \
+    StatusMsg: "Creating Python environments and downloading binaries…"
 
-; First launch: wizard detects no .env / no admin user → opens setup wizard
-Filename: "{app}\{#ExeName}"; \
-    Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; \
+; Phase 2 (post-install, optional): launch the setup wizard. The
+; installer EXE runs the wizard, kicks off the model pull in the
+; background, and exits. The user can deselect this checkbox if they
+; prefer to run setup later from the Start menu.
+Filename: "{app}\LocalAIStackInstaller.exe"; \
+    Description: "Run the setup wizard now (admin user, Cloudflare, model download)"; \
     Flags: nowait postinstall skipifsilent
+
+; Phase 3 (post-install, optional): launch the runtime EXE. Disabled
+; by default — the wizard from phase 2 needs to finish first or the
+; runtime's preflight will block on the missing admin user.
+Filename: "{app}\{#ExeName}"; \
+    Description: "Start Local AI Stack"; \
+    Flags: nowait postinstall skipifsilent unchecked
 
 [UninstallRun]
 ; Stop all services before uninstalling

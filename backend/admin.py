@@ -85,6 +85,132 @@ async def overview(
     return data
 
 
+# ── Model pull progress ──────────────────────────────────────────────────
+#
+# The admin GUI's Models tab renders a progress bar per tier. Source of
+# truth for "expected size" is the HuggingFace API (siblings.size on the
+# repo). Source for "downloaded" is whichever is bigger between:
+#   1. The on-disk <tier>.gguf (after symlink resolution), or
+#   2. The largest blob (or .incomplete blob) in the HF cache directory
+#      for that repo — that's where huggingface_hub streams partial
+#      downloads before promoting them to a final symlink.
+#
+# Expected sizes are looked up once per repo and cached in-process to
+# avoid hammering HF on every poll.
+
+_expected_size_cache: dict[tuple[str, str], int | None] = {}
+
+
+def _resolved_models_manifest() -> dict[str, dict]:
+    data_dir = Path(os.getenv("LAI_DATA_DIR") or
+                    Path(__file__).resolve().parent.parent / "data")
+    path = data_dir / "resolved-models.json"
+    if not path.exists():
+        return {}
+    try:
+        import json
+        return (json.loads(path.read_text(encoding="utf-8")).get("tiers") or {})
+    except (OSError, ValueError):
+        return {}
+
+
+def _hf_expected_size(repo: str, filename: str) -> int | None:
+    """Lookup expected file size from HF API. Cached after first call."""
+    key = (repo, filename)
+    if key in _expected_size_cache:
+        return _expected_size_cache[key]
+    size: int | None = None
+    try:
+        from huggingface_hub import HfApi
+        info = HfApi().model_info(repo, files_metadata=True)
+        for s in (info.siblings or []):
+            if getattr(s, "rfilename", None) == filename:
+                size = getattr(s, "size", None) or getattr(s, "lfs", {}).get("size")
+                break
+    except Exception:
+        size = None
+    _expected_size_cache[key] = size
+    return size
+
+
+def _hf_cache_partial_size(repo: str) -> int:
+    """Largest file in the HF cache blobs dir for this repo. Reflects an
+    in-flight download even before it's symlinked into snapshots/."""
+    try:
+        cache = Path.home() / ".cache" / "huggingface" / "hub"
+        # huggingface_hub mangles repo ids: "lmstudio-community/Qwen3.6-35B-A3B-GGUF"
+        # → "models--lmstudio-community--Qwen3.6-35B-A3B-GGUF"
+        repo_dir = cache / f"models--{repo.replace('/', '--')}"
+        blobs = repo_dir / "blobs"
+        if not blobs.exists():
+            return 0
+        biggest = 0
+        for f in blobs.iterdir():
+            if f.is_file():
+                try:
+                    biggest = max(biggest, f.stat().st_size)
+                except OSError:
+                    pass
+        return biggest
+    except OSError:
+        return 0
+
+
+@router.get("/model-pull-status")
+async def model_pull_status(_: dict = Depends(require_admin)):
+    """Per-tier download progress for the admin GUI Models tab.
+
+    Returns a map of tier name → {downloaded_bytes, expected_bytes,
+    percent, complete, in_progress, repo, filename}. The chat dropdown's
+    `available` flag and this endpoint are independent: a tier is
+    `available` only when its <tier>.gguf is on disk; `in_progress` is
+    inferred from a non-trivial partial blob in the HF cache."""
+    from backend import state as _state
+    cfg = _state.config
+    manifest = _resolved_models_manifest()
+    out: dict[str, dict] = {}
+    data_dir = Path(os.getenv("LAI_DATA_DIR") or
+                    Path(__file__).resolve().parent.parent / "data")
+    for tier_name in (cfg.models.tiers or {}).keys():
+        info = manifest.get(tier_name) or {}
+        repo = info.get("repo") or ""
+        filename = info.get("filename") or ""
+        expected = _hf_expected_size(repo, filename) if repo and filename else None
+        # Disk file (final or symlink target)
+        on_disk = 0
+        target = data_dir / "models" / f"{tier_name}.gguf"
+        try:
+            if target.exists():
+                # Resolve symlink to actual blob to get the real size.
+                real = target.resolve()
+                if real.exists():
+                    on_disk = real.stat().st_size
+                else:
+                    on_disk = target.stat().st_size
+        except OSError:
+            pass
+        partial = _hf_cache_partial_size(repo) if repo else 0
+        downloaded = max(on_disk, partial)
+        complete = bool(expected) and downloaded >= expected
+        # Treat anything > 100 MB as a real download (filters out the
+        # tiny resolved-models.json manifest from being mistaken for a
+        # GGUF if naming is off).
+        in_progress = (not complete) and downloaded > 0
+        percent: float | None = None
+        if expected and expected > 0:
+            percent = min(100.0, (downloaded / expected) * 100.0)
+        out[tier_name] = {
+            "downloaded_bytes": downloaded,
+            "expected_bytes": expected,
+            "percent": percent,
+            "complete": complete,
+            "in_progress": in_progress,
+            "repo": repo,
+            "filename": filename,
+        }
+    return out
+
+
 @router.get("/usage")
 async def usage(
     window: int = 86400,

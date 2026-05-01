@@ -22,6 +22,11 @@ docker-compose.override.yml
 # Local config overrides
 config/local.yaml
 
+# Vendor binaries + Python venvs (created by LocalAIStack.ps1 -Setup).
+# qdrant.exe, llama-server.exe, cloudflared.exe, plus venv-backend /
+# venv-gui / venv-jupyter — each ~250 MB of pip-installed packages.
+vendor/
+
 # Python cache
 __pycache__/
 *.pyc

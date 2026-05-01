@@ -65,12 +65,65 @@ class BackendClient:
             r.raise_for_status()
             return r.json()
 
+    def login_sync(self, username: str, password: str) -> dict:
+        """Synchronous variant for dialogs running inside Qt's modal
+        exec() loop — qasync's asyncio scheduler is suspended while
+        QDialog.exec() is on the stack, so any `await` inside the
+        dialog hangs forever. We do a one-shot blocking POST instead.
+
+        Raises ValueError("Invalid username or password") on 401, and
+        ConnectionError(str) on any networking failure (with a short
+        human-readable message)."""
+        try:
+            with httpx.Client(
+                base_url=self._base,
+                headers=self._headers,
+                cookies=self._cookies,
+                timeout=self._timeout,
+            ) as c:
+                r = c.post(
+                    "/auth/login",
+                    json={"username": username, "password": password},
+                )
+                self._cookies.update(r.cookies)
+                if r.status_code == 401:
+                    raise ValueError("Invalid username or password")
+                r.raise_for_status()
+                return r.json()
+        except ValueError:
+            raise
+        except httpx.ConnectError as exc:
+            raise ConnectionError(
+                f"Could not reach backend at {self._base}. Is it running?"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise ConnectionError(
+                f"Login timed out talking to {self._base}."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise ConnectionError(
+                f"Backend returned {exc.response.status_code}: {exc.response.text[:200]}"
+            ) from exc
+
     async def logout(self) -> None:
         async with self._client() as c:
             try:
                 await c.post("/auth/logout")
             except Exception:
                 pass
+        self._cookies.clear()
+
+    def logout_sync(self) -> None:
+        """Sync logout — companion to login_sync, callable from QDialog
+        worker threads where the asyncio loop is suspended."""
+        try:
+            with httpx.Client(
+                base_url=self._base, headers=self._headers,
+                cookies=self._cookies, timeout=self._timeout,
+            ) as c:
+                c.post("/auth/logout")
+        except Exception:
+            pass
         self._cookies.clear()
 
     async def me(self) -> dict:
@@ -196,9 +249,25 @@ class BackendClient:
             r.raise_for_status()
             return r.json()
 
-    async def resolved_models(self) -> dict:
+    async def admin_overview(self) -> dict:
+        """Usage / counters for the admin dashboard header."""
         async with self._client() as c:
             r = await c.get("/admin/overview")
+            r.raise_for_status()
+            return r.json()
+
+    async def model_pull_status(self) -> dict:
+        """Per-tier download progress for the Models tab progress bars.
+
+        Returns {tier_name: {downloaded_bytes, expected_bytes, percent,
+        complete, in_progress, repo, filename}}. Endpoint reads the
+        on-disk GGUF size + the largest partial blob in the HF cache,
+        so it surfaces in-flight downloads even before they're symlinked
+        into snapshots/."""
+        async with self._client() as c:
+            r = await c.get("/admin/model-pull-status")
+            if r.status_code == 404:
+                return {}
             r.raise_for_status()
             return r.json()
 

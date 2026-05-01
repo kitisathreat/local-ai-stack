@@ -140,22 +140,6 @@ def check_env_cookie_secure() -> CheckResult:
     return _ok(name, "COOKIE_SECURE and PUBLIC_BASE_URL are consistent")
 
 
-def check_env_n8n_auth() -> CheckResult:
-    name = "env.n8n_auth"
-    active = os.environ.get("N8N_BASIC_AUTH_ACTIVE", "false").lower()
-    if active not in ("true", "1", "yes"):
-        return _warn(
-            name,
-            "N8N_BASIC_AUTH_ACTIVE is not enabled — n8n workflow editor is unauthenticated",
-            "Fix: set N8N_BASIC_AUTH_ACTIVE=true and N8N_ADMIN_USER/N8N_ADMIN_PASSWORD in .env",
-        )
-    user = os.environ.get("N8N_ADMIN_USER", "")
-    pw = os.environ.get("N8N_BASIC_AUTH_PASSWORD", os.environ.get("N8N_ADMIN_PASSWORD", ""))
-    if not user or not pw:
-        return _fail(name, "N8N_BASIC_AUTH_ACTIVE=true but credentials are missing")
-    return _ok(name, "n8n basic auth is enabled with credentials configured")
-
-
 # ── CORS ──────────────────────────────────────────────────────────────────────
 
 def check_cors_config(
@@ -167,9 +151,16 @@ def check_cors_config(
         raw = os.environ.get("ALLOWED_ORIGINS", "*")
         origins = [o.strip() for o in raw.split(",") if o.strip()]
     if allow_credentials is None:
-        allow_credentials = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in (
+        # Mirror backend/main.py's auto-disable: when origins is exactly
+        # `["*"]`, the runtime overrides allow_credentials to False
+        # regardless of CORS_ALLOW_CREDENTIALS, because the combination
+        # is rejected by all modern browsers anyway. The diagnostic must
+        # reflect that decision or it raises a hard FAIL on a config
+        # the runtime is silently fixing.
+        env_pref = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in (
             "1", "true", "yes"
         )
+        allow_credentials = env_pref and origins != ["*"]
     if "*" in origins and allow_credentials:
         return _fail(
             name,
@@ -178,6 +169,11 @@ def check_cors_config(
         )
     if not origins:
         return _warn(name, "ALLOWED_ORIGINS is empty — all CORS requests will be blocked")
+    if origins == ["*"] and not allow_credentials:
+        return _ok(
+            name,
+            "CORS wildcard origin with credentials disabled — browser-valid",
+        )
     return _ok(name, f"CORS configured with {len(origins)} explicit origin(s)")
 
 
@@ -527,7 +523,6 @@ async def run_startup_diagnostics(
         check_env_jupyter_token(),
         check_env_public_base_url(),
         check_env_cookie_secure(),
-        check_env_n8n_auth(),
         check_jwt_roundtrip(),
         check_history_encryption_roundtrip(),
         check_gpu_available(),

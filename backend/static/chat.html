@@ -39,6 +39,19 @@
     header button { cursor: pointer; }
     header button:hover { background: #2a2d36; }
     header .spacer { flex: 1; }
+    /* Status indicators in the header — small, muted, monospace
+       so the changing numbers don't fight the layout. */
+    .stat {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'Cascadia Code', Consolas, monospace;
+      padding: 0 6px;
+      white-space: nowrap;
+    }
+    .stat .lbl { text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.7; }
+    .stat .val { color: var(--fg); }
+    .stat.warn .val { color: #e0c060; }   /* yellow at >70% */
+    .stat.crit .val { color: var(--danger); }   /* red at >90% */
     #main { flex: 1; display: flex; overflow: hidden; }
     #log { flex: 1; overflow: auto; padding: 16px; max-width: 860px; margin: 0 auto; width: 100%; }
     .msg { margin: 0 0 16px 0; line-height: 1.5; }
@@ -52,16 +65,113 @@
     .msg code { background: #22252e; padding: 1px 4px; border-radius: 3px; }
     .msg a { color: var(--accent); }
     .role { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    /* "Thinking…" placeholder shown while the assistant message is
+       still streaming nothing — replaced by the first real token. */
+    .thinking { color: var(--muted); font-style: italic; }
+    .thinking .dots::after {
+      content: '';
+      display: inline-block;
+      width: 1.2em;
+      animation: dots 1.4s steps(4, end) infinite;
+      content: '';
+    }
+    @keyframes dots {
+      0%   { content: ''; }
+      25%  { content: '.'; }
+      50%  { content: '..'; }
+      75%  { content: '...'; }
+      100% { content: ''; }
+    }
+    /* The browser doesn't actually animate `content` via @keyframes —
+       use a bouncy span instead. Replace with three pulsing dots: */
+    .thinking .dots {
+      display: inline-block;
+      margin-left: 2px;
+    }
+    .thinking .dots::before {
+      content: '...';
+      letter-spacing: 1px;
+      display: inline-block;
+      animation: pulse-dots 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse-dots {
+      0%, 100% { opacity: 0.2; }
+      50%      { opacity: 1.0; }
+    }
     footer {
       border-top: 1px solid var(--border); padding: 10px 16px;
       background: var(--panel); display: flex; gap: 8px;
       max-width: 960px; margin: 0 auto; width: 100%;
     }
-    #composer {
-      flex: 1; resize: none; background: #22252e; color: var(--fg);
-      border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
-      font: inherit; min-height: 44px; max-height: 200px;
+    #composer-wrap {
+      flex: 1; position: relative; display: flex; flex-direction: column;
+      background: #22252e; border: 1px solid var(--border); border-radius: 6px;
     }
+    #composer {
+      resize: none; background: transparent; color: var(--fg);
+      border: 0; padding: 8px 10px 4px 10px;
+      font: inherit; min-height: 44px; max-height: 200px;
+      outline: none;
+    }
+    .composer-tools {
+      display: flex; align-items: center; gap: 4px;
+      padding: 0 6px 6px 6px;
+    }
+    .icon-btn {
+      background: transparent; color: var(--muted);
+      border: 1px solid transparent; border-radius: 4px;
+      padding: 4px 8px; cursor: pointer; font: inherit; font-size: 12px;
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .icon-btn:hover { color: var(--fg); border-color: var(--border); }
+    #attach-input { display: none; }
+    #attached-list {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      padding: 0 6px;
+    }
+    .chip {
+      background: #2a2d36; border: 1px solid var(--border);
+      border-radius: 12px; padding: 2px 8px; font-size: 11px;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .chip .x { cursor: pointer; color: var(--muted); }
+    .chip .x:hover { color: var(--danger); }
+    #tools-popover {
+      position: absolute; bottom: 100%; left: 0; margin-bottom: 6px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px; min-width: 280px; max-height: 320px;
+      overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 10;
+    }
+    #tools-popover.hidden { display: none; }
+    #tools-popover .tool-row {
+      display: flex; align-items: center; gap: 8px; padding: 4px 2px;
+      font-size: 12.5px;
+    }
+    #tools-popover .tool-row label {
+      flex: 1; cursor: pointer; color: var(--fg);
+    }
+    #tools-popover .tool-search {
+      width: 100%; background: #22252e; color: var(--fg);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 4px 6px; margin-bottom: 6px; font: inherit; font-size: 12px;
+    }
+    /* iOS-style toggle switch */
+    .toggle {
+      position: relative; width: 30px; height: 16px; flex-shrink: 0;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider {
+      position: absolute; inset: 0; background: #44474f; border-radius: 16px;
+      cursor: pointer; transition: background .15s;
+    }
+    .toggle .slider::before {
+      content: ''; position: absolute; left: 2px; top: 2px;
+      width: 12px; height: 12px; background: white; border-radius: 50%;
+      transition: transform .15s;
+    }
+    .toggle input:checked + .slider { background: var(--accent); }
+    .toggle input:checked + .slider::before { transform: translateX(14px); }
+    .toggle input:disabled + .slider { opacity: 0.4; cursor: not-allowed; }
     #send {
       background: var(--accent); color: white; border: 0;
       border-radius: 6px; padding: 0 18px; cursor: pointer;
@@ -86,8 +196,39 @@
     }
     #signin-err { color: var(--danger); margin-top: 10px; font-size: 13px; min-height: 18px; }
     .hidden { display: none !important; }
+    /* Conversation sidebar — lists the user's past chats. Click an
+       item to resume; the chat history is repopulated and subsequent
+       sends include conversation_id so the backend persists messages
+       to the existing row. */
+    #sidebar {
+      width: 240px; flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      display: flex; flex-direction: column;
+    }
+    #sidebar header {
+      border-right: 0; border-bottom: 1px solid var(--border);
+      justify-content: space-between;
+    }
+    #conv-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .conv-item {
+      padding: 8px 10px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; color: var(--fg);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-bottom: 2px;
+    }
+    .conv-item:hover { background: #22252e; }
+    .conv-item.active { background: #2a2d36; border-left: 2px solid var(--accent); padding-left: 8px; }
+    .conv-item .conv-title { font-weight: 500; }
+    .conv-item .conv-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    #new-conv-btn {
+      margin: 6px; padding: 8px;
+      background: var(--accent); color: white; border: 0;
+      border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
+    }
     @media (max-width: 640px) {
       #log, footer { padding: 10px; }
+      #sidebar { display: none; }
     }
   </style>
 </head>
@@ -104,21 +245,44 @@
     </form>
   </div>
 
-  <div id="chatapp" class="hidden" style="display:flex; flex-direction:column; flex:1; width:100%;">
-    <header>
-      <span class="brand">Local AI Stack</span>
-      <select id="model"></select>
-      <label><input type="checkbox" id="think"> Think</label>
-      <span class="spacer"></span>
-      <span id="who" style="color:var(--muted);"></span>
-      <button id="newchat">New</button>
-      <button id="logout">Sign out</button>
-    </header>
-    <div id="main"><div id="log"></div></div>
+  <div id="chatapp" class="hidden" style="display:flex; flex-direction:row; flex:1; width:100%;">
+    <aside id="sidebar">
+      <button id="new-conv-btn">+ New chat</button>
+      <div id="conv-list"></div>
+    </aside>
+    <div style="display:flex; flex-direction:column; flex:1; min-width:0;">
+      <header>
+        <span class="brand">Local AI Stack</span>
+        <select id="model"></select>
+        <label><input type="checkbox" id="think"> Think</label>
+        <span class="spacer"></span>
+        <span id="vram-stat" class="stat" title="GPU VRAM free / total (polled every 15s)">
+          <span class="lbl">VRAM</span> <span class="val" id="vram-val">—</span>
+        </span>
+        <span id="ctx-stat" class="stat" title="Estimated tokens used / tier context window">
+          <span class="lbl">CTX</span> <span class="val" id="ctx-val">—</span>
+        </span>
+        <span id="who" style="color:var(--muted);"></span>
+        <button id="logout">Sign out</button>
+      </header>
+      <div id="main"><div id="log"></div></div>
     <footer>
-      <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
+      <div id="composer-wrap">
+        <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
+        <div id="attached-list"></div>
+        <div class="composer-tools">
+          <button class="icon-btn" id="tools-btn" title="Enable tools">🔧 Tools <span id="tools-count" style="color:var(--muted);"></span></button>
+          <button class="icon-btn" id="attach-btn" title="Attach files">📎 Attach</button>
+          <input type="file" id="attach-input" multiple>
+          <div id="tools-popover" class="hidden">
+            <input type="text" class="tool-search" id="tool-search" placeholder="Filter tools…">
+            <div id="tools-list"></div>
+          </div>
+        </div>
+      </div>
       <button id="send">Send</button>
     </footer>
+    </div>
   </div>
 
   <script>
@@ -178,6 +342,9 @@
           const me = await r.json();
           whoEl.textContent = me.username;
           await loadModels();
+          await loadTools();
+          await loadConversations();
+          pollVram();
           signinBox.classList.add('hidden');
           app.classList.remove('hidden');
         }
@@ -202,6 +369,9 @@
       const info = await r.json();
       whoEl.textContent = info.username;
       await loadModels();
+      await loadTools();
+      await loadConversations();
+      pollVram();
       err.textContent = '';
       signinBox.classList.add('hidden');
       app.classList.remove('hidden');
@@ -215,23 +385,377 @@
       signinBox.classList.remove('hidden');
     });
 
-    $('newchat').addEventListener('click', () => {
+    // ── Conversation list (sidebar) ─────────────────────────────────
+    // The backend persists every signed-in chat to SQLite, indexed by
+    // conversation_id. The sidebar is the user's surface to resume
+    // those — clicking an item refills `history` from the server's
+    // stored messages and sets `currentConversationId` so subsequent
+    // sends append to the same row.
+    let currentConversationId = null;
+    const convListEl = $('conv-list');
+
+    async function loadConversations() {
+      try {
+        const r = await api('/chats');
+        if (!r.ok) return;
+        const j = await r.json();
+        const items = j.data || [];
+        convListEl.innerHTML = '';
+        items.forEach(c => {
+          const div = document.createElement('div');
+          div.className = 'conv-item' + (c.id === currentConversationId ? ' active' : '');
+          div.dataset.id = c.id;
+          const title = c.title || 'Untitled';
+          const ts = c.updated_at || c.created_at;
+          const when = ts ? new Date(ts * 1000).toLocaleString(undefined, {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          }) : '';
+          div.innerHTML = `<div class="conv-title">${escapeHtml(title)}</div>`
+            + (when ? `<div class="conv-meta">${escapeHtml(when)}${c.tier ? ' • ' + escapeHtml(c.tier) : ''}</div>` : '');
+          div.addEventListener('click', () => loadConversation(c.id));
+          convListEl.appendChild(div);
+        });
+        if (items.length === 0) {
+          convListEl.innerHTML = '<div style="padding:10px; color:var(--muted); font-size:12px;">No previous chats.</div>';
+        }
+      } catch (_) {}
+    }
+
+    async function loadConversation(convId) {
+      // Pull the full message history for this conversation and
+      // populate the chat log. Doesn't touch the model dropdown's
+      // current selection — the scheduler decides whether the tier
+      // is already resident and skips reload automatically.
+      try {
+        const r = await api('/chats/' + convId);
+        if (!r.ok) return;
+        const conv = await r.json();
+        currentConversationId = conv.id;
+        history.length = 0;
+        logEl.innerHTML = '';
+        for (const m of (conv.messages || [])) {
+          if (m.role === 'user' || m.role === 'assistant') {
+            history.push({ role: m.role, content: m.content });
+            appendMsg(m.role, m.content);
+          }
+        }
+        // Sync the dropdown to the conversation's tier if available.
+        if (conv.tier) {
+          const want = conv.tier.startsWith('tier.') ? conv.tier : 'tier.' + conv.tier;
+          const opt = Array.from(modelEl.options).find(o => o.value === want && !o.disabled);
+          if (opt) {
+            modelEl.value = want;
+            lastSelectedModel = want;
+          }
+        }
+        // Refresh sidebar to mark the active item.
+        loadConversations();
+        updateCtxIndicator();
+      } catch (_) {}
+    }
+
+    async function newConversation() {
+      // Lazy-create on first send: just clear the local state. The
+      // backend will create a row when the chat handler sees no
+      // conversation_id but a signed-in user — see _finalize_conversation.
+      currentConversationId = null;
       history.length = 0;
       logEl.innerHTML = '';
-    });
+      Array.from(convListEl.querySelectorAll('.conv-item.active')).forEach(
+        el => el.classList.remove('active')
+      );
+      updateCtxIndicator();
+    }
+
+    $('new-conv-btn').addEventListener('click', newConversation);
+
+    // Pretty-name a tier id: "highest_quality" → "Highest quality"
+    function tierLabel(id) {
+      const stripped = id.replace(/^tier[._-]/i, '');
+      return stripped.charAt(0).toUpperCase() + stripped.slice(1).replace(/_/g, ' ');
+    }
+    // Pull a clean model name out of an HF repo or filename:
+    //   "bartowski/Qwen2.5-72B-Instruct-GGUF" → "Qwen2.5-72B-Instruct"
+    //   "Qwen2.5-72B-Instruct-Q4_K_M.gguf"   → "Qwen2.5-72B-Instruct"
+    function specificModel(info) {
+      const repo = info && (info.repo || info.model_id);
+      const file = info && info.filename;
+      let s = '';
+      if (repo) {
+        s = repo.split('/').pop() || repo;
+      } else if (file) {
+        s = file;
+      } else {
+        return '';
+      }
+      return s
+        .replace(/\.gguf$/i, '')
+        .replace(/-?GGUF$/i, '')
+        .replace(/[-_.]?Q[0-9]+(_K(_[A-Z]+)?|_[01])?$/i, '');
+    }
+
+    // ── Header indicators (VRAM + context window) ───────────────────
+    // Per-tier context window in tokens; populated by loadModels() from
+    // /v1/models. Used by updateCtxIndicator() to compute the "X / Y"
+    // display.
+    const tierContext = new Map();   // tier_id → context_window
+    const vramStatEl = $('vram-stat');
+    const vramValEl  = $('vram-val');
+    const ctxStatEl  = $('ctx-stat');
+    const ctxValEl   = $('ctx-val');
+
+    function setStatLevel(el, frac) {
+      // 0–0.7 normal, 0.7–0.9 warn, ≥0.9 crit. Mirrors the stat color
+      // CSS classes added above.
+      el.classList.remove('warn', 'crit');
+      if (frac >= 0.9) el.classList.add('crit');
+      else if (frac >= 0.7) el.classList.add('warn');
+    }
+
+    async function pollVram() {
+      // Polls /vram every 15s. Backend's `free_vram_gb_actual` reads
+      // NVML; falls back to projected when NVML isn't available
+      // (CPU-only or driver missing) — both give a usable percentage.
+      try {
+        const r = await api('/vram');
+        if (!r.ok) return;
+        const v = await r.json();
+        const total = v.total_vram_gb || 0;
+        const free  = v.free_vram_gb_actual ?? v.free_vram_gb_projected ?? total;
+        if (total <= 0) {
+          vramValEl.textContent = 'n/a';
+          return;
+        }
+        const used = Math.max(0, total - free);
+        vramValEl.textContent = `${free.toFixed(1)} / ${total.toFixed(0)} GB free`;
+        setStatLevel(vramStatEl, used / total);
+      } catch (_) {
+        vramValEl.textContent = '—';
+      }
+    }
+
+    function estimateTokens(text) {
+      // Rough char→token estimate. Real tokenization varies per model
+      // (Qwen ~3.5 chars/tok English, ~2 cn/jp); 4 char/tok is the
+      // standard "good enough" approximation widely used by chat UIs.
+      return Math.ceil((text || '').length / 4);
+    }
+
+    function updateCtxIndicator() {
+      const ctx = tierContext.get(modelEl.value);
+      if (!ctx) {
+        ctxValEl.textContent = '—';
+        return;
+      }
+      // Sum estimated tokens across all messages in the local history.
+      // Includes a small fudge for role markers and chat-template
+      // overhead per turn.
+      const overheadPerTurn = 8;
+      let used = 0;
+      for (const m of history) {
+        used += estimateTokens(m.content) + overheadPerTurn;
+      }
+      const fmt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : `${n}`;
+      ctxValEl.textContent = `${fmt(used)} / ${fmt(ctx)}`;
+      setStatLevel(ctxStatEl, used / ctx);
+    }
 
     async function loadModels() {
+      // Fetch /v1/models for the available tier list and /resolved-models
+      // for the per-tier specific model name + on-disk availability.
+      // Labels render as "Category: Specific Model" with a "(downloading…)"
+      // suffix on tiers whose GGUF isn't on disk yet — those options
+      // are disabled so the user can't pick a tier that would 404.
+      let resolved = {};
+      try {
+        const rr = await api('/resolved-models');
+        if (rr.ok) {
+          const j = await rr.json();
+          resolved = j.tiers || {};
+        }
+      } catch (_) {}
       try {
         const r = await api('/v1/models');
         const { data } = await r.json();
+        // Preserve the user's current selection across the 30-second
+        // auto-refresh. Without this, switching browser tabs and
+        // returning would silently snap the dropdown back to the first
+        // tier in the list ("Highest quality") because innerHTML='' +
+        // re-populate resets the value to the first option by default.
+        const previousValue = modelEl.value;
         modelEl.innerHTML = '';
+        let firstAvailableValue = null;
+        let previousIsAvailable = false;
+        tierContext.clear();
         (data || []).forEach(m => {
           const o = document.createElement('option');
           o.value = m.id;
-          o.textContent = (m.owned_by ? m.owned_by + ' — ' : '') + m.id;
+          // Stash per-tier context window so the CTX indicator can
+          // show the right "X / Y" denominator even after a tier swap.
+          if (m.context_window) tierContext.set(m.id, m.context_window);
+          const key = m.id.replace(/^tier\./, '');
+          const info = resolved[key] || resolved[m.id] || {};
+          const cat = tierLabel(key);
+          const model = specificModel(info);
+          const base = model ? `${cat}: ${model}` : cat;
+          // info.available is true only when the GGUF file exists on
+          // disk. Until the resolver finishes pulling, it's false.
+          if (info.available === false) {
+            o.textContent = `${base}  (downloading…)`;
+            o.disabled = true;
+          } else {
+            o.textContent = base;
+            if (firstAvailableValue === null) firstAvailableValue = m.id;
+            if (m.id === previousValue) previousIsAvailable = true;
+          }
           modelEl.appendChild(o);
         });
+        if (previousValue && previousIsAvailable) {
+          // Re-apply the user's previous selection if it's still
+          // available. Updates lastSelectedModel below stays in sync.
+          modelEl.value = previousValue;
+        } else if (firstAvailableValue !== null) {
+          // Default-select the first usable tier on first load (or if
+          // the previously selected tier became unavailable mid-flight).
+          modelEl.value = firstAvailableValue;
+        }
+        lastSelectedModel = modelEl.value;
+        updateCtxIndicator();
       } catch (_) {}
+    }
+
+    // Tracks the last tier the user actively chose (or the page's
+    // default seed). Used by the change-handler to detect mid-chat
+    // tier swaps and to revert if the user cancels the confirm dialog.
+    let lastSelectedModel = null;
+    modelEl.addEventListener('change', () => {
+      const newVal = modelEl.value;
+      if (history.length > 0 && lastSelectedModel && lastSelectedModel !== newVal) {
+        // The user is mid-conversation. Switching tiers cold-spawns
+        // a different llama-server (loading a multi-GB model into
+        // VRAM ≈ 5–30s for fast/versatile, much longer for the 72B
+        // and 80B-A3B tiers). Warn them so they don't think the
+        // first reply after the swap is hung.
+        const ok = window.confirm(
+          "Switching models mid-conversation will load a different model into VRAM. " +
+          "The next reply may take 5–30 seconds for small tiers, longer for 72B / 80B-A3B " +
+          "(and unloads whatever was previously resident).\n\n" +
+          "Continue with the switch?"
+        );
+        if (!ok) {
+          modelEl.value = lastSelectedModel;
+          return;
+        }
+      }
+      lastSelectedModel = newVal;
+    });
+
+    // Refresh the tier list every 30 s so download-completed tiers
+    // light up without a full page reload. Cheap GET — no streaming.
+    setInterval(() => { if (!app.classList.contains('hidden')) loadModels(); }, 30000);
+
+    // Poll VRAM every 15 s. Cheap; just reads scheduler.status() in-memory.
+    setInterval(() => { if (!app.classList.contains('hidden')) pollVram(); }, 15000);
+
+    // Update the CTX indicator on tier change too — different tier
+    // means a different denominator. (mid-chat swap is rare but the
+    // bar should reflect reality immediately when it happens.)
+    modelEl.addEventListener('change', updateCtxIndicator);
+
+    // ── Tools popover ─────────────────────────────────────────────────
+    const toolsBtn = $('tools-btn');
+    const toolsPop = $('tools-popover');
+    const toolsList = $('tools-list');
+    const toolsCount = $('tools-count');
+    const toolSearch = $('tool-search');
+    const toolState = new Map();   // name → enabled (boolean)
+
+    async function loadTools() {
+      // Default every tool to OFF. Auto-enabling default-enabled tools
+      // pushes the request body past llama-server's per-slot context
+      // window once the registry has 200+ entries (28k+ tokens of
+      // schemas alone). The 🔧 popover is the explicit opt-in surface;
+      // the user toggles only what they need for that turn.
+      try {
+        const r = await api('/tools');
+        if (!r.ok) return;
+        const j = await r.json();
+        toolState.clear();
+        (j.data || []).forEach(t => {
+          toolState.set(t.name, false);
+        });
+        renderTools();
+      } catch (_) {}
+    }
+
+    function renderTools() {
+      const q = (toolSearch.value || '').toLowerCase();
+      const rows = [];
+      toolState.forEach((enabled, name) => {
+        if (q && !name.toLowerCase().includes(q)) return;
+        rows.push({ name, enabled });
+      });
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      toolsList.innerHTML = '';
+      rows.forEach(({ name, enabled }) => {
+        const row = document.createElement('div');
+        row.className = 'tool-row';
+        row.innerHTML = `
+          <label for="tool-${cssId(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</label>
+          <span class="toggle"><input type="checkbox" id="tool-${cssId(name)}" ${enabled ? 'checked' : ''}><span class="slider"></span></span>
+        `;
+        const cb = row.querySelector('input');
+        cb.addEventListener('change', () => {
+          toolState.set(name, cb.checked);
+          updateToolsCount();
+        });
+        toolsList.appendChild(row);
+      });
+      updateToolsCount();
+    }
+    function cssId(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+    function updateToolsCount() {
+      let n = 0; toolState.forEach(v => { if (v) n++; });
+      toolsCount.textContent = n ? `(${n})` : '';
+    }
+
+    toolsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toolsPop.classList.toggle('hidden');
+    });
+    toolSearch.addEventListener('input', renderTools);
+    document.addEventListener('click', (e) => {
+      if (!toolsPop.contains(e.target) && e.target !== toolsBtn) {
+        toolsPop.classList.add('hidden');
+      }
+    });
+
+    // ── Attach files ─────────────────────────────────────────────────
+    const attachBtn = $('attach-btn');
+    const attachInput = $('attach-input');
+    const attachedList = $('attached-list');
+    const attached = [];   // [{name, size, file}]
+
+    attachBtn.addEventListener('click', () => attachInput.click());
+    attachInput.addEventListener('change', () => {
+      for (const f of attachInput.files) {
+        attached.push({ name: f.name, size: f.size, file: f });
+      }
+      attachInput.value = '';
+      renderAttached();
+    });
+    function renderAttached() {
+      attachedList.innerHTML = '';
+      attached.forEach((a, i) => {
+        const c = document.createElement('span');
+        c.className = 'chip';
+        c.innerHTML = `${escapeHtml(a.name)} <span class="x" data-i="${i}">×</span>`;
+        c.querySelector('.x').addEventListener('click', () => {
+          attached.splice(i, 1);
+          renderAttached();
+        });
+        attachedList.appendChild(c);
+      });
     }
 
     function appendMsg(role, text) {
@@ -255,25 +779,89 @@
     async function sendMessage() {
       if (streaming) return;
       const text = composerEl.value.trim();
-      if (!text) return;
+      if (!text && attached.length === 0) return;
       composerEl.value = '';
-      history.push({ role: 'user', content: text });
-      appendMsg('user', text);
+
+      // Upload any attached files first. Each call returns an
+      // attachment_id we hand to /v1/chat/completions; the backend
+      // inlines text content / forwards images to the vision tier.
+      const attachmentIds = [];
+      const uploadList = attached.splice(0, attached.length);
+      renderAttached();
+      for (const a of uploadList) {
+        try {
+          const fd = new FormData();
+          fd.append('file', a.file, a.name);
+          const ur = await fetch('/api/chat/upload', {
+            method: 'POST', credentials: 'include', body: fd,
+          });
+          if (ur.ok) {
+            const j = await ur.json();
+            if (j.id) attachmentIds.push(j.id);
+          }
+        } catch (_) {}
+      }
+
+      // Surface attachments inline in the user message bubble so the
+      // chat history is self-explanatory.
+      const visibleText = text + (uploadList.length
+        ? '\n\n_attached: ' + uploadList.map(a => a.name).join(', ') + '_'
+        : '');
+      history.push({ role: 'user', content: text || '(attachment only)' });
+      updateCtxIndicator();
+      appendMsg('user', visibleText);
       const targetBody = appendMsg('assistant', '');
+      // Initial "thinking" state — replaced by streamed tokens or by
+      // backend status events (queue position, model spawn, etc.).
+      // The pulsing dot animates without JS via the @keyframes below.
+      targetBody.innerHTML = '<span class="thinking">Thinking<span class="dots"></span></span>';
       streaming = true;
       sendEl.disabled = true;
       let buffered = '';
+      let firstTokenSeen = false;
       try {
+        // Per-request enabled tools: only send the names the user
+        // toggled on. Empty array means "no tools this turn"; null
+        // (no key) means "use registry defaults".
+        const toolNames = [];
+        toolState.forEach((on, name) => { if (on) toolNames.push(name); });
+        // Lazy-create the conversation row on first send so its tier
+        // matches whichever the user picked. Subsequent turns reuse
+        // the same conversation_id.
+        if (currentConversationId === null) {
+          try {
+            const cr = await api('/chats', {
+              method: 'POST',
+              body: JSON.stringify({
+                title: text.slice(0, 60) || 'New chat',
+                tier: modelEl.value.replace(/^tier\./, ''),
+              }),
+            });
+            if (cr.ok) {
+              const conv = await cr.json();
+              currentConversationId = conv.id;
+              loadConversations();
+            }
+          } catch (_) {}
+        }
+        const body = {
+          model: modelEl.value,
+          stream: true,
+          messages: history,
+          think: thinkEl.checked || undefined,
+          conversation_id: currentConversationId || undefined,
+        };
+        // Only attach the field when it differs from default; this
+        // preserves backwards compat with handlers that don't know
+        // about it yet.
+        if (toolState.size > 0) body.enabled_tools = toolNames;
+        if (attachmentIds.length) body.attachment_ids = attachmentIds;
+
         const r = await fetch('/v1/chat/completions', {
           method: 'POST',
           credentials: 'include',
           headers: { 'content-type': 'application/json', 'accept': 'text/event-stream' },
-          body: JSON.stringify({
-            model: modelEl.value,
-            stream: true,
-            messages: history,
-            think: thinkEl.checked || undefined,
-          }),
+          body: JSON.stringify(body),
         });
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
         const reader = r.body.getReader();
@@ -285,15 +873,87 @@
           carry += dec.decode(value, { stream: true });
           const lines = carry.split('\n');
           carry = lines.pop() || '';
+          // Track the SSE event type across lines. Backend sends both
+          // OpenAI-style `data:` chunks AND `event: agent`/`data: {...}`
+          // status pairs (route.decision, queue.update, model.spawn,
+          // error). We surface human-readable status while the model
+          // is starting up so the user knows their message wasn't lost.
+          let currentEvent = null;
           for (const line of lines) {
-            if (!line.startsWith('data:')) continue;
+            if (line.startsWith('event:')) {
+              currentEvent = line.slice(6).trim();
+              continue;
+            }
+            if (!line.startsWith('data:')) {
+              if (line === '') currentEvent = null;
+              continue;
+            }
             const body = line.slice(5).trim();
             if (body === '[DONE]') continue;
             try {
               const chunk = JSON.parse(body);
+              if (currentEvent === 'agent' && !firstTokenSeen) {
+                // Pre-stream status update from the orchestrator.
+                // Status labels are crafted to NOT imply "loading the
+                // wrong model first" — when the routed tier matches
+                // what the user picked, we just say "Connecting…";
+                // when an auto-route specialised it, we surface the
+                // reason explicitly.
+                const t = chunk.type || '';
+                const userPickedTier = (modelEl.value || '').replace(/^tier\./, '');
+                let label = null;
+                if (t === 'route.decision') {
+                  const tier = chunk.data && chunk.data.tier;
+                  const reason = chunk.data && chunk.data.specialist_reason;
+                  if (!tier || tier === userPickedTier) {
+                    label = 'Connecting to model…';
+                  } else if (reason) {
+                    const reasonText = {
+                      image_in_message: 'image attached',
+                      code_block_present: 'code block detected',
+                    }[reason] || reason;
+                    label = `Auto-routed to ${tierLabel(tier)} (${reasonText})…`;
+                  } else {
+                    label = `Routing to ${tierLabel(tier)}…`;
+                  }
+                } else if (t === 'queue' || t === 'queue.update') {
+                  const d = chunk.data || {};
+                  const pos = d.position ?? d.ahead ?? d.queue_position;
+                  label = pos != null
+                    ? `Queued (${pos} request${pos == 1 ? '' : 's'} ahead)…`
+                    : 'Queued for VRAM slot…';
+                } else if (t === 'tier.loading' || t === 'model.spawn') {
+                  const tag = chunk.data && (chunk.data.model_tag || chunk.data.tier_id);
+                  label = tag
+                    ? `Loading ${tag} into VRAM (first request takes 5–30s)…`
+                    : 'Loading model into VRAM (first request takes 5–30s)…';
+                } else if (t === 'vram.making_room') {
+                  const tag = chunk.data && chunk.data.tier_id;
+                  label = tag
+                    ? `Unloading idle models to make room for ${tag}…`
+                    : 'Unloading idle models to make VRAM room…';
+                } else if (t === 'tool.call') {
+                  const name = chunk.data && chunk.data.name;
+                  label = name ? `Calling tool: ${name}…` : 'Calling tool…';
+                } else if (t === 'error') {
+                  const msg = (chunk.data && chunk.data.message) || 'Unknown error';
+                  targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(msg) + '</em>';
+                  firstTokenSeen = true;   // suppress further status
+                  continue;
+                }
+                if (label) {
+                  targetBody.innerHTML = '<span class="thinking">'
+                    + escapeHtml(label) + '<span class="dots"></span></span>';
+                }
+                continue;
+              }
               for (const ch of (chunk.choices || [])) {
                 const delta = (ch.delta || {}).content;
                 if (delta) {
+                  if (!firstTokenSeen) {
+                    firstTokenSeen = true;
+                    targetBody.innerHTML = '';
+                  }
                   buffered += delta;
                   targetBody.innerHTML = renderMarkdown(buffered);
                   logEl.scrollTop = logEl.scrollHeight;
@@ -303,6 +963,7 @@
           }
         }
         history.push({ role: 'assistant', content: buffered });
+        updateCtxIndicator();
       } catch (err) {
         targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(String(err)) + '</em>';
       } finally {

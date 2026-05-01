@@ -23,6 +23,7 @@
 [CmdletBinding(DefaultParameterSetName = 'Start')]
 param(
     [Parameter(ParameterSetName = 'Setup')]           [switch]$Setup,
+    [Parameter(ParameterSetName = 'SetupGui')]        [switch]$SetupGui,
     [Parameter(ParameterSetName = 'Start')]           [switch]$Start,
     [Parameter(ParameterSetName = 'Stop')]            [switch]$Stop,
     [Parameter(ParameterSetName = 'Build')]           [switch]$Build,
@@ -69,7 +70,7 @@ $Script:PidFile   = Join-Path $AppData 'pids.json'
 # verification (dev only). Ship updated hashes when bumping versions.
 $Script:QdrantVersion    = if ($env:LAI_QDRANT_VERSION)    { $env:LAI_QDRANT_VERSION }    else { 'v1.12.4' }
 $Script:QdrantSha256     = if ($env:LAI_QDRANT_SHA256)     { $env:LAI_QDRANT_SHA256 }     else { '' }
-$Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b4404' }
+$Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b8992' }
 $Script:LlamaCppSha256   = if ($env:LAI_LLAMACPP_SHA256)   { $env:LAI_LLAMACPP_SHA256 }   else { '' }
 
 # ── Tiny helpers (dedupe pattern from setup.ps1/launcher) ────────────────────
@@ -333,6 +334,12 @@ function Invoke-Setup {
     if (Get-Command Invoke-DownloadLlamaServer -ErrorAction SilentlyContinue) {
         Invoke-DownloadLlamaServer -Version $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server') -Sha256 $LlamaCppSha256
     }
+    if (Get-Command Invoke-DownloadCudaRuntime -ErrorAction SilentlyContinue) {
+        # llama-server is a CUDA 12 build and silently dies (0xC0000135)
+        # when the cudart/cublas DLLs are missing. Provision them next to
+        # the exe unless they're already discoverable on PATH / CUDA_PATH.
+        Invoke-DownloadCudaRuntime -LlamaCppVersion $LlamaCppVersion -Dest (Join-Path $VendorDir 'llama-server')
+    }
     if (Get-Command Invoke-CreateVenvs -ErrorAction SilentlyContinue) {
         Invoke-CreateVenvs -Root $VendorDir -RepoRoot $RepoRoot
     }
@@ -389,23 +396,69 @@ function Invoke-Start {
     Ensure-Dir $AppData
     Ensure-Dir $LogsDir
 
+    # Diagnostic preflight: aggregate every "missing component" check
+    # so the user gets ONE actionable message rather than bouncing off
+    # the first failure. Skip the dialog when running with -NoGui (CI)
+    # since CI parses stdout, not Win32 message boxes.
+    #
+    # Skip preflight entirely in CI's smoke-test pattern
+    # (-NoGui -Offline -NoUpdateCheck): that combination means "spin
+    # the stack up briefly to prove it starts" — there's no admin
+    # user, no GGUFs, and no network access by design. Real users
+    # never pass that triple.
+    $isCiSmoke = $NoGui -and $Offline -and $NoUpdateCheck
+    if ($isCiSmoke) {
+        Write-Warn2 'Preflight skipped (-NoGui -Offline -NoUpdateCheck = CI smoke-test).'
+    } elseif (Get-Command Invoke-Preflight -ErrorAction SilentlyContinue) {
+        $pre = Invoke-Preflight -RepoRoot $RepoRoot -VendorDir $VendorDir `
+                                -DataDir $DataDir -EnvFile $EnvFile
+        foreach ($e in $pre.errors)   { Write-Err  $e }
+        foreach ($w in $pre.warnings) { Write-Warn2 $w }
+        if (-not $pre.ok) {
+            if (-not $NoGui -and (Get-Command Show-PreflightDialog -ErrorAction SilentlyContinue)) {
+                Show-PreflightDialog -Result $pre
+            }
+            throw "Startup blocked by preflight. " + $pre.suggestion
+        }
+    }
+
     if (-not (Test-Path $EnvFile)) {
         Write-Warn2 ".env missing — creating default. Edit it and re-run."
         Invoke-InitEnv
     }
     Apply-Env (Read-EnvFile)
 
-    # ── Resolve models ───────────────────────────────────────────────
+    # ── Resolve + auto-pull missing GGUFs ─────────────────────────────
+    # On first -Start (or any time a tier's GGUF is missing on disk),
+    # we run `resolve --pull` so the user doesn't need a separate
+    # download step. The pull is idempotent: already-downloaded files
+    # are skipped, so re-running -Start is cheap.
+    $modelsDir = Join-Path $DataDir 'models'
+    $expectedTiers = @('highest_quality','versatile','fast','coding','vision','embedding')
+    $missing = @($expectedTiers | Where-Object {
+        -not (Test-Path (Join-Path $modelsDir "$_.gguf"))
+    })
+
     if ($NoUpdateCheck -or $Offline -or $Env:OFFLINE -eq '1') {
         Write-Warn2 'Skipping upstream model poll (offline or -NoUpdateCheck).'
         $Env:OFFLINE = '1'
+        if ($missing.Count -gt 0) {
+            Write-Warn2 "Missing tier GGUFs: $($missing -join ', ') — those tiers will be unavailable until you re-run -Start online."
+        }
     } else {
-        Write-Step 'Resolving model versions (HuggingFace)'
         $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
-        if (Test-Path $py) {
-            & $py -m backend.model_resolver resolve
-        } else {
+        if (-not (Test-Path $py)) {
             Write-Warn2 "Backend venv missing — skipping resolution (run -Setup first)"
+        } elseif ($missing.Count -gt 0) {
+            Write-Step "Resolving + pulling $($missing.Count) missing GGUF tier(s) from HuggingFace: $($missing -join ', ')"
+            Write-Host "   .. this may take a while on first run; subsequent -Starts skip already-downloaded files." -ForegroundColor DarkGray
+            & $py -m backend.model_resolver resolve --pull
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn2 "model_resolver returned exit $LASTEXITCODE — some tiers may still be missing"
+            }
+        } else {
+            Write-Step 'Resolving model versions (HuggingFace) — all GGUFs already on disk'
+            & $py -m backend.model_resolver resolve
         }
     }
 
@@ -437,9 +490,18 @@ function Invoke-Start {
     $visionGguf = Join-Path $DataDir 'models\vision.gguf'
     $visionMmproj = Join-Path $DataDir 'models\vision.mmproj.gguf'
     if ((Test-Path $llamaBin) -and (Test-Path $visionGguf)) {
+        # NOTE: --jinja was added in llama.cpp ≥ b4500. The launcher's
+        # pinned build (b4404) rejects it and the tier crashes. Probe
+        # the binary's --help output and only pass the flag when
+        # supported, so a future bump to LAI_LLAMACPP_VERSION picks it
+        # up automatically.
+        # `-fa on` (b8992+) instead of bare `-fa` (b4404). Both
+        # old and new binaries accept the explicit form.
         $visionArgs = @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf,
-                        '--ctx-size', '16384', '--parallel', '2', '-ngl', '-1', '-fa',
-                        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0', '--jinja')
+                        '--ctx-size', '16384', '--parallel', '2', '-ngl', '-1', '-fa', 'on',
+                        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0')
+        $help = & $llamaBin --help 2>&1 | Out-String
+        if ($help -match '(?m)^\s*--jinja\b') { $visionArgs += '--jinja' }
         if (Test-Path $visionMmproj) { $visionArgs += @('--mmproj', $visionMmproj) }
         $pids['llama-server'] = Record-PidEntry (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
             -Args $visionArgs -LogDir $LogsDir)
@@ -567,7 +629,7 @@ function Invoke-Test {
 
 # ── BuildInstaller (Inno Setup) ──────────────────────────────────────────────
 function Invoke-BuildInstaller {
-    Write-Step 'Building LocalAIStack.exe (ps2exe)…'
+    Write-Step 'Building LocalAIStack.exe + LocalAIStackInstaller.exe (ps2exe)…'
     Invoke-Build
 
     Write-Step 'Freezing GUI with PyInstaller…'
@@ -592,23 +654,65 @@ function Invoke-BuildInstaller {
 
 # ── Build (ps2exe) ───────────────────────────────────────────────────────────
 function Invoke-Build {
+    # Compiles BOTH binaries in one pass:
+    #   LocalAIStack.exe          ← runtime (this file)
+    #   LocalAIStackInstaller.exe ← installer/Installer.ps1
+    # The two are bundled together by Inno Setup but only LocalAIStack.exe
+    # gets the user-visible Start-menu / desktop shortcuts. The installer
+    # is reachable via Apps & Features → Modify and a "Reconfigure"
+    # Start-menu entry.
     if (-not (Get-Module -ListAvailable -Name ps2exe)) {
         Write-Warn2 'ps2exe module missing — installing…'
         Install-Module -Name ps2exe -Scope CurrentUser -Force -AllowClobber
     }
     Import-Module ps2exe
     $icon = Join-Path $AssetsDir 'icon.ico'
-    $out  = Join-Path $RepoRoot 'LocalAIStack.exe'
-    $splat = @{
+
+    # Runtime EXE
+    $runtimeOut = Join-Path $RepoRoot 'LocalAIStack.exe'
+    $runtimeSplat = @{
         InputFile  = $MyInvocation.MyCommand.Path
-        OutputFile = $out
+        OutputFile = $runtimeOut
         NoConsole  = $true
         Title      = 'Local AI Stack'
         Company    = 'Local AI Stack'
     }
-    if (Test-Path $icon) { $splat['IconFile'] = $icon }
-    Invoke-ps2exe @splat
-    Write-Ok "Built $out"
+    if (Test-Path $icon) { $runtimeSplat['IconFile'] = $icon }
+    Invoke-ps2exe @runtimeSplat
+    Write-Ok "Built $runtimeOut"
+
+    # Installer EXE
+    $installerSrc = Join-Path $RepoRoot 'installer\Installer.ps1'
+    if (Test-Path $installerSrc) {
+        $installerOut = Join-Path $RepoRoot 'LocalAIStackInstaller.exe'
+        $installerSplat = @{
+            InputFile  = $installerSrc
+            OutputFile = $installerOut
+            NoConsole  = $true
+            Title      = 'Local AI Stack Installer'
+            Company    = 'Local AI Stack'
+            requireAdmin = $true   # prereqs / vendor downloads need admin
+        }
+        if (Test-Path $icon) { $installerSplat['IconFile'] = $icon }
+        Invoke-ps2exe @installerSplat
+        Write-Ok "Built $installerOut"
+    } else {
+        Write-Warn2 "installer\Installer.ps1 missing — skipped LocalAIStackInstaller.exe build"
+    }
+}
+
+# ── SetupGui ─────────────────────────────────────────────────────────────────
+# Runs ONLY the setup wizard (no prereq check, no vendor downloads). Used
+# by the installer's -Reconfigure path when the user wants to change
+# .env values without re-running the whole setup pipeline.
+function Invoke-SetupGui {
+    Apply-Env (Read-EnvFile)
+    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
+    if (-not (Test-Path $guiPy)) {
+        throw "GUI venv missing at $guiPy — run -Setup (full) first."
+    }
+    Write-Step 'Launching setup wizard for reconfiguration'
+    & $guiPy (Join-Path $RepoRoot 'gui\main.py') '--mode' 'wizard'
 }
 
 # ── Admin ────────────────────────────────────────────────────────────────────
@@ -646,6 +750,7 @@ if (Test-Path $StepsDir) {
 if ($Help)             { Invoke-Help;             return }
 if ($InitEnv)          { Invoke-InitEnv;          return }
 if ($Setup)            { Invoke-Setup;             return }
+if ($SetupGui)         { Invoke-SetupGui;          return }
 if ($Stop)             { Invoke-Stop;              return }
 if ($Build)            { Invoke-Build;             return }
 if ($BuildInstaller)   { Invoke-BuildInstaller;    return }

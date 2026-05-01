@@ -35,7 +35,6 @@ from backend.diagnostics import (
     check_env_cookie_secure,
     check_env_history_secret,
     check_env_jupyter_token,
-    check_env_n8n_auth,
     check_env_public_base_url,
     check_gpu_available,
     check_history_encryption_roundtrip,
@@ -206,33 +205,6 @@ class TestEnvCookieSecure:
         monkeypatch.setenv("PUBLIC_BASE_URL", "https://chat.example.com")
         monkeypatch.setenv("COOKIE_SECURE", "false")
         assert check_env_cookie_secure().severity == Severity.WARN
-
-
-# ── ENV: n8n auth ─────────────────────────────────────────────────────────────
-
-class TestEnvN8nAuth:
-    def test_ok(self, monkeypatch):
-        monkeypatch.setenv("N8N_BASIC_AUTH_ACTIVE", "true")
-        monkeypatch.setenv("N8N_ADMIN_USER", "admin")
-        monkeypatch.setenv("N8N_ADMIN_PASSWORD", "s3cr3tP@ss!")
-        assert check_env_n8n_auth().severity == Severity.OK
-
-    def test_disabled_is_warn(self, monkeypatch):
-        monkeypatch.setenv("N8N_BASIC_AUTH_ACTIVE", "false")
-        assert check_env_n8n_auth().severity == Severity.WARN
-
-    def test_enabled_but_no_credentials_is_fail(self, monkeypatch):
-        monkeypatch.setenv("N8N_BASIC_AUTH_ACTIVE", "true")
-        monkeypatch.delenv("N8N_ADMIN_USER", raising=False)
-        monkeypatch.delenv("N8N_ADMIN_PASSWORD", raising=False)
-        monkeypatch.delenv("N8N_BASIC_AUTH_PASSWORD", raising=False)
-        assert check_env_n8n_auth().severity == Severity.FAIL
-
-    def test_alternative_password_env_var(self, monkeypatch):
-        monkeypatch.setenv("N8N_BASIC_AUTH_ACTIVE", "true")
-        monkeypatch.setenv("N8N_ADMIN_USER", "admin")
-        monkeypatch.setenv("N8N_BASIC_AUTH_PASSWORD", "altpass")
-        assert check_env_n8n_auth().severity == Severity.OK
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────

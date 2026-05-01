@@ -17,6 +17,8 @@ native Qt.
 from __future__ import annotations
 
 import datetime
+import json
+import logging
 import os
 import pathlib
 import re
@@ -24,6 +26,9 @@ import secrets
 import subprocess
 import sys
 import time
+import webbrowser
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QThread, Signal, QFileSystemWatcher, QTimer
 from PySide6.QtGui import QFont
@@ -73,11 +78,127 @@ FIELD_SMTP_PORT = "smtp_port"
 FIELD_SMTP_USER = "smtp_user"
 FIELD_SMTP_PASS = "smtp_pass"
 FIELD_SMTP_FROM = "smtp_from"
+FIELD_HF_TOKEN = "hf_token"
+
+
+# ---------------------------------------------------------------------------
+# Wizard state persistence
+# ---------------------------------------------------------------------------
+#
+# If the wizard crashes, is killed, or the user closes it before the
+# Finish page commits the .env, we save what they've already typed to a
+# JSON file and pre-populate fields on the next launch. Removed when
+# Finish completes successfully.
+#
+# This includes the admin password — it's the most painful field to
+# re-enter and the user explicitly asked for it to persist. The file
+# lives at `data/.wizard_state.json` (or `%LOCALAPPDATA%\LocalAIStack\
+# .wizard_state.json` in installed mode), is mode 0600 on POSIX, and is
+# always under .gitignore (`data/*`).
+#
+# Field allow-list — only fields that are actually registered with the
+# QWizard (so `wiz.field` succeeds). Auto-generated secrets are
+# deliberately excluded (they regenerate on Page 3 each launch; saving
+# them would defeat their freshness guarantee). Tunnel UUID / name are
+# also excluded because they live as page instance attrs rather than
+# registered fields, AND the new idempotent `create_tunnel` makes
+# re-provisioning safe — restored UUID isn't needed.
+_PERSISTED_FIELDS = (
+    FIELD_EMAIL,
+    FIELD_PASSWORD,
+    FIELD_DOMAIN,
+    FIELD_CHAT_HOSTNAME,
+    FIELD_SMTP_ENABLED,
+    FIELD_SMTP_HOST,
+    FIELD_SMTP_PORT,
+    FIELD_SMTP_USER,
+    FIELD_SMTP_PASS,
+    FIELD_SMTP_FROM,
+    FIELD_HF_TOKEN,
+)
+
+
+def _wizard_state_path() -> pathlib.Path:
+    if os.environ.get("LAI_INSTALLED") == "1":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        root = (
+            pathlib.Path(local_appdata) / "LocalAIStack"
+            if local_appdata else _REPO / "data"
+        )
+    else:
+        root = _REPO / "data"
+    return root / ".wizard_state.json"
+
+
+def _save_wizard_state(wiz: "QWizard") -> None:
+    """Snapshot every persisted field to disk. Called on every page change.
+
+    Best-effort: any I/O failure is logged and swallowed — the wizard
+    must keep running even if the disk is read-only.
+    """
+    state: dict[str, object] = {}
+    for key in _PERSISTED_FIELDS:
+        try:
+            val = wiz.field(key)
+        except Exception:
+            continue
+        # `wiz.field` returns the underlying widget value: str, int, bool…
+        if val is None:
+            continue
+        # QSpinBox returns int; tunnel UUID can be empty string before
+        # provisioning. Skip empty strings to keep the file clean.
+        if isinstance(val, str) and not val:
+            continue
+        state[key] = val
+    if not state:
+        return
+    path = _wizard_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError as exc:
+        logger.warning("Could not persist wizard state to %s: %s", path, exc)
+
+
+def _load_wizard_state() -> dict[str, object]:
+    """Read prior wizard state, returning {} if absent or corrupt."""
+    path = _wizard_state_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not load wizard state from %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # Filter unknown keys defensively.
+    return {k: v for k, v in data.items() if k in _PERSISTED_FIELDS}
+
+
+def _clear_wizard_state() -> None:
+    """Wipe the saved state. Called from Finish on success."""
+    path = _wizard_state_path()
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Could not remove wizard state %s: %s", path, exc)
 
 
 # ---------------------------------------------------------------------------
 # Worker thread for long-running setup steps
 # ---------------------------------------------------------------------------
+
+_NO_WINDOW_FLAG = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+)
+
 
 class _WorkerThread(QThread):
     line_emitted = Signal(str)
@@ -96,6 +217,7 @@ class _WorkerThread(QThread):
                 stderr=subprocess.STDOUT,
                 text=True,
                 cwd=self._cwd,
+                creationflags=_NO_WINDOW_FLAG,
             )
             last = ""
             for line in proc.stdout:
@@ -106,6 +228,46 @@ class _WorkerThread(QThread):
             self.finished.emit(proc.returncode, last)
         except Exception as e:
             self.finished.emit(1, str(e))
+
+
+class _ProvisionTunnelWorker(QThread):
+    """Runs the synchronous cloudflared tunnel-create / route-dns / write-config
+    flow off the Qt UI thread. Each step that takes >1s on the main thread
+    would otherwise freeze the wizard window for the duration."""
+
+    progress = Signal(str)
+    # tunnel_id, tunnel_name, error_message — error empty on success
+    finished_with_result = Signal(str, str, str)
+
+    def __init__(self, hostname: str, domain: str, cloudflared_path):
+        super().__init__()
+        self._hostname = hostname
+        self._domain = domain
+        self._cf = cloudflared_path
+
+    def run(self) -> None:
+        from gui.cloudflare_setup import (
+            create_tunnel, route_dns, write_config_yml, CloudflareSetupError,
+        )
+        name = (
+            f"local-ai-stack-{self._domain.replace('.', '-')}"
+            if self._domain else "local-ai-stack"
+        )
+        try:
+            self.progress.emit(f"Creating tunnel '{name}'…")
+            tunnel_id = create_tunnel(name, self._cf)
+            self.progress.emit(
+                f"✓ Tunnel {tunnel_id[:8]}… ready. Routing DNS for {self._hostname}…"
+            )
+            # overwrite=True replaces any stale CNAME from a deleted tunnel.
+            route_dns(tunnel_id, self._hostname, self._cf, overwrite=True)
+            self.progress.emit("✓ DNS routed. Writing config.yml…")
+            write_config_yml(tunnel_id, self._hostname)
+            self.finished_with_result.emit(tunnel_id, name, "")
+        except CloudflareSetupError as exc:
+            self.finished_with_result.emit("", "", str(exc))
+        except Exception as exc:  # pragma: no cover — defensive
+            self.finished_with_result.emit("", "", f"Unexpected error: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -228,12 +390,53 @@ class _AdminAccountPage(QWizardPage):
         self._confirm.textChanged.connect(self.completeChanged)
         form.addRow("Confirm:", self._confirm)
 
+        # ── Hugging Face token ────────────────────────────────────────
+        # Several model tiers (e.g. Qwen3-Next-80B) are gated on
+        # Hugging Face and need a personal access token to download.
+        # We let the user paste one here. The "Get one from HF" button
+        # opens https://huggingface.co/settings/tokens in their default
+        # browser — if they're already signed in to HF, it lands them
+        # directly on the token-creation page so they can copy the
+        # value back in seconds. The button only opens the browser
+        # automatically when the field is empty (so re-entering the
+        # wizard after a partial install doesn't keep popping tabs).
+        self._hf_token = QLineEdit()
+        self._hf_token.setEchoMode(QLineEdit.Password)
+        self._hf_token.setPlaceholderText("hf_… (optional, only needed for gated models)")
+        hf_row = QHBoxLayout()
+        hf_row.addWidget(self._hf_token, 1)
+        self._hf_open_btn = QPushButton("Get one from HF")
+        self._hf_open_btn.setToolTip(
+            "Opens https://huggingface.co/settings/tokens in your browser. "
+            "If you're already signed in, you'll land on the token page directly."
+        )
+        self._hf_open_btn.clicked.connect(self._open_hf_token_page)
+        hf_row.addWidget(self._hf_open_btn)
+        hf_widget = QWidget()
+        hf_widget.setLayout(hf_row)
+        form.addRow("HuggingFace token:", hf_widget)
+
         self._hint = QLabel("")
         self._hint.setStyleSheet("color: #e74c3c;")
         form.addRow("", self._hint)
 
         self.registerField(FIELD_EMAIL + "*", self._email)
         self.registerField(FIELD_PASSWORD + "*", self._password)
+        self.registerField(FIELD_HF_TOKEN, self._hf_token)
+
+    def _open_hf_token_page(self) -> None:
+        try:
+            webbrowser.open("https://huggingface.co/settings/tokens")
+        except Exception:
+            pass
+
+    def initializePage(self) -> None:
+        # Auto-open the HF token page on first arrival ONLY when the
+        # field is still empty — repeat visits / restored state should
+        # not keep relaunching browser tabs at the user.
+        super().initializePage()
+        if not self._hf_token.text().strip():
+            QTimer.singleShot(400, self._open_hf_token_page)
 
     def isComplete(self) -> bool:
         email = self._email.text().strip()
@@ -358,7 +561,7 @@ class _TunnelPage(QWizardPage):
     def _run_cloudflare_setup(self) -> None:
         from gui.cloudflare_setup import (
             find_cloudflared, run_login, _needs_login, find_existing_tunnel,
-            create_tunnel, route_dns, write_config_yml, CloudflareSetupError
+            CloudflareSetupError,
         )
 
         hostname = self._hostname_edit.text().strip()
@@ -366,7 +569,7 @@ class _TunnelPage(QWizardPage):
             QMessageBox.warning(self, "Missing hostname", "Enter the chat hostname first.")
             return
 
-        # Check for existing tunnel
+        # Local config.yml-managed existing tunnel? Offer to adopt it.
         existing = find_existing_tunnel()
         if existing:
             reply = QMessageBox.question(
@@ -376,7 +579,7 @@ class _TunnelPage(QWizardPage):
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
-                self._tunnel_uuid = existing["uuid"]
+                self._tunnel_uuid = existing["tunnel_id"]
                 self._cf_status.setText(f"✓ Adopted existing tunnel {self._tunnel_uuid[:8]}…")
                 self.completeChanged.emit()
                 return
@@ -391,12 +594,19 @@ class _TunnelPage(QWizardPage):
             return
 
         if _needs_login():
-            self._cf_status.setText("Opening browser for Cloudflare login…")
-            self._login_proc = run_login(cf)
-            self._cert_watcher = QFileSystemWatcher([str(_CF_DIR)])
+            # Make sure the directory exists BEFORE we tell QFileSystemWatcher
+            # to watch it — addPath silently no-ops on missing paths.
             _CF_DIR.mkdir(parents=True, exist_ok=True)
+            self._cf_status.setText("Opening browser for Cloudflare login…")
+            try:
+                self._login_proc = run_login(cf)
+            except OSError as exc:
+                self._cf_status.setText(f"✗ Could not start cloudflared: {exc}")
+                self._cf_btn.setEnabled(True)
+                return
+            self._cert_watcher = QFileSystemWatcher([str(_CF_DIR)])
             self._cert_watcher.directoryChanged.connect(self._on_cf_dir_changed)
-            self._poll_timer = QTimer()
+            self._poll_timer = QTimer(self)
             self._poll_timer.setInterval(2000)
             self._poll_timer.timeout.connect(self._poll_cert)
             self._poll_timer.start()
@@ -433,26 +643,31 @@ class _TunnelPage(QWizardPage):
         self._provision_tunnel(cf, hostname)
 
     def _provision_tunnel(self, cf, hostname: str) -> None:
-        from gui.cloudflare_setup import (
-            create_tunnel, route_dns, write_config_yml, CloudflareSetupError
-        )
+        # Run synchronous cloudflared CLI off the Qt UI thread. Each
+        # cloudflared call can take 5–60 s; doing them inline here would
+        # freeze the wizard window for the entire duration.
         domain = self._domain_edit.text().strip()
-        name = f"local-ai-stack-{domain.replace('.', '-')}" if domain else "local-ai-stack"
-        try:
-            tunnel_id = create_tunnel(name, cf)
-            self._tunnel_uuid = tunnel_id
-            self._tunnel_name = name
-            self._cf_status.setText(f"✓ Tunnel {tunnel_id[:8]}… created. Routing DNS…")
-            route_dns(tunnel_id, hostname, cf)
-            write_config_yml(tunnel_id, hostname)
-            self._cf_status.setText(
-                f"✓ Tunnel ready. DNS routed to {hostname}.\n"
-                "(DNS propagation may take up to 5 minutes.)"
-            )
-            self.completeChanged.emit()
-        except CloudflareSetupError as e:
-            self._cf_status.setText(f"✗ {e}")
+        self._provision_worker = _ProvisionTunnelWorker(hostname, domain, cf)
+        self._provision_worker.progress.connect(self._cf_status.setText)
+        self._provision_worker.finished_with_result.connect(self._on_provision_done)
+        # Ensure the worker survives until it finishes — Qt would otherwise
+        # GC it once `_run_cloudflare_setup` returns.
+        self._provision_worker.finished.connect(self._provision_worker.deleteLater)
+        self._provision_worker.start()
+
+    def _on_provision_done(self, tunnel_id: str, name: str, error: str) -> None:
+        if error:
+            self._cf_status.setText(f"✗ {error}")
             self._cf_btn.setEnabled(True)
+            return
+        hostname = self._hostname_edit.text().strip()
+        self._tunnel_uuid = tunnel_id
+        self._tunnel_name = name
+        self._cf_status.setText(
+            f"✓ Tunnel ready. DNS routed to {hostname}.\n"
+            "(DNS propagation may take up to 5 minutes.)"
+        )
+        self.completeChanged.emit()
 
     def isComplete(self) -> bool:
         if self._local_radio.isChecked():
@@ -539,74 +754,16 @@ class _SmtpPage(QWizardPage):
 
 
 # ---------------------------------------------------------------------------
-# Page 6 — Models (skippable)
+# (Models page removed — auto-pull on first -Start instead.)
+# The launcher invokes `model_resolver resolve --pull` whenever any
+# tier's GGUF is missing on disk, so the user never has to make a
+# checkbox decision they can't easily undo. See Invoke-Start in
+# LocalAIStack.ps1.
 # ---------------------------------------------------------------------------
-
-class _ModelsPage(QWizardPage):
-    def __init__(self):
-        super().__init__()
-        self.setTitle("Model Downloads")
-        self.setSubTitle(
-            "Select which models to download now. "
-            "You can download more later from the admin panel."
-        )
-        layout = QVBoxLayout(self)
-
-        self._fast_cb = QCheckBox("Fast tier — ~7 GB (recommended)")
-        self._fast_cb.setChecked(True)
-        layout.addWidget(self._fast_cb)
-
-        self._versatile_cb = QCheckBox("Versatile tier — ~40 GB")
-        layout.addWidget(self._versatile_cb)
-
-        self._vision_cb = QCheckBox("Vision tier — ~25 GB (optional, needed for image input)")
-        layout.addWidget(self._vision_cb)
-
-        self._embed_cb = QCheckBox("Embedding model — ~270 MB (needed for RAG / memory)")
-        self._embed_cb.setChecked(True)
-        layout.addWidget(self._embed_cb)
-
-        self._dl_btn = QPushButton("Download selected now…")
-        self._dl_btn.clicked.connect(self._download)
-        layout.addWidget(self._dl_btn)
-
-        self._log = QPlainTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setMaximumHeight(150)
-        layout.addWidget(self._log)
-
-        self._worker: _WorkerThread | None = None
-
-    def _download(self) -> None:
-        if self._worker and self._worker.isRunning():
-            return
-        python = str(_VENV_BACKEND) if _VENV_BACKEND.exists() else sys.executable
-        tiers = []
-        if self._fast_cb.isChecked():
-            tiers += ["--tier", "fast"]
-        if self._versatile_cb.isChecked():
-            tiers += ["--tier", "versatile"]
-        if self._embed_cb.isChecked():
-            tiers += ["--tier", "embed"]
-        if self._vision_cb.isChecked():
-            tiers += ["--tier", "vision"]
-        if not tiers:
-            QMessageBox.information(self, "Nothing selected", "Select at least one tier.")
-            return
-        self._dl_btn.setEnabled(False)
-        self._worker = _WorkerThread(
-            [python, "-m", "backend.model_resolver", "resolve", "--pull"] + tiers
-        )
-        self._worker.line_emitted.connect(self._log.appendPlainText)
-        self._worker.finished.connect(lambda code, _: self._dl_btn.setEnabled(True))
-        self._worker.start()
-
-    def isComplete(self) -> bool:
-        return True  # skippable
 
 
 # ---------------------------------------------------------------------------
-# Page 7 — Finish
+# Page 6 — Finish
 # ---------------------------------------------------------------------------
 
 class _FinishPage(QWizardPage):
@@ -641,6 +798,7 @@ class _FinishPage(QWizardPage):
         smtp_user = wiz.field(FIELD_SMTP_USER) or ""
         smtp_pass = wiz.field(FIELD_SMTP_PASS) or ""
         smtp_from = wiz.field(FIELD_SMTP_FROM) or ""
+        hf_token = wiz.field(FIELD_HF_TOKEN) or ""
 
         # Determine access mode from page 4
         tunnel_page: _TunnelPage = wiz.page(3)  # 0-indexed
@@ -671,13 +829,21 @@ class _FinishPage(QWizardPage):
             f"CLOUDFLARE_TUNNEL_ID={tunnel_uuid}",
             f"CLOUDFLARE_TUNNEL_NAME={tunnel_name}",
             "MODEL_UPDATE_POLICY=prompt",
+            f"HF_TOKEN={hf_token}",
         ]
 
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata and (pathlib.Path(local_appdata) / "LocalAIStack").exists():
-            data_root = pathlib.Path(local_appdata) / "LocalAIStack"
+        # The launcher reads .env from the repo root. Installed-mode
+        # (LAI_INSTALLED=1, Inno Setup layout) splits code from per-user
+        # data, but until that path lands the launcher still owns the
+        # repo-root file.
+        if os.environ.get("LAI_INSTALLED") == "1":
+            local_appdata = os.environ.get("LOCALAPPDATA")
+            data_root = (
+                pathlib.Path(local_appdata) / "LocalAIStack"
+                if local_appdata else _REPO
+            )
         else:
-            data_root = _REPO / "data"
+            data_root = _REPO
 
         data_root.mkdir(parents=True, exist_ok=True)
         env_path = data_root / ".env"
@@ -707,13 +873,50 @@ class _FinishPage(QWizardPage):
                 env={**os.environ, "LAI_DATA_ROOT": str(data_root)},
             )
             if result.returncode == 0:
-                self._log.appendPlainText(f"✓ Admin user created: {email}")
+                username = email.split("@", 1)[0]
+                self._log.appendPlainText(
+                    f"✓ Admin user created.\n"
+                    f"   Log in with username '{username}' (NOT email) and the password you set."
+                )
             else:
                 self._log.appendPlainText(f"! seed_admin: {result.stdout.strip() or result.stderr.strip()}")
         except Exception as e:
             self._log.appendPlainText(f"✗ seed_admin failed: {e}")
 
+        # Kick off the model pull. ~96 GB across all tiers — we don't
+        # block Finish on it (subprocess detached); -Start later and the
+        # backend's auto-pull task will both pick up whatever's still
+        # missing. Surfacing it here means the user knows it started
+        # and can monitor data\logs\model-pull.log if curious.
+        try:
+            log_path = data_root / "logs" / "model-pull.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_fh = open(log_path, "ab", buffering=0)
+            pull_env = {**os.environ}
+            if hf_token:
+                pull_env["HF_TOKEN"] = hf_token
+            # No HF_HUB_ENABLE_HF_TRANSFER here — the resolver auto-falls
+            # back to the pure-Python downloader on transient failures.
+            subprocess.Popen(
+                [python, "-m", "backend.model_resolver", "resolve", "--pull"],
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                cwd=str(_REPO),
+                env=pull_env,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._log.appendPlainText(
+                f"✓ Model pull started in background (~96 GB total).\n"
+                f"   Progress log: {log_path}\n"
+                f"   Tiers come online progressively as each GGUF lands."
+            )
+        except Exception as e:
+            self._log.appendPlainText(f"! Could not start model pull: {e}")
+
         self._written = True
+        # Setup committed successfully — discard the partial-progress
+        # snapshot so the next launch starts clean.
+        _clear_wizard_state()
         self._log.appendPlainText("\nSetup complete. Click Finish to launch the stack.")
 
     def isComplete(self) -> bool:
@@ -731,13 +934,46 @@ class SetupWizard(QWizard):
         self.setWizardStyle(QWizard.ModernStyle)
         self.resize(700, 520)
 
+        # Model selection deliberately omitted: the launcher (-Start) auto-
+        # pulls every tier in config/model-sources.yaml the first time it
+        # finds a GGUF missing on disk. The previous _ModelsPage exposed
+        # only 4 of the 5 chat tiers (missing coding + highest_quality)
+        # AND passed CLI flags the resolver didn't accept — net effect was
+        # bugs without giving users meaningful control.
         self.addPage(_WelcomePage())        # page id 0
         self.addPage(_AdminAccountPage())   # page id 1
         self.addPage(_SecretsPage())        # page id 2
         self.addPage(_TunnelPage())         # page id 3
         self.addPage(_SmtpPage())           # page id 4
-        self.addPage(_ModelsPage())         # page id 5
-        self.addPage(_FinishPage())         # page id 6
+        self.addPage(_FinishPage())         # page id 5
+
+        # ── Progress persistence ────────────────────────────────────────
+        # If a previous run was killed or crashed, restore everything the
+        # user already typed. The fields are registered by their owning
+        # pages during addPage(); setField after addPage works because
+        # QWizard wires fields to widgets on registration.
+        prior = _load_wizard_state()
+        for key, val in prior.items():
+            try:
+                self.setField(key, val)
+            except Exception as exc:
+                logger.debug("Could not restore wizard field %r: %s", key, exc)
+
+        # The "Confirm" widget on the Admin page is UI-only (not a
+        # registered wizard field), so setField doesn't reach it. Mirror
+        # the restored password into it so the page validates without
+        # forcing a retype.
+        if FIELD_PASSWORD in prior:
+            try:
+                admin_page = self.page(1)
+                if admin_page is not None and hasattr(admin_page, "_confirm"):
+                    admin_page._confirm.setText(prior[FIELD_PASSWORD])
+            except Exception as exc:
+                logger.debug("Could not mirror restored password to confirm: %s", exc)
+
+        # Save after each Next/Back so a forced-quit always leaves a
+        # current snapshot. _FinishPage wipes the snapshot on success.
+        self.currentIdChanged.connect(lambda _id: _save_wizard_state(self))
 
 
 # ---------------------------------------------------------------------------
