@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 360" font-family="Segoe UI, -apple-system, sans-serif" role="img" aria-label="Login dialog (admin required)">
+  <defs>
+    <style><![CDATA[
+      .scrim   { fill: rgba(0,0,0,0.55); }
+      .bg      { fill: #0e1114; }
+      .alt     { fill: #161a22; }
+      .panel   { fill: #1a1f28; }
+      .fg      { fill: #e5e7eb; }
+      .dim     { fill: #8b94a6; }
+      .accent  { fill: #7c9cff; }
+      .danger  { fill: #ff6b6b; }
+      .sep     { stroke: #252a34; stroke-width: 1; }
+      text     { font-size: 12px; }
+      .h1      { font-size: 16px; font-weight: 600; fill: #e5e7eb; }
+      .label   { font-size: 11px; fill: #8b94a6; }
+    ]]></style>
+  </defs>
+
+  <!-- Faded backdrop (idle main window) -->
+  <rect class="bg" width="480" height="360"/>
+  <text class="dim" x="20" y="28" font-size="11">Local AI Stack</text>
+  <line class="sep" x1="0" y1="42" x2="480" y2="42"/>
+  <rect class="panel" x="20" y="60" width="440" height="20" rx="4" opacity="0.35"/>
+  <rect class="panel" x="20" y="92" width="280" height="14" rx="3" opacity="0.25"/>
+  <rect class="panel" x="20" y="114" width="380" height="14" rx="3" opacity="0.25"/>
+  <rect class="scrim" width="480" height="360"/>
+
+  <!-- Modal dialog -->
+  <rect fill="rgba(0,0,0,0.45)" x="92" y="76" width="304" height="218" rx="10"/>
+  <rect class="alt" x="88" y="72" width="304" height="218" rx="8"/>
+  <rect class="alt" x="88" y="72" width="304" height="32" rx="8"/>
+  <text class="dim" x="106" y="92" font-size="11">Local AI Stack — Sign in</text>
+  <text class="dim" x="378" y="92" font-size="12">✕</text>
+
+  <text class="h1" x="106" y="130">Admin sign-in required</text>
+  <text class="dim" x="106" y="148" font-size="11">An admin session is needed to open this window.</text>
+
+  <!-- Username -->
+  <text class="label" x="106" y="174">Username</text>
+  <rect class="panel" x="106" y="180" width="268" height="26" rx="5" stroke="#252a34"/>
+  <text class="fg" x="118" y="198" font-family="ui-monospace, Consolas, monospace" font-size="11">admin</text>
+
+  <!-- Password -->
+  <text class="label" x="106" y="222">Password</text>
+  <rect class="panel" x="106" y="228" width="268" height="26" rx="5" stroke="#7c9cff"/>
+  <text class="fg" x="118" y="246" font-size="14" letter-spacing="3">••••••••••••</text>
+
+  <!-- Remember me + buttons -->
+  <rect fill="#7c9cff" x="106" y="266" width="14" height="14" rx="3"/>
+  <text fill="#ffffff" x="109" y="278" font-size="10" font-weight="700">✓</text>
+  <text class="dim" x="126" y="278" font-size="11">Remember username</text>
+
+  <rect class="panel" x="246" y="262" width="60" height="22" rx="5" stroke="#252a34"/>
+  <text class="dim" x="262" y="278" font-size="11">Cancel</text>
+  <rect class="accent" x="312" y="262" width="62" height="22" rx="5"/>
+  <text fill="#ffffff" x="328" y="278" font-size="11" font-weight="600">Sign in</text>
+
+  <!-- Status note -->
+  <text class="dim" x="106" y="316" font-size="10">QSettings remembers your username · sessions live in a JWT cookie</text>
+</svg>
