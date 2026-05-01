@@ -200,17 +200,69 @@ tiers cold-spawn on first request via the
 
 | Tier | Model | Port | `--ctx-size` | VRAM | Role |
 |---|---|---|---|---|---|
-| `highest_quality` | Qwen3-Next 80B-A3B Thinking | 8010 | 65 536 | ~14 GB VRAM + ~33 GB RAM | Hardest reasoning, MoE w/ expert offload |
-| `versatile` | Qwen3.6 35B-A3B (MoE) | 8011 | 65 536 (YaRN ×2) | ~21 GB | Default + orchestrator |
-| `fast` | Qwen3.5 9B | 8012 | 65 536 | ~7 GB | Multi-agent workers |
-| `coding` | Qwen3-Coder-Next 80B-A3B | 8013 | 131 072 (YaRN ×4) | ~24 GB | SWE-bench trained |
-| `vision` | Qwen3.6 35B + mmproj | 8001 | 16 384 | ~21 GB | Images / charts |
-| `embedding` | nomic-embed-text-v1.5 | 8090 | 8 192 | ~1 GB | RAG + memory distillation |
+| `highest_quality` | Qwen3-Next 80B-A3B Thinking | 8010 | 131 072 (YaRN ×4) | ~14.5 GB VRAM + ~33 GB RAM | Hardest reasoning, MoE w/ expert offload + spec decode |
+| `reasoning_max` | GPT-OSS-120B | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in: highest peak quality on hard reasoning, slower (no spec decode — different tokenizer) |
+| `versatile` | Qwen3.6 35B-A3B (MoE) | 8011 | 131 072 (YaRN ×4) | ~6.5 GB | Default + orchestrator (3 slots, expert offload, spec decode) |
+| `fast` | Qwen3.5 9B | 8012 | 65 536 | ~7.5 GB | Multi-agent workers (4 slots, dense + spec decode) |
+| `coding` | Qwen3-Coder-30B-A3B (default) / Qwen3-Coder-Next-80B-A3B (`/coder big`) | 8013 | 131 072 (YaRN ×4) | ~6.5 / ~14.5 GB | Coding tier with switchable 30B/80B variants |
+| `vision` | Qwen3.6 35B + mmproj | 8001 | 65 536 (YaRN ×2) | ~6.5 GB | Images / charts (expert offload, spec decode) |
+| `embedding` | Qwen3-Embedding-4B | 8090 | 32 768 | ~2.8 GB | RAG + memory distillation (2 560-dim, MTEB ~70.0) — hidden from chat dropdown |
 
 GGUF resolution runs on every `-Start` against
 [`config/model-sources.yaml`](config/model-sources.yaml); cached results
-land in `data/models/`. Slash overrides at chat time: `/tier`, `/think`,
-`/solo`, `/swarm`.
+land in `data/models/`. Slash overrides at chat time: `/tier`, `/coder`,
+`/think`, `/solo`, `/swarm`.
+
+### Speculative decoding (lossless)
+
+Every Qwen3-family chat tier (`highest_quality`, `versatile`, `fast`,
+`coding`, `vision`) runs llama.cpp speculative decoding against a tiny
+**Qwen3-0.6B** draft. Speedup typically lands in the 1.5–2× range on
+single-slot tiers, less on parallel-slot tiers where batch capacity is
+already amortized.
+
+llama.cpp uses the standard rejection-sampling algorithm from
+[Leviathan et al. 2023](https://arxiv.org/abs/2211.17192). For each
+generation step:
+
+1. The draft model proposes K tokens (`--draft-max`).
+2. The target model evaluates those K positions in **one** parallel
+   forward pass.
+3. Rejection sampling accepts a prefix of the draft's tokens whose
+   probabilities under the target match the draft's; on rejection the
+   target's own next-token distribution is sampled at the rejection
+   point (corrected by subtracting the draft's contribution).
+
+The math guarantees the **joint output distribution is identical** to
+running the target model alone. There is **no quality tradeoff**, in
+either greedy or temperature-sampled mode. The speedup comes purely
+from amortizing the target's memory bandwidth across K parallel-
+evaluated tokens. We do *not* enable any approximate-decoding modes
+(lookahead, Medusa, EAGLE) — those would change the output
+distribution and lose the lossless guarantee.
+
+The `reasoning_max` tier (GPT-OSS-120B) is the lone exception: GPT-OSS
+uses OpenAI's `o200k_harmony` tokenizer, which is incompatible with
+the Qwen3-0.6B draft. Tokenizer compatibility is a hard requirement
+for the rejection-sampling math, so this tier runs target-only.
+
+### `/coder` — coding-tier variant toggle
+
+The `coding` tier hosts two interchangeable Qwen3-Coder MoE models.
+The default is the smaller, faster 30B; users opt into the larger 80B
+per turn:
+
+```
+/coder big       refactor this whole module    → loads Qwen3-Coder-Next-80B-A3B
+/coder small     one-line bugfix              → loads Qwen3-Coder-30B-A3B
+/coder 80b       …                            → explicit canonical name
+```
+
+Switching variants triggers a re-spawn of the coding tier's
+`llama-server`. The scheduler treats variant mismatch like a
+`parallel_slots` change: evict when idle, queue when busy. Both
+variants share the same `-ot` expert offload pattern, the same
+Qwen3-0.6B speculative draft, and the same `q8_0` KV cache.
 
 ## Configuration
 
@@ -241,6 +293,26 @@ wizard or `-InitEnv`. Never committed.
   revisions only.
 - `MODEL_UPDATE_POLICY` — `auto`, `prompt`, or `skip` for detected
   upstream model updates.
+- `RAG_EMBED_DIM` (default: `2560`) — Output dimension of the embedding
+  tier. Default matches Qwen3-Embedding-4B. Override only if you swap
+  the embedding model for one with a different dim. Existing Qdrant
+  collections at the old dim are **incompatible** after a change — run
+  `python scripts/reembed_knowledge.py` to rebuild them.
+
+### After upgrading the embedding tier
+
+`scripts/reembed_knowledge.py` re-embeds every user's RAG and memory
+collections after a model dimension change:
+
+```bash
+python scripts/reembed_knowledge.py --dry-run     # enumerate, show plan
+python scripts/reembed_knowledge.py               # do the work
+python scripts/reembed_knowledge.py --user 7      # restrict to one user
+```
+
+Requires the embedding tier to be running (which the launcher's `-Start`
+brings up alongside Qdrant). Points without a `chunk_text` payload are
+skipped and need manual handling.
 
 ## API endpoints
 
