@@ -164,6 +164,9 @@ class AgentEvent(BaseModel):
         # the b8992 / Qwen3 lineup; older clients silently ignore types
         # they don't recognize.
         "tier.loading", "vram.making_room", "queue",
+        # KV pressure manager dropped low-importance segments before
+        # dispatch so the tier's KV slot wouldn't engage RAM spillover.
+        "kv.spillover",
     ]
     data: dict[str, Any] = Field(default_factory=dict)
 

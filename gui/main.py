@@ -1,12 +1,15 @@
 """Qt application entry point.
 
-Launched by LocalAIStack.ps1 in one of two modes:
+Launched by LocalAIStack.ps1 in one of three modes:
 
     # default — chat window + tray; used on -Start
     vendor\\venv-gui\\Scripts\\pythonw.exe gui/main.py --api http://127.0.0.1:18000
 
     # admin window only; used on -Admin
     vendor\\venv-gui\\Scripts\\pythonw.exe gui/main.py --mode admin --api http://127.0.0.1:18000
+
+    # setup wizard; used on -SetupGui (first-run + installer reconfigure)
+    vendor\\venv-gui\\Scripts\\pythonw.exe gui/main.py --mode wizard
 
 No browser is opened, ever. All UI is native Qt.
 """
@@ -32,9 +35,9 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="LocalAIStack GUI")
     p.add_argument(
         "--mode",
-        choices=("chat", "admin"),
+        choices=("chat", "admin", "wizard"),
         default="chat",
-        help="chat (default, tray + chat window) | admin (login + admin window)",
+        help="chat (default, tray + chat window) | admin (login + admin window) | wizard (first-run / reconfigure setup)",
     )
     p.add_argument("--api", default="http://127.0.0.1:18000", help="Backend base URL")
     p.add_argument("--token", default=None, help="Optional pre-authenticated bearer token")
@@ -81,6 +84,16 @@ def main() -> int:
         # Admin-only: no chat window, no tray. Quit on dialog close.
         app.setQuitOnLastWindowClosed(True)
         asyncio.ensure_future(_run_admin_mode(app, client))
+    elif args.mode == "wizard":
+        # First-run / reconfigure: show the setup wizard, no tray.
+        # Spawned by LocalAIStack.ps1 -SetupGui or the installer's
+        # -Reconfigure path.
+        from gui.windows.setup_wizard import SetupWizard
+        app.setQuitOnLastWindowClosed(True)
+        wiz = SetupWizard()
+        wiz.show()
+        # Hold a strong ref so Qt doesn't garbage-collect the window.
+        app._setup_wizard = wiz  # type: ignore[attr-defined]
     else:
         chat = ChatWindow(client)
         chat.show()
