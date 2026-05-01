@@ -374,15 +374,27 @@ async def vram_status():
 async def resolved_models():
     """Returns data/resolved-models.json — written by backend.model_resolver
     before each -Start. Native GUI reads this to show the tier status tab.
+
+    Annotates each tier with `available: bool` based on whether the
+    GGUF actually exists on disk (the manifest is written eagerly when
+    the resolver decides which file to fetch, before the pull finishes,
+    so `gguf_path` being present does NOT mean the file is downloaded).
+    The chat UI uses this to disable tier options that are still
+    mid-download.
     """
     data_dir = Path(os.getenv("LAI_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
     path = data_dir / "resolved-models.json"
+    empty = {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
     if not path.exists():
-        return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
+        return empty
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
+        return empty
+    for tier_name, info in (data.get("tiers") or {}).items():
+        gguf = info.get("gguf_path")
+        info["available"] = bool(gguf and Path(gguf).exists())
+    return data
 
 
 def _read_meminfo() -> dict[str, int]:

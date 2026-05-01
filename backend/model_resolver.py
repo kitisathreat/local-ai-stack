@@ -339,10 +339,15 @@ def pull_missing_hf_files(
              across calls in our setup — but a fresh call resumes from
              the partial blob in ~/.cache/huggingface, so we just retry.
 
-        Retry up to 8 times per file with exponential-ish backoff
-        (capped at 30 s). Re-raises only after exhausting attempts.
+        For multi-GB GGUFs the CDN tends to drop connections every
+        ~100 MB / 60 s, so an 8-attempt budget never finishes — a 46 GB
+        file would need ~500 retries to stitch through. We allow up to
+        500 attempts and back off shorter (capped at 10 s) so wall-clock
+        progress dominates over wait time. This is fine for the
+        IncompleteRead / timeout class of errors; genuine 4xx-style
+        failures are still surfaced after the budget is exhausted.
         """
-        max_attempts = 8
+        max_attempts = 500
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
@@ -362,13 +367,19 @@ def pull_missing_hf_files(
                 # Backoff for transient network errors. The next call
                 # will pick up the partial blob from ~/.cache/huggingface
                 # so we don't lose what already streamed in.
-                sleep_s = min(30, 2 ** attempt)
-                logger.warning(
-                    "hf_hub_download attempt %d/%d failed (%s) — retrying in %ds",
-                    attempt, max_attempts,
-                    msg.splitlines()[0][:140] if msg else type(exc).__name__,
-                    sleep_s,
-                )
+                # Short backoff: HF CDN drops are transient and
+                # waiting longer just costs throughput. Capped at 10 s.
+                sleep_s = min(10, 2 + (attempt % 4))
+                # Only log every 10th retry past attempt 10 — these can
+                # accumulate to hundreds for a 46 GB file and we don't
+                # want to flood the log with the same one-liner.
+                if attempt <= 10 or attempt % 10 == 0:
+                    logger.warning(
+                        "hf_hub_download attempt %d/%d failed (%s) — retrying in %ds",
+                        attempt, max_attempts,
+                        msg.splitlines()[0][:140] if msg else type(exc).__name__,
+                        sleep_s,
+                    )
                 time.sleep(sleep_s)
         assert last_exc is not None
         raise last_exc
