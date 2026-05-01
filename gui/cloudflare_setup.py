@@ -14,6 +14,7 @@ All subprocess calls raise CloudflareSetupError on non-zero exit.
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -21,6 +22,15 @@ import subprocess
 import yaml
 
 CERT_MAX_AGE_DAYS = 90
+
+# When this module runs under pythonw.exe (no console), subprocess calls
+# inherit no stdin/stdout handles. Without CREATE_NO_WINDOW the child
+# briefly flashes a console window AND on some Windows versions fails
+# silently when it tries to write to its inherited (null) stdout. The
+# flag is a Windows-only constant so we gate the lookup.
+_NO_WINDOW = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+)
 
 
 class CloudflareSetupError(Exception):
@@ -61,22 +71,35 @@ def _run_cloudflared(
     cloudflared_dir: pathlib.Path | None = None,
     timeout: int = 120,
 ) -> str:
-    """Run cloudflared with *args*, return stdout. Raises CloudflareSetupError on failure."""
+    """Run cloudflared with *args*, return stdout. Raises CloudflareSetupError on failure.
+
+    Uses CREATE_NO_WINDOW on Windows so the wizard (running under pythonw.exe)
+    doesn't flash a console window and doesn't silently break when the child
+    inherits a null console handle.
+    """
     exe = str(cloudflared or find_cloudflared())
     cmd = [exe] + list(args)
+    # cloudflared writes its banner to stderr; we capture both and return
+    # stdout. Some subcommands (`tunnel route dns`) emit only on stderr.
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
+        creationflags=_NO_WINDOW,
     )
     if result.returncode != 0:
+        # Surface stderr to the caller — that's where cloudflared writes
+        # its actionable error messages (DNS conflicts, auth errors).
+        msg = (result.stderr or result.stdout or "").strip()
         raise CloudflareSetupError(
             f"cloudflared {' '.join(args[:2])} exited {result.returncode}: "
-            f"{result.stderr.strip()[-500:]}",
+            f"{msg[-500:]}",
             stderr=result.stderr,
         )
-    return result.stdout
+    # Combine stdout + stderr so callers that parse for the tunnel UUID
+    # find it regardless of which stream cloudflared used.
+    return (result.stdout or "") + "\n" + (result.stderr or "")
 
 
 def _parse_tunnel_uuid(stdout: str) -> str:
@@ -171,6 +194,10 @@ def run_login(cloudflared: pathlib.Path | None = None) -> subprocess.Popen:
 
     cloudflared opens the system browser automatically and writes cert.pem
     when the user completes the OAuth flow.
+
+    Under pythonw.exe (no console) we MUST pass CREATE_NO_WINDOW; without
+    it the child inherits a null console and silently exits before
+    opening the browser.
     """
     exe = str(cloudflared or find_cloudflared())
     return subprocess.Popen(
@@ -178,19 +205,86 @@ def run_login(cloudflared: pathlib.Path | None = None) -> subprocess.Popen:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        creationflags=_NO_WINDOW,
     )
 
 
+def find_remote_tunnel_by_name(
+    name: str, cloudflared: pathlib.Path | None = None,
+) -> str | None:
+    """Look up an existing tunnel by name in the user's Cloudflare account.
+
+    Uses `cloudflared tunnel list --output json --name <n>`. Returns the
+    tunnel UUID if a non-deleted tunnel with that name exists, else None.
+    Lets `create_tunnel` be idempotent so re-running the wizard doesn't
+    fail with "tunnel already exists".
+    """
+    try:
+        out = _run_cloudflared(
+            ["tunnel", "list", "--output", "json", "--name", name],
+            cloudflared=cloudflared,
+            timeout=30,
+        )
+    except CloudflareSetupError:
+        return None
+    # cloudflared prints a JSON array to stdout (sometimes preceded by a
+    # banner line on stderr; we combine streams in _run_cloudflared).
+    # Find the first '[' through the matching ']' so we ignore any noise.
+    m = re.search(r"\[\s*(?:\{[\s\S]*?\}\s*,?\s*)*\]", out)
+    if not m:
+        return None
+    try:
+        tunnels = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    for t in tunnels or []:
+        if (t.get("name") or "").lower() != name.lower():
+            continue
+        # Skip soft-deleted entries. cloudflared writes "0001-01-01T00:00:00Z"
+        # as the zero-value timestamp for live tunnels — that's *not* deleted.
+        deleted_at = (t.get("deleted_at") or "").strip()
+        if deleted_at and not deleted_at.startswith("0001-01-01"):
+            continue
+        tid = t.get("id") or t.get("ID")
+        if tid:
+            return str(tid)
+    return None
+
+
 def create_tunnel(name: str, cloudflared: pathlib.Path | None = None) -> str:
-    """Create a Cloudflare Tunnel named *name*.  Returns the UUID string."""
-    stdout = _run_cloudflared(["tunnel", "create", name], cloudflared=cloudflared, timeout=60)
+    """Create a Cloudflare Tunnel named *name*. Returns the UUID string.
+
+    Idempotent: if a tunnel with that name already exists in the account,
+    its UUID is returned without recreating. This handles the "user
+    clicked Connect, the create succeeded, then the wizard crashed before
+    saving the UUID" replay case.
+    """
+    existing = find_remote_tunnel_by_name(name, cloudflared=cloudflared)
+    if existing:
+        return existing
+    stdout = _run_cloudflared(
+        ["tunnel", "create", name], cloudflared=cloudflared, timeout=60,
+    )
     return _parse_tunnel_uuid(stdout)
 
 
-def route_dns(tunnel_id: str, hostname: str, cloudflared: pathlib.Path | None = None) -> None:
-    """Route *hostname* to tunnel *tunnel_id*."""
-    _run_cloudflared(["tunnel", "route", "dns", tunnel_id, hostname],
-                     cloudflared=cloudflared, timeout=60)
+def route_dns(
+    tunnel_id: str,
+    hostname: str,
+    cloudflared: pathlib.Path | None = None,
+    *,
+    overwrite: bool = True,
+) -> None:
+    """Route *hostname* to tunnel *tunnel_id*.
+
+    `overwrite=True` (the default) passes ``-f`` so a stale CNAME from a
+    previous tunnel is replaced rather than triggering a 1003 error.
+    """
+    args = ["tunnel", "route", "dns"]
+    if overwrite:
+        args.append("-f")
+    args += [tunnel_id, hostname]
+    _run_cloudflared(args, cloudflared=cloudflared, timeout=60)
 
 
 def write_config_yml(
@@ -211,3 +305,20 @@ def find_existing_tunnel(cloudflared_dir: pathlib.Path | None = None) -> dict | 
 def install_service(cloudflared: pathlib.Path | None = None) -> None:
     """Install cloudflared as a Windows service (requires elevation)."""
     _run_cloudflared(["service", "install"], cloudflared=cloudflared, timeout=30)
+
+
+def cloudflared_login_via_terminal(
+    cloudflared: pathlib.Path | None = None,
+) -> subprocess.Popen:
+    """Launch `cloudflared tunnel login` in a NEW console window.
+
+    Useful when the wizard is hosted by pythonw.exe and we want the user
+    to see the URL/banner cloudflared prints. Falls back to `run_login`
+    when CREATE_NEW_CONSOLE isn't available (non-Windows).
+    """
+    exe = str(cloudflared or find_cloudflared())
+    flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if os.name == "nt" else 0
+    return subprocess.Popen(
+        [exe, "tunnel", "login"],
+        creationflags=flags,
+    )

@@ -79,6 +79,11 @@ FIELD_SMTP_FROM = "smtp_from"
 # Worker thread for long-running setup steps
 # ---------------------------------------------------------------------------
 
+_NO_WINDOW_FLAG = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+)
+
+
 class _WorkerThread(QThread):
     line_emitted = Signal(str)
     finished = Signal(int, str)  # exit_code, last_line
@@ -96,6 +101,7 @@ class _WorkerThread(QThread):
                 stderr=subprocess.STDOUT,
                 text=True,
                 cwd=self._cwd,
+                creationflags=_NO_WINDOW_FLAG,
             )
             last = ""
             for line in proc.stdout:
@@ -106,6 +112,46 @@ class _WorkerThread(QThread):
             self.finished.emit(proc.returncode, last)
         except Exception as e:
             self.finished.emit(1, str(e))
+
+
+class _ProvisionTunnelWorker(QThread):
+    """Runs the synchronous cloudflared tunnel-create / route-dns / write-config
+    flow off the Qt UI thread. Each step that takes >1s on the main thread
+    would otherwise freeze the wizard window for the duration."""
+
+    progress = Signal(str)
+    # tunnel_id, tunnel_name, error_message — error empty on success
+    finished_with_result = Signal(str, str, str)
+
+    def __init__(self, hostname: str, domain: str, cloudflared_path):
+        super().__init__()
+        self._hostname = hostname
+        self._domain = domain
+        self._cf = cloudflared_path
+
+    def run(self) -> None:
+        from gui.cloudflare_setup import (
+            create_tunnel, route_dns, write_config_yml, CloudflareSetupError,
+        )
+        name = (
+            f"local-ai-stack-{self._domain.replace('.', '-')}"
+            if self._domain else "local-ai-stack"
+        )
+        try:
+            self.progress.emit(f"Creating tunnel '{name}'…")
+            tunnel_id = create_tunnel(name, self._cf)
+            self.progress.emit(
+                f"✓ Tunnel {tunnel_id[:8]}… ready. Routing DNS for {self._hostname}…"
+            )
+            # overwrite=True replaces any stale CNAME from a deleted tunnel.
+            route_dns(tunnel_id, self._hostname, self._cf, overwrite=True)
+            self.progress.emit("✓ DNS routed. Writing config.yml…")
+            write_config_yml(tunnel_id, self._hostname)
+            self.finished_with_result.emit(tunnel_id, name, "")
+        except CloudflareSetupError as exc:
+            self.finished_with_result.emit("", "", str(exc))
+        except Exception as exc:  # pragma: no cover — defensive
+            self.finished_with_result.emit("", "", f"Unexpected error: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +404,7 @@ class _TunnelPage(QWizardPage):
     def _run_cloudflare_setup(self) -> None:
         from gui.cloudflare_setup import (
             find_cloudflared, run_login, _needs_login, find_existing_tunnel,
-            create_tunnel, route_dns, write_config_yml, CloudflareSetupError
+            CloudflareSetupError,
         )
 
         hostname = self._hostname_edit.text().strip()
@@ -366,7 +412,7 @@ class _TunnelPage(QWizardPage):
             QMessageBox.warning(self, "Missing hostname", "Enter the chat hostname first.")
             return
 
-        # Check for existing tunnel
+        # Local config.yml-managed existing tunnel? Offer to adopt it.
         existing = find_existing_tunnel()
         if existing:
             reply = QMessageBox.question(
@@ -376,7 +422,7 @@ class _TunnelPage(QWizardPage):
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
-                self._tunnel_uuid = existing["uuid"]
+                self._tunnel_uuid = existing["tunnel_id"]
                 self._cf_status.setText(f"✓ Adopted existing tunnel {self._tunnel_uuid[:8]}…")
                 self.completeChanged.emit()
                 return
@@ -391,12 +437,19 @@ class _TunnelPage(QWizardPage):
             return
 
         if _needs_login():
-            self._cf_status.setText("Opening browser for Cloudflare login…")
-            self._login_proc = run_login(cf)
-            self._cert_watcher = QFileSystemWatcher([str(_CF_DIR)])
+            # Make sure the directory exists BEFORE we tell QFileSystemWatcher
+            # to watch it — addPath silently no-ops on missing paths.
             _CF_DIR.mkdir(parents=True, exist_ok=True)
+            self._cf_status.setText("Opening browser for Cloudflare login…")
+            try:
+                self._login_proc = run_login(cf)
+            except OSError as exc:
+                self._cf_status.setText(f"✗ Could not start cloudflared: {exc}")
+                self._cf_btn.setEnabled(True)
+                return
+            self._cert_watcher = QFileSystemWatcher([str(_CF_DIR)])
             self._cert_watcher.directoryChanged.connect(self._on_cf_dir_changed)
-            self._poll_timer = QTimer()
+            self._poll_timer = QTimer(self)
             self._poll_timer.setInterval(2000)
             self._poll_timer.timeout.connect(self._poll_cert)
             self._poll_timer.start()
@@ -433,26 +486,31 @@ class _TunnelPage(QWizardPage):
         self._provision_tunnel(cf, hostname)
 
     def _provision_tunnel(self, cf, hostname: str) -> None:
-        from gui.cloudflare_setup import (
-            create_tunnel, route_dns, write_config_yml, CloudflareSetupError
-        )
+        # Run synchronous cloudflared CLI off the Qt UI thread. Each
+        # cloudflared call can take 5–60 s; doing them inline here would
+        # freeze the wizard window for the entire duration.
         domain = self._domain_edit.text().strip()
-        name = f"local-ai-stack-{domain.replace('.', '-')}" if domain else "local-ai-stack"
-        try:
-            tunnel_id = create_tunnel(name, cf)
-            self._tunnel_uuid = tunnel_id
-            self._tunnel_name = name
-            self._cf_status.setText(f"✓ Tunnel {tunnel_id[:8]}… created. Routing DNS…")
-            route_dns(tunnel_id, hostname, cf)
-            write_config_yml(tunnel_id, hostname)
-            self._cf_status.setText(
-                f"✓ Tunnel ready. DNS routed to {hostname}.\n"
-                "(DNS propagation may take up to 5 minutes.)"
-            )
-            self.completeChanged.emit()
-        except CloudflareSetupError as e:
-            self._cf_status.setText(f"✗ {e}")
+        self._provision_worker = _ProvisionTunnelWorker(hostname, domain, cf)
+        self._provision_worker.progress.connect(self._cf_status.setText)
+        self._provision_worker.finished_with_result.connect(self._on_provision_done)
+        # Ensure the worker survives until it finishes — Qt would otherwise
+        # GC it once `_run_cloudflare_setup` returns.
+        self._provision_worker.finished.connect(self._provision_worker.deleteLater)
+        self._provision_worker.start()
+
+    def _on_provision_done(self, tunnel_id: str, name: str, error: str) -> None:
+        if error:
+            self._cf_status.setText(f"✗ {error}")
             self._cf_btn.setEnabled(True)
+            return
+        hostname = self._hostname_edit.text().strip()
+        self._tunnel_uuid = tunnel_id
+        self._tunnel_name = name
+        self._cf_status.setText(
+            f"✓ Tunnel ready. DNS routed to {hostname}.\n"
+            "(DNS propagation may take up to 5 minutes.)"
+        )
+        self.completeChanged.emit()
 
     def isComplete(self) -> bool:
         if self._local_radio.isChecked():
@@ -673,11 +731,18 @@ class _FinishPage(QWizardPage):
             "MODEL_UPDATE_POLICY=prompt",
         ]
 
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata and (pathlib.Path(local_appdata) / "LocalAIStack").exists():
-            data_root = pathlib.Path(local_appdata) / "LocalAIStack"
+        # The launcher reads .env from the repo root. Installed-mode
+        # (LAI_INSTALLED=1, Inno Setup layout) splits code from per-user
+        # data, but until that path lands the launcher still owns the
+        # repo-root file.
+        if os.environ.get("LAI_INSTALLED") == "1":
+            local_appdata = os.environ.get("LOCALAPPDATA")
+            data_root = (
+                pathlib.Path(local_appdata) / "LocalAIStack"
+                if local_appdata else _REPO
+            )
         else:
-            data_root = _REPO / "data"
+            data_root = _REPO
 
         data_root.mkdir(parents=True, exist_ok=True)
         env_path = data_root / ".env"
