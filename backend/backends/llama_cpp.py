@@ -142,6 +142,23 @@ def build_argv(tier: TierConfig) -> list[str]:
         argv += list(tier.extra_args)
     for pattern in tier.override_tensors:
         argv += ["-ot", pattern]
+    # Speculative decoding. When a draft GGUF is resolved for this tier,
+    # llama-server runs Leviathan-style spec decode against it: the
+    # draft proposes draft_max tokens, the target verifies them in one
+    # parallel batch, rejection-sampling keeps the joint distribution
+    # identical to running the target alone. Quality is preserved
+    # exactly — speedup is purely from amortizing memory bandwidth.
+    # Required: draft and target must share a tokenizer (caller's
+    # responsibility — the YAML wires Qwen3-0.6B for Qwen3-family tiers
+    # only). Flag spelling matches llama.cpp ≥ b8992 (LocalAIStack.ps1
+    # pinned version).
+    if tier.draft_gguf_path:
+        argv += [
+            "-md", tier.draft_gguf_path,
+            "-ngld", str(tier.draft_n_gpu_layers),
+            "--draft-max", str(tier.draft_max),
+            "--draft-min", str(tier.draft_min),
+        ]
     return argv
 
 

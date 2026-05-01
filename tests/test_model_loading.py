@@ -214,3 +214,56 @@ def test_build_argv_no_ot_when_field_empty():
     )
     argv = build_argv(tier)
     assert "-ot" not in argv
+
+
+# ── build_argv: speculative-decode flags ──────────────────────────────────────
+
+def test_build_argv_emits_draft_flags_when_draft_set():
+    """When draft_gguf_path is set, -md/-ngld/--draft-max/--draft-min appear."""
+    from backend.config import TierConfig
+    from backend.backends.llama_cpp import build_argv
+
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        gguf_path="/tmp/fake.gguf",
+        port=9999,
+        draft_model_tag="qwen3-0.6b",
+        draft_gguf_path="/tmp/draft.gguf",
+        draft_n_gpu_layers=-1,
+        draft_max=8,
+        draft_min=4,
+    )
+    argv = build_argv(tier)
+    # -md exists exactly once with the draft path immediately after
+    md_idxs = [i for i, a in enumerate(argv) if a == "-md"]
+    assert len(md_idxs) == 1
+    assert argv[md_idxs[0] + 1] == "/tmp/draft.gguf"
+    # tunables are emitted as flag/value pairs
+    ngld_idxs = [i for i, a in enumerate(argv) if a == "-ngld"]
+    assert len(ngld_idxs) == 1
+    assert argv[ngld_idxs[0] + 1] == "-1"
+    dmax_idxs = [i for i, a in enumerate(argv) if a == "--draft-max"]
+    assert len(dmax_idxs) == 1
+    assert argv[dmax_idxs[0] + 1] == "8"
+    dmin_idxs = [i for i, a in enumerate(argv) if a == "--draft-min"]
+    assert len(dmin_idxs) == 1
+    assert argv[dmin_idxs[0] + 1] == "4"
+
+
+def test_build_argv_no_draft_flags_when_unset():
+    """Backward compat: tiers without a draft GGUF emit no spec-decode flags."""
+    from backend.config import TierConfig
+    from backend.backends.llama_cpp import build_argv
+
+    tier = TierConfig(
+        name="t",
+        context_window=4096,
+        gguf_path="/tmp/fake.gguf",
+        port=9999,
+    )
+    argv = build_argv(tier)
+    assert "-md" not in argv
+    assert "-ngld" not in argv
+    assert "--draft-max" not in argv
+    assert "--draft-min" not in argv
