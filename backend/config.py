@@ -92,6 +92,37 @@ class TierConfig(BaseModel):
     use_mlock: bool = False
     spawn_timeout_sec: int = 180
 
+    # ── Speculative decoding ───────────────────────────────────────────
+    # When `draft_gguf_path` is set at runtime (resolved from
+    # `draft_model_tag` via model-sources.yaml), build_argv emits
+    # `-md / -ngld / --draft-max / --draft-min` flags so llama-server
+    # runs speculative decoding against the draft model. The algorithm
+    # is the standard Leviathan et al. 2023 rejection-sampling variant
+    # implemented in llama.cpp — mathematically equivalent to sampling
+    # from the target alone, so output quality is unchanged. Speedup
+    # comes from amortizing memory bandwidth across `--draft-max`
+    # parallel-evaluated tokens per target step.
+    #
+    # Tokenizer compatibility is REQUIRED: the draft and target must
+    # share a tokenizer (same vocab + merges) or rejection sampling is
+    # undefined. Qwen3-0.6B is the universal draft for the Qwen3 family.
+    draft_model_tag: str | None = None
+    draft_gguf_path: str | None = None
+    draft_n_gpu_layers: int = -1
+    draft_max: int = 8
+    draft_min: int = 4
+
+    # ── Per-tier model variants (e.g. coding 30B vs 80B) ───────────────
+    # When a tier defines `variants:`, each entry overrides a small set
+    # of fields (model_tag/gguf_path/vram/draft_*). At request time the
+    # router can set a variant override (slash command); the loader
+    # calls `resolve_variant(name)` to obtain a TierConfig copy with
+    # the variant fields applied before spawning. The base TierConfig
+    # itself acts as the fallback when no variant is requested AND
+    # `default_variant` is None.
+    variants: dict[str, "TierVariant"] = Field(default_factory=dict)
+    default_variant: str | None = None
+
     def resolved_endpoint(self) -> str:
         """Return the OpenAI-compatible base URL for this tier.
 
@@ -105,6 +136,52 @@ class TierConfig(BaseModel):
         if self.port is None:
             raise ValueError(f"tier {self.name!r} has no port or endpoint")
         return f"http://127.0.0.1:{self.port}/v1"
+
+    def resolve_variant(self, variant: str | None) -> "TierConfig":
+        """Return a TierConfig with the requested variant's overrides applied.
+
+        Selection order:
+          1. explicit `variant` arg
+          2. `self.default_variant`
+          3. fall through to `self` unchanged
+        """
+        chosen = variant or self.default_variant
+        if not chosen or chosen not in self.variants:
+            return self
+        v = self.variants[chosen]
+        updates: dict[str, Any] = {}
+        for field in (
+            "model_tag", "gguf_path", "vram_estimate_gb",
+            "draft_model_tag", "draft_gguf_path", "draft_max", "draft_min",
+            "context_window", "override_tensors",
+        ):
+            value = getattr(v, field, None)
+            if value is not None and value != [] and value != {}:
+                updates[field] = value
+        return self.model_copy(update=updates)
+
+
+class TierVariant(BaseModel):
+    """A named override set for a TierConfig (e.g. coding tier's 30B vs 80B).
+
+    All fields are optional — only the ones explicitly set are applied.
+    Keep this surface narrow: variants exist to swap the model + its
+    immediate runtime sizing, not to reconfigure the tier wholesale.
+    """
+
+    model_tag: str | None = None
+    gguf_path: str | None = None
+    vram_estimate_gb: float | None = None
+    draft_model_tag: str | None = None
+    draft_gguf_path: str | None = None
+    draft_max: int | None = None
+    draft_min: int | None = None
+    context_window: int | None = None
+    override_tensors: list[str] = Field(default_factory=list)
+
+
+# Forward-ref resolution: TierConfig.variants references TierVariant.
+TierConfig.model_rebuild()
 
 
 class ModelsConfig(BaseModel):
