@@ -57,11 +57,75 @@
       background: var(--panel); display: flex; gap: 8px;
       max-width: 960px; margin: 0 auto; width: 100%;
     }
-    #composer {
-      flex: 1; resize: none; background: #22252e; color: var(--fg);
-      border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
-      font: inherit; min-height: 44px; max-height: 200px;
+    #composer-wrap {
+      flex: 1; position: relative; display: flex; flex-direction: column;
+      background: #22252e; border: 1px solid var(--border); border-radius: 6px;
     }
+    #composer {
+      resize: none; background: transparent; color: var(--fg);
+      border: 0; padding: 8px 10px 4px 10px;
+      font: inherit; min-height: 44px; max-height: 200px;
+      outline: none;
+    }
+    .composer-tools {
+      display: flex; align-items: center; gap: 4px;
+      padding: 0 6px 6px 6px;
+    }
+    .icon-btn {
+      background: transparent; color: var(--muted);
+      border: 1px solid transparent; border-radius: 4px;
+      padding: 4px 8px; cursor: pointer; font: inherit; font-size: 12px;
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .icon-btn:hover { color: var(--fg); border-color: var(--border); }
+    #attach-input { display: none; }
+    #attached-list {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      padding: 0 6px;
+    }
+    .chip {
+      background: #2a2d36; border: 1px solid var(--border);
+      border-radius: 12px; padding: 2px 8px; font-size: 11px;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .chip .x { cursor: pointer; color: var(--muted); }
+    .chip .x:hover { color: var(--danger); }
+    #tools-popover {
+      position: absolute; bottom: 100%; left: 0; margin-bottom: 6px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px; min-width: 280px; max-height: 320px;
+      overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 10;
+    }
+    #tools-popover.hidden { display: none; }
+    #tools-popover .tool-row {
+      display: flex; align-items: center; gap: 8px; padding: 4px 2px;
+      font-size: 12.5px;
+    }
+    #tools-popover .tool-row label {
+      flex: 1; cursor: pointer; color: var(--fg);
+    }
+    #tools-popover .tool-search {
+      width: 100%; background: #22252e; color: var(--fg);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 4px 6px; margin-bottom: 6px; font: inherit; font-size: 12px;
+    }
+    /* iOS-style toggle switch */
+    .toggle {
+      position: relative; width: 30px; height: 16px; flex-shrink: 0;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider {
+      position: absolute; inset: 0; background: #44474f; border-radius: 16px;
+      cursor: pointer; transition: background .15s;
+    }
+    .toggle .slider::before {
+      content: ''; position: absolute; left: 2px; top: 2px;
+      width: 12px; height: 12px; background: white; border-radius: 50%;
+      transition: transform .15s;
+    }
+    .toggle input:checked + .slider { background: var(--accent); }
+    .toggle input:checked + .slider::before { transform: translateX(14px); }
+    .toggle input:disabled + .slider { opacity: 0.4; cursor: not-allowed; }
     #send {
       background: var(--accent); color: white; border: 0;
       border-radius: 6px; padding: 0 18px; cursor: pointer;
@@ -116,7 +180,19 @@
     </header>
     <div id="main"><div id="log"></div></div>
     <footer>
-      <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
+      <div id="composer-wrap">
+        <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
+        <div id="attached-list"></div>
+        <div class="composer-tools">
+          <button class="icon-btn" id="tools-btn" title="Enable tools">🔧 Tools <span id="tools-count" style="color:var(--muted);"></span></button>
+          <button class="icon-btn" id="attach-btn" title="Attach files">📎 Attach</button>
+          <input type="file" id="attach-input" multiple>
+          <div id="tools-popover" class="hidden">
+            <input type="text" class="tool-search" id="tool-search" placeholder="Filter tools…">
+            <div id="tools-list"></div>
+          </div>
+        </div>
+      </div>
       <button id="send">Send</button>
     </footer>
   </div>
@@ -220,7 +296,43 @@
       logEl.innerHTML = '';
     });
 
+    // Pretty-name a tier id: "highest_quality" → "Highest quality"
+    function tierLabel(id) {
+      const stripped = id.replace(/^tier[._-]/i, '');
+      return stripped.charAt(0).toUpperCase() + stripped.slice(1).replace(/_/g, ' ');
+    }
+    // Pull a clean model name out of an HF repo or filename:
+    //   "bartowski/Qwen2.5-72B-Instruct-GGUF" → "Qwen2.5-72B-Instruct"
+    //   "Qwen2.5-72B-Instruct-Q4_K_M.gguf"   → "Qwen2.5-72B-Instruct"
+    function specificModel(info) {
+      const repo = info && (info.repo || info.model_id);
+      const file = info && info.filename;
+      let s = '';
+      if (repo) {
+        s = repo.split('/').pop() || repo;
+      } else if (file) {
+        s = file;
+      } else {
+        return '';
+      }
+      return s
+        .replace(/\.gguf$/i, '')
+        .replace(/-?GGUF$/i, '')
+        .replace(/[-_.]?Q[0-9]+(_K(_[A-Z]+)?|_[01])?$/i, '');
+    }
+
     async function loadModels() {
+      // Fetch /v1/models for the available tier list and /resolved-models
+      // for the per-tier specific model name. We render labels as
+      // "Category: Specific Model" instead of the raw id.
+      let resolved = {};
+      try {
+        const rr = await api('/resolved-models');
+        if (rr.ok) {
+          const j = await rr.json();
+          resolved = j.tiers || {};
+        }
+      } catch (_) {}
       try {
         const r = await api('/v1/models');
         const { data } = await r.json();
@@ -228,10 +340,108 @@
         (data || []).forEach(m => {
           const o = document.createElement('option');
           o.value = m.id;
-          o.textContent = (m.owned_by ? m.owned_by + ' — ' : '') + m.id;
+          // Backend ids look like "tier.highest_quality"; strip the
+          // "tier." prefix when looking up info, and use the trailing
+          // segment for the human label.
+          const key = m.id.replace(/^tier\./, '');
+          const info = resolved[key] || resolved[m.id] || {};
+          const cat = tierLabel(key);
+          const model = specificModel(info);
+          o.textContent = model ? `${cat}: ${model}` : cat;
           modelEl.appendChild(o);
         });
       } catch (_) {}
+    }
+
+    // ── Tools popover ─────────────────────────────────────────────────
+    const toolsBtn = $('tools-btn');
+    const toolsPop = $('tools-popover');
+    const toolsList = $('tools-list');
+    const toolsCount = $('tools-count');
+    const toolSearch = $('tool-search');
+    const toolState = new Map();   // name → enabled (boolean)
+
+    async function loadTools() {
+      try {
+        const r = await api('/tools');
+        if (!r.ok) return;
+        const j = await r.json();
+        toolState.clear();
+        (j.data || []).forEach(t => {
+          toolState.set(t.name, !!t.default_enabled && !t.airgap_blocked);
+        });
+        renderTools();
+      } catch (_) {}
+    }
+
+    function renderTools() {
+      const q = (toolSearch.value || '').toLowerCase();
+      const rows = [];
+      toolState.forEach((enabled, name) => {
+        if (q && !name.toLowerCase().includes(q)) return;
+        rows.push({ name, enabled });
+      });
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      toolsList.innerHTML = '';
+      rows.forEach(({ name, enabled }) => {
+        const row = document.createElement('div');
+        row.className = 'tool-row';
+        row.innerHTML = `
+          <label for="tool-${cssId(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</label>
+          <span class="toggle"><input type="checkbox" id="tool-${cssId(name)}" ${enabled ? 'checked' : ''}><span class="slider"></span></span>
+        `;
+        const cb = row.querySelector('input');
+        cb.addEventListener('change', () => {
+          toolState.set(name, cb.checked);
+          updateToolsCount();
+        });
+        toolsList.appendChild(row);
+      });
+      updateToolsCount();
+    }
+    function cssId(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+    function updateToolsCount() {
+      let n = 0; toolState.forEach(v => { if (v) n++; });
+      toolsCount.textContent = n ? `(${n})` : '';
+    }
+
+    toolsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toolsPop.classList.toggle('hidden');
+    });
+    toolSearch.addEventListener('input', renderTools);
+    document.addEventListener('click', (e) => {
+      if (!toolsPop.contains(e.target) && e.target !== toolsBtn) {
+        toolsPop.classList.add('hidden');
+      }
+    });
+
+    // ── Attach files ─────────────────────────────────────────────────
+    const attachBtn = $('attach-btn');
+    const attachInput = $('attach-input');
+    const attachedList = $('attached-list');
+    const attached = [];   // [{name, size, file}]
+
+    attachBtn.addEventListener('click', () => attachInput.click());
+    attachInput.addEventListener('change', () => {
+      for (const f of attachInput.files) {
+        attached.push({ name: f.name, size: f.size, file: f });
+      }
+      attachInput.value = '';
+      renderAttached();
+    });
+    function renderAttached() {
+      attachedList.innerHTML = '';
+      attached.forEach((a, i) => {
+        const c = document.createElement('span');
+        c.className = 'chip';
+        c.innerHTML = `${escapeHtml(a.name)} <span class="x" data-i="${i}">×</span>`;
+        c.querySelector('.x').addEventListener('click', () => {
+          attached.splice(i, 1);
+          renderAttached();
+        });
+        attachedList.appendChild(c);
+      });
     }
 
     function appendMsg(role, text) {

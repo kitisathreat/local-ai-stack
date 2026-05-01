@@ -32,50 +32,50 @@
 tiers:
   highest_quality:
     source: huggingface
-    repo: "bartowski/Qwen3-72B-GGUF"
-    file: "*Q3_K_M.gguf"
+    repo: "bartowski/Qwen2.5-72B-Instruct-GGUF"
+    file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-72B-Q3_K_M.gguf"
+      file: "Qwen2.5-72B-Instruct-Q4_K_M.gguf"
 
   versatile:
     source: huggingface
-    repo: "Qwen/Qwen3.6-35B-A3B-GGUF"
+    repo: "bartowski/Qwen2.5-32B-Instruct-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+      file: "Qwen2.5-32B-Instruct-Q4_K_M.gguf"
 
   fast:
     source: huggingface
-    repo: "bartowski/Qwen3.5-9B-GGUF"
+    repo: "bartowski/Qwen2.5-7B-Instruct-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3.5-9B-Q4_K_M.gguf"
+      file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 
   coding:
     source: huggingface
-    repo: "bartowski/Qwen_Qwen3-Next-80B-A3B-Thinking-GGUF"
-    file: "*Q4_K_XL.gguf"
+    repo: "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"
+    file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen_Qwen3-Next-80B-A3B-Thinking-Q4_K_XL.gguf"
+      file: "Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"
 
   vision:
     source: huggingface
-    repo: "Qwen/Qwen3.6-35B-A3B-VL-GGUF"
+    repo: "bartowski/Qwen2-VL-7B-Instruct-GGUF"
     file: "*Q4_K_M.gguf"
-    mmproj: "*mmproj*F16.gguf"
+    mmproj: "*mmproj*f16.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3.6-35B-A3B-VL-Q4_K_M.gguf"
-      mmproj: "mmproj-F16.gguf"
+      file: "Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+      mmproj: "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
 
   embedding:
     source: huggingface
