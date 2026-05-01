@@ -220,19 +220,27 @@ if _static_dir.exists():
 
 # CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
 # Cloudflare Tunnel hostname is set via setup-cloudflared.sh. Local dev
-# defaults to wildcard. We warn if wildcard+credentials is configured since
-# browsers ignore that combination.
-_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
-if _allowed_origins == ["*"]:
+# defaults to wildcard.
+#
+# Browsers reject `Access-Control-Allow-Origin: *` when the response also
+# carries `Access-Control-Allow-Credentials: true`, so emitting both is
+# never useful — Starlette's startup diagnostics (`security.cors`) flag
+# the combination as a hard FAIL. Auto-disable credentials when the
+# operator hasn't pinned origins; re-enable as soon as they do.
+_allowed_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()
+]
+_cors_allow_credentials = _allowed_origins != ["*"]
+if not _cors_allow_credentials:
     logger.warning(
-        "CORS set to wildcard with credentials=True — browsers will ignore "
-        "credentials. Set ALLOWED_ORIGINS to your Cloudflare hostname in "
-        "production (see scripts/setup-cloudflared.sh)."
+        "CORS origin is wildcard ('*'). Disabling allow_credentials so the "
+        "config is browser-valid. Set ALLOWED_ORIGINS to your Cloudflare "
+        "hostname (e.g. 'https://chat.example.com') to re-enable cookies."
     )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=True,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["content-type"],

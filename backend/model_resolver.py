@@ -201,10 +201,30 @@ def load_sources(path: Path | None = None) -> dict[str, dict]:
     return data.get("tiers") or {}
 
 
-def resolve(*, force: bool = False, offline: bool | None = None) -> ResolveResult:
+def resolve(
+    *,
+    force: bool = False,
+    offline: bool | None = None,
+    tiers: list[str] | None = None,
+) -> ResolveResult:
+    """Resolve model versions for all tiers (or just *tiers* when provided).
+
+    `tiers` is an optional allow-list of tier names from
+    `config/model-sources.yaml`. When set, resolution and pull are
+    restricted to those tiers — the wizard's "Select which models to
+    download" checkboxes use this.
+    """
     if offline is None:
         offline = os.getenv("OFFLINE", "").strip() in {"1", "true", "yes"}
     sources = load_sources()
+    if tiers:
+        # Tolerate common alias the wizard sends ('embed' → 'embedding')
+        # and case variations. Unknown names are silently dropped.
+        wanted = {t.strip().lower() for t in tiers if t}
+        if "embed" in wanted:
+            wanted.discard("embed")
+            wanted.add("embedding")
+        sources = {k: v for k, v in sources.items() if k.lower() in wanted}
     cache_path = _data_dir() / "model-cache.json"
 
     if not force and cache_path.exists():
@@ -376,10 +396,16 @@ def _main() -> int:
         help="with --pull, enumerate would-be-pulled tiers without downloading. "
              "Exits non-zero if any tier resolved with an error.",
     )
+    r.add_argument(
+        "--tier", action="append", dest="tiers", default=None, metavar="NAME",
+        help="Restrict resolve+pull to specific tier(s). Repeatable. "
+             "If unspecified, all tiers in model-sources.yaml are processed. "
+             "Aliases: 'embed' → 'embedding'.",
+    )
     args = parser.parse_args()
 
     if args.cmd == "resolve":
-        result = resolve(force=args.force, offline=args.offline)
+        result = resolve(force=args.force, offline=args.offline, tiers=args.tiers)
         for tier, info in result.resolved.items():
             flag = " (update!)" if info.update_available else ""
             err = f"  ERROR: {info.error}" if info.error else ""

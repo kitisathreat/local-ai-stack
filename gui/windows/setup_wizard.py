@@ -597,74 +597,16 @@ class _SmtpPage(QWizardPage):
 
 
 # ---------------------------------------------------------------------------
-# Page 6 — Models (skippable)
+# (Models page removed — auto-pull on first -Start instead.)
+# The launcher invokes `model_resolver resolve --pull` whenever any
+# tier's GGUF is missing on disk, so the user never has to make a
+# checkbox decision they can't easily undo. See Invoke-Start in
+# LocalAIStack.ps1.
 # ---------------------------------------------------------------------------
-
-class _ModelsPage(QWizardPage):
-    def __init__(self):
-        super().__init__()
-        self.setTitle("Model Downloads")
-        self.setSubTitle(
-            "Select which models to download now. "
-            "You can download more later from the admin panel."
-        )
-        layout = QVBoxLayout(self)
-
-        self._fast_cb = QCheckBox("Fast tier — ~7 GB (recommended)")
-        self._fast_cb.setChecked(True)
-        layout.addWidget(self._fast_cb)
-
-        self._versatile_cb = QCheckBox("Versatile tier — ~40 GB")
-        layout.addWidget(self._versatile_cb)
-
-        self._vision_cb = QCheckBox("Vision tier — ~25 GB (optional, needed for image input)")
-        layout.addWidget(self._vision_cb)
-
-        self._embed_cb = QCheckBox("Embedding model — ~270 MB (needed for RAG / memory)")
-        self._embed_cb.setChecked(True)
-        layout.addWidget(self._embed_cb)
-
-        self._dl_btn = QPushButton("Download selected now…")
-        self._dl_btn.clicked.connect(self._download)
-        layout.addWidget(self._dl_btn)
-
-        self._log = QPlainTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setMaximumHeight(150)
-        layout.addWidget(self._log)
-
-        self._worker: _WorkerThread | None = None
-
-    def _download(self) -> None:
-        if self._worker and self._worker.isRunning():
-            return
-        python = str(_VENV_BACKEND) if _VENV_BACKEND.exists() else sys.executable
-        tiers = []
-        if self._fast_cb.isChecked():
-            tiers += ["--tier", "fast"]
-        if self._versatile_cb.isChecked():
-            tiers += ["--tier", "versatile"]
-        if self._embed_cb.isChecked():
-            tiers += ["--tier", "embed"]
-        if self._vision_cb.isChecked():
-            tiers += ["--tier", "vision"]
-        if not tiers:
-            QMessageBox.information(self, "Nothing selected", "Select at least one tier.")
-            return
-        self._dl_btn.setEnabled(False)
-        self._worker = _WorkerThread(
-            [python, "-m", "backend.model_resolver", "resolve", "--pull"] + tiers
-        )
-        self._worker.line_emitted.connect(self._log.appendPlainText)
-        self._worker.finished.connect(lambda code, _: self._dl_btn.setEnabled(True))
-        self._worker.start()
-
-    def isComplete(self) -> bool:
-        return True  # skippable
 
 
 # ---------------------------------------------------------------------------
-# Page 7 — Finish
+# Page 6 — Finish
 # ---------------------------------------------------------------------------
 
 class _FinishPage(QWizardPage):
@@ -796,13 +738,18 @@ class SetupWizard(QWizard):
         self.setWizardStyle(QWizard.ModernStyle)
         self.resize(700, 520)
 
+        # Model selection deliberately omitted: the launcher (-Start) auto-
+        # pulls every tier in config/model-sources.yaml the first time it
+        # finds a GGUF missing on disk. The previous _ModelsPage exposed
+        # only 4 of the 5 chat tiers (missing coding + highest_quality)
+        # AND passed CLI flags the resolver didn't accept — net effect was
+        # bugs without giving users meaningful control.
         self.addPage(_WelcomePage())        # page id 0
         self.addPage(_AdminAccountPage())   # page id 1
         self.addPage(_SecretsPage())        # page id 2
         self.addPage(_TunnelPage())         # page id 3
         self.addPage(_SmtpPage())           # page id 4
-        self.addPage(_ModelsPage())         # page id 5
-        self.addPage(_FinishPage())         # page id 6
+        self.addPage(_FinishPage())         # page id 5
 
 
 # ---------------------------------------------------------------------------

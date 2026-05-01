@@ -395,17 +395,37 @@ function Invoke-Start {
     }
     Apply-Env (Read-EnvFile)
 
-    # ── Resolve models ───────────────────────────────────────────────
+    # ── Resolve + auto-pull missing GGUFs ─────────────────────────────
+    # On first -Start (or any time a tier's GGUF is missing on disk),
+    # we run `resolve --pull` so the user doesn't need a separate
+    # download step. The pull is idempotent: already-downloaded files
+    # are skipped, so re-running -Start is cheap.
+    $modelsDir = Join-Path $DataDir 'models'
+    $expectedTiers = @('highest_quality','versatile','fast','coding','vision','embedding')
+    $missing = @($expectedTiers | Where-Object {
+        -not (Test-Path (Join-Path $modelsDir "$_.gguf"))
+    })
+
     if ($NoUpdateCheck -or $Offline -or $Env:OFFLINE -eq '1') {
         Write-Warn2 'Skipping upstream model poll (offline or -NoUpdateCheck).'
         $Env:OFFLINE = '1'
+        if ($missing.Count -gt 0) {
+            Write-Warn2 "Missing tier GGUFs: $($missing -join ', ') — those tiers will be unavailable until you re-run -Start online."
+        }
     } else {
-        Write-Step 'Resolving model versions (HuggingFace)'
         $py = Join-Path $VendorDir 'venv-backend\Scripts\python.exe'
-        if (Test-Path $py) {
-            & $py -m backend.model_resolver resolve
-        } else {
+        if (-not (Test-Path $py)) {
             Write-Warn2 "Backend venv missing — skipping resolution (run -Setup first)"
+        } elseif ($missing.Count -gt 0) {
+            Write-Step "Resolving + pulling $($missing.Count) missing GGUF tier(s) from HuggingFace: $($missing -join ', ')"
+            Write-Host "   .. this may take a while on first run; subsequent -Starts skip already-downloaded files." -ForegroundColor DarkGray
+            & $py -m backend.model_resolver resolve --pull
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn2 "model_resolver returned exit $LASTEXITCODE — some tiers may still be missing"
+            }
+        } else {
+            Write-Step 'Resolving model versions (HuggingFace) — all GGUFs already on disk'
+            & $py -m backend.model_resolver resolve
         }
     }
 

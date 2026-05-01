@@ -167,9 +167,16 @@ def check_cors_config(
         raw = os.environ.get("ALLOWED_ORIGINS", "*")
         origins = [o.strip() for o in raw.split(",") if o.strip()]
     if allow_credentials is None:
-        allow_credentials = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in (
+        # Mirror backend/main.py's auto-disable: when origins is exactly
+        # `["*"]`, the runtime overrides allow_credentials to False
+        # regardless of CORS_ALLOW_CREDENTIALS, because the combination
+        # is rejected by all modern browsers anyway. The diagnostic must
+        # reflect that decision or it raises a hard FAIL on a config
+        # the runtime is silently fixing.
+        env_pref = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() in (
             "1", "true", "yes"
         )
+        allow_credentials = env_pref and origins != ["*"]
     if "*" in origins and allow_credentials:
         return _fail(
             name,
@@ -178,6 +185,11 @@ def check_cors_config(
         )
     if not origins:
         return _warn(name, "ALLOWED_ORIGINS is empty — all CORS requests will be blocked")
+    if origins == ["*"] and not allow_credentials:
+        return _ok(
+            name,
+            "CORS wildcard origin with credentials disabled — browser-valid",
+        )
     return _ok(name, f"CORS configured with {len(origins)} explicit origin(s)")
 
 
