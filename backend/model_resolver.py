@@ -217,6 +217,11 @@ def resolve(
     if offline is None:
         offline = os.getenv("OFFLINE", "").strip() in {"1", "true", "yes"}
     sources = load_sources()
+
+    # Build the tier allow-list once; both fresh-resolve and cache-hit
+    # branches need it. (Earlier the cache branch ignored the filter
+    # AND the local `tiers = {…}` rebind shadowed the parameter.)
+    wanted: set[str] | None = None
     if tiers:
         # Tolerate common alias the wizard sends ('embed' → 'embedding')
         # and case variations. Unknown names are silently dropped.
@@ -225,17 +230,26 @@ def resolve(
             wanted.discard("embed")
             wanted.add("embedding")
         sources = {k: v for k, v in sources.items() if k.lower() in wanted}
+
     cache_path = _data_dir() / "model-cache.json"
 
     if not force and cache_path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
             if time.time() - cached.get("resolved_at", 0) < CACHE_TTL_SECONDS:
-                tiers = {
+                cached_tiers = cached.get("tiers") or {}
+                if wanted is not None:
+                    cached_tiers = {
+                        k: v for k, v in cached_tiers.items()
+                        if k.lower() in wanted
+                    }
+                resolved_from_cache = {
                     k: Resolved(**{**v, "origin": "cache"})
-                    for k, v in (cached.get("tiers") or {}).items()
+                    for k, v in cached_tiers.items()
                 }
-                return ResolveResult(resolved=tiers, cached=True, offline=offline)
+                return ResolveResult(
+                    resolved=resolved_from_cache, cached=True, offline=offline,
+                )
         except Exception as exc:
             logger.debug("Model cache read failed: %s", exc)
 

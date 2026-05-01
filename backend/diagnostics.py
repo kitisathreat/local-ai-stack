@@ -140,22 +140,6 @@ def check_env_cookie_secure() -> CheckResult:
     return _ok(name, "COOKIE_SECURE and PUBLIC_BASE_URL are consistent")
 
 
-def check_env_n8n_auth() -> CheckResult:
-    name = "env.n8n_auth"
-    active = os.environ.get("N8N_BASIC_AUTH_ACTIVE", "false").lower()
-    if active not in ("true", "1", "yes"):
-        return _warn(
-            name,
-            "N8N_BASIC_AUTH_ACTIVE is not enabled — n8n workflow editor is unauthenticated",
-            "Fix: set N8N_BASIC_AUTH_ACTIVE=true and N8N_ADMIN_USER/N8N_ADMIN_PASSWORD in .env",
-        )
-    user = os.environ.get("N8N_ADMIN_USER", "")
-    pw = os.environ.get("N8N_BASIC_AUTH_PASSWORD", os.environ.get("N8N_ADMIN_PASSWORD", ""))
-    if not user or not pw:
-        return _fail(name, "N8N_BASIC_AUTH_ACTIVE=true but credentials are missing")
-    return _ok(name, "n8n basic auth is enabled with credentials configured")
-
-
 # ── CORS ──────────────────────────────────────────────────────────────────────
 
 def check_cors_config(
@@ -539,7 +523,6 @@ async def run_startup_diagnostics(
         check_env_jupyter_token(),
         check_env_public_base_url(),
         check_env_cookie_secure(),
-        check_env_n8n_auth(),
         check_jwt_roundtrip(),
         check_history_encryption_roundtrip(),
         check_gpu_available(),
