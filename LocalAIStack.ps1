@@ -400,7 +400,16 @@ function Invoke-Start {
     # so the user gets ONE actionable message rather than bouncing off
     # the first failure. Skip the dialog when running with -NoGui (CI)
     # since CI parses stdout, not Win32 message boxes.
-    if (Get-Command Invoke-Preflight -ErrorAction SilentlyContinue) {
+    #
+    # Skip preflight entirely in CI's smoke-test pattern
+    # (-NoGui -Offline -NoUpdateCheck): that combination means "spin
+    # the stack up briefly to prove it starts" — there's no admin
+    # user, no GGUFs, and no network access by design. Real users
+    # never pass that triple.
+    $isCiSmoke = $NoGui -and $Offline -and $NoUpdateCheck
+    if ($isCiSmoke) {
+        Write-Warn2 'Preflight skipped (-NoGui -Offline -NoUpdateCheck = CI smoke-test).'
+    } elseif (Get-Command Invoke-Preflight -ErrorAction SilentlyContinue) {
         $pre = Invoke-Preflight -RepoRoot $RepoRoot -VendorDir $VendorDir `
                                 -DataDir $DataDir -EnvFile $EnvFile
         foreach ($e in $pre.errors)   { Write-Err  $e }
