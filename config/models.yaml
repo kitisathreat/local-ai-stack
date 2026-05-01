@@ -15,50 +15,80 @@
 default: versatile
 
 tiers:
-  # ── Highest Quality — Qwen3 72B dense, hardest reasoning ────────────────────
+  # ── Highest Quality — Qwen3-Next 80B-A3B Thinking, MoE w/ hybrid attention ──
+  # Replacement for the previous Qwen3-72B dense tier. The 72B was kept
+  # alive on this 24 GB GPU via partial-layer offload + stability hacks
+  # (flash_attention: false, --no-mmap, --mlock). Those are workarounds
+  # for *dense* partial offload corruption — they don't apply here
+  # because Qwen3-Next is MoE: only the routed expert tensors spill to
+  # system RAM via -ot, while every attention layer stays GPU-resident.
+  #
+  # Why this model:
+  #   - 80B total / 3B active → ~45-55 tok/s on Kit's DDR5 even with
+  #     experts in RAM. Faster than the old 72B (~5-10 t/s) by ~6-10x.
+  #   - Hybrid attention (Gated DeltaNet + Gated Attention) → q4_0 KV
+  #     cache is lossless (per llama.cpp #21385); enables longer ctx
+  #     without VRAM pressure.
+  #   - Thinking mode (separate variant from -Instruct) — strong
+  #     reasoning despite smaller total parameter count than 72B dense.
+  #   - 256K native context, extensible to 1M with YaRN.
+  #
+  # Alternatives considered:
+  #   - GPT-OSS-120B: higher peak quality on hard reasoning, native
+  #     MXFP4 (no quant loss), but 5.1B active = ~25-35 t/s (1.7x
+  #     slower); standard attention forces q8_0 KV cache; heavier
+  #     safety tuning. Documented as the swap if Qwen3-Next reasoning
+  #     proves too thin.
+  #   - Qwen3.5-122B-A10B: more total params but 10B active = ~12-18
+  #     t/s, much slower on RAM offload.
+  #   - Qwen3.6-35B-A3B (newer than Qwen3-Next): same 3B active, same
+  #     speed, BETTER benchmarks (AIME 92.7, GPQA 86.0) — but smaller
+  #     total (35B) and ALREADY used by the versatile tier. Could be
+  #     considered as a "highest_quality = same model + thinking on"
+  #     setup if 80B-Next feels heavy in practice.
   highest_quality:
-    name: "Highest Quality (Qwen3 72B)"
-    description: "Maximum reasoning quality. Slow (~5-10 t/s with partial CPU offload). Use for hardest problems."
+    name: "Highest Quality (Qwen3-Next 80B-A3B Thinking)"
+    description: "MoE with 3B active params, hybrid attention, thinking mode. ~45-55 t/s with expert offload to RAM."
     backend: llama_cpp
     port: 8010
-    model_tag: "qwen3-72b"
-    context_window: 32768
-    think_default: false                 # Qwen3 emits long reasoning_content the
-                                         # web UI silently drops; defaults to off.
-                                         # User opts in via the Think checkbox.
+    model_tag: "qwen3-next-80b-a3b-thinking"
+    context_window: 65536
+    think_default: true                  # Thinking variant — defaults on; user
+                                         # can opt out via the Think checkbox.
     think_supported: true
+    preserve_thinking: true
     params:
-      temperature: 0.7
-      top_p: 0.9
+      temperature: 0.6
+      top_p: 0.95
       top_k: 20
+      min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 24                 # near-full GPU offload at IQ4_XS
-                                         # (~50 of 80 layers fit; 30 on CPU)
+    vram_estimate_gb: 14                 # attention + KV cache + embeddings on
+                                         # GPU (~12-14 GB at 65k ctx, parallel=1).
+                                         # MoE experts (~33 GB) live in system RAM.
     parallel_slots: 1
-    n_gpu_layers: -1
-    # ── Partial-offload stability overrides ─────────────────────────
-    # The 72B model at IQ4_XS is ~37 GB — too large to fit on a 24 GB
-    # GPU. llama.cpp will auto-offload ~50 layers to GPU and ~30 to
-    # CPU. The plain settings (flash-attn on, mmap on, no mlock)
-    # produced numerically corrupted attention at that split. These
-    # three overrides together restored coherent output:
-    flash_attention: false               # FA between GPU and CPU layers can
-                                         # mishandle the boundary, corrupting
-                                         # attention scores. Slower without it
-                                         # but stable.
-    use_mmap: false                      # → --no-mmap. Forces full RAM load
-                                         # of the CPU-resident layers; without
-                                         # this they're paged from disk and
-                                         # variable latency desyncs the GPU
-                                         # compute pipeline.
-    use_mlock: true                      # → --mlock. Pins those layers in
-                                         # RAM so the OS can't swap them out
-                                         # under memory pressure.
-    cache_type_k: q8_0                   # KV cache fp16 worked too but q8_0
-                                         # is tighter and the imatrix-calibrated
-                                         # weights keep activations in range.
-    cache_type_v: q8_0
+    n_gpu_layers: -1                     # base case = everything to GPU; the
+                                         # -ot below pulls the experts back to CPU.
+    flash_attention: true                # Re-enabled (was false on the dense 72B).
+                                         # Safe here because every attention layer
+                                         # is GPU-resident — no FA boundary issue.
+    use_mmap: true                       # Re-enabled. MoE expert tensors stream
+                                         # from mmap'd file into RAM lazily; the
+                                         # OS page cache absorbs hot experts.
+    use_mlock: false                     # Don't pin — let the page cache evict
+                                         # cold experts under memory pressure.
+    cache_type_k: q4_0                   # Hybrid attention → q4_0 lossless.
+    cache_type_v: q4_0                   # Symmetric K/V keeps fused FA active.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"              # The single line that makes spillover
+                                         # quality good: experts to RAM, every-
+                                         # thing else (attention, KV, embed,
+                                         # non-expert MLP) stays on the GPU.
+    rope_scaling:
+      type: yarn
+      factor: 4.0
+      orig_ctx: 32768
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:

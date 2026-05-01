@@ -30,34 +30,28 @@
 # config/models.yaml does not need to track exact filenames.
 
 tiers:
-  # Qwen3 72B at IQ4_XS — preserved 72B for hardest-reasoning tier
-  # using stability overrides that make partial CPU/GPU offload work
-  # on a 24 GB GPU.
+  # Qwen3-Next 80B-A3B Thinking — MoE w/ hybrid attention.
+  # Replaces the old Qwen3-72B dense + mradermacher i1 setup.
+  # Unsloth's GGUF release ships UD-Q4_K_XL with critical layers
+  # (attention, embed, output) at 8-bit even in the 4-bit file — this
+  # is what keeps coherence intact when the experts spill to RAM.
   #
-  # Three things working together vs. the Q4_K_M attempt that produced
-  # garbage output:
-  #   1. IQ4_XS (~37 GB) instead of Q4_K_M (~46 GB) — about 50 of 80
-  #      layers fit on GPU instead of 35; the smaller CPU residue is
-  #      less likely to corrupt attention numerics at the boundary.
-  #   2. mradermacher's i1-GGUF (imatrix-calibrated) instead of plain
-  #      quants — imatrix uses calibration data to keep activations
-  #      in a tighter distribution per quant block, measurably more
-  #      numerically stable than the naive variants.
-  #   3. Runtime flags (in config/models.yaml): --no-mmap + --mlock
-  #      pin the CPU-resident layers in real RAM (no disk paging
-  #      latency); flash_attention: false avoids the FA boundary
-  #      bug between GPU and CPU layers.
+  # File size: ~45 GB on disk. VRAM resident: ~12-14 GB. RAM resident
+  # (experts): ~33 GB. Active per token: 3B → DDR5-bandwidth-bound,
+  # not compute-bound, so the 70W TDP of the RTX Pro 4000 SFF doesn't
+  # matter much here.
   #
-  # Tradeoff vs. the 32B option: ~5-10 t/s instead of ~30 t/s, and
-  # needs ~50 GB system RAM. Quality is 72B-class.
+  # If Unsloth hasn't published a UD-Q4_K_XL of the Thinking variant
+  # yet, the resolver falls back to the pinned filename below; if that
+  # also misses, it'll try bartowski's mirror automatically.
   highest_quality:
     source: huggingface
-    repo: "mradermacher/Qwen3-72B-Instruct-i1-GGUF"
-    file: "*i1-IQ4_XS.gguf"
+    repo: "unsloth/Qwen3-Next-80B-A3B-Thinking-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-72B-Instruct.i1-IQ4_XS.gguf"
+      file: "Qwen3-Next-80B-A3B-Thinking-UD-Q4_K_XL.gguf"
 
   # Qwen3.6 35B-A3B (MoE) — default + orchestrator. Unsloth UD-Q4_K_XL
   # keeps attention/embed/output layers at 8-bit even in the 4-bit file

@@ -41,12 +41,15 @@ logger = logging.getLogger(__name__)
 # exact numbers — Ollama clamps `num_gpu` to the model's real layer count
 # — but picking a sensible default helps us scale the offload ratio.
 _LAYER_HINTS = {
+    # Current chat tiers
+    "qwen3-next-80b-a3b": 48,            # Hybrid: ~25% full-attn + ~75% GDN/Mamba
+    "qwen3.6-35b-a3b": 64,
+    "qwen3.5-9b": 40,
+    "qwen3-coder-30b-a3b": 48,
+    # Legacy entries kept for graceful fallback during migration
     "qwen3:72b": 80,
-    "qwen3.6:35b": 64,
-    "qwen3.5:9b": 40,
     "qwen3-coder-next:80b": 80,
     "qwen2.5-coder:32b": 64,
-    "qwen3.6-35b-a3b": 64,
 }
 
 
