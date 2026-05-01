@@ -23,6 +23,7 @@
 [CmdletBinding(DefaultParameterSetName = 'Start')]
 param(
     [Parameter(ParameterSetName = 'Setup')]           [switch]$Setup,
+    [Parameter(ParameterSetName = 'SetupGui')]        [switch]$SetupGui,
     [Parameter(ParameterSetName = 'Start')]           [switch]$Start,
     [Parameter(ParameterSetName = 'Stop')]            [switch]$Stop,
     [Parameter(ParameterSetName = 'Build')]           [switch]$Build,
@@ -395,6 +396,23 @@ function Invoke-Start {
     Ensure-Dir $AppData
     Ensure-Dir $LogsDir
 
+    # Diagnostic preflight: aggregate every "missing component" check
+    # so the user gets ONE actionable message rather than bouncing off
+    # the first failure. Skip the dialog when running with -NoGui (CI)
+    # since CI parses stdout, not Win32 message boxes.
+    if (Get-Command Invoke-Preflight -ErrorAction SilentlyContinue) {
+        $pre = Invoke-Preflight -RepoRoot $RepoRoot -VendorDir $VendorDir `
+                                -DataDir $DataDir -EnvFile $EnvFile
+        foreach ($e in $pre.errors)   { Write-Err  $e }
+        foreach ($w in $pre.warnings) { Write-Warn2 $w }
+        if (-not $pre.ok) {
+            if (-not $NoGui -and (Get-Command Show-PreflightDialog -ErrorAction SilentlyContinue)) {
+                Show-PreflightDialog -Result $pre
+            }
+            throw "Startup blocked by preflight. " + $pre.suggestion
+        }
+    }
+
     if (-not (Test-Path $EnvFile)) {
         Write-Warn2 ".env missing — creating default. Edit it and re-run."
         Invoke-InitEnv
@@ -593,7 +611,7 @@ function Invoke-Test {
 
 # ── BuildInstaller (Inno Setup) ──────────────────────────────────────────────
 function Invoke-BuildInstaller {
-    Write-Step 'Building LocalAIStack.exe (ps2exe)…'
+    Write-Step 'Building LocalAIStack.exe + LocalAIStackInstaller.exe (ps2exe)…'
     Invoke-Build
 
     Write-Step 'Freezing GUI with PyInstaller…'
@@ -618,23 +636,65 @@ function Invoke-BuildInstaller {
 
 # ── Build (ps2exe) ───────────────────────────────────────────────────────────
 function Invoke-Build {
+    # Compiles BOTH binaries in one pass:
+    #   LocalAIStack.exe          ← runtime (this file)
+    #   LocalAIStackInstaller.exe ← installer/Installer.ps1
+    # The two are bundled together by Inno Setup but only LocalAIStack.exe
+    # gets the user-visible Start-menu / desktop shortcuts. The installer
+    # is reachable via Apps & Features → Modify and a "Reconfigure"
+    # Start-menu entry.
     if (-not (Get-Module -ListAvailable -Name ps2exe)) {
         Write-Warn2 'ps2exe module missing — installing…'
         Install-Module -Name ps2exe -Scope CurrentUser -Force -AllowClobber
     }
     Import-Module ps2exe
     $icon = Join-Path $AssetsDir 'icon.ico'
-    $out  = Join-Path $RepoRoot 'LocalAIStack.exe'
-    $splat = @{
+
+    # Runtime EXE
+    $runtimeOut = Join-Path $RepoRoot 'LocalAIStack.exe'
+    $runtimeSplat = @{
         InputFile  = $MyInvocation.MyCommand.Path
-        OutputFile = $out
+        OutputFile = $runtimeOut
         NoConsole  = $true
         Title      = 'Local AI Stack'
         Company    = 'Local AI Stack'
     }
-    if (Test-Path $icon) { $splat['IconFile'] = $icon }
-    Invoke-ps2exe @splat
-    Write-Ok "Built $out"
+    if (Test-Path $icon) { $runtimeSplat['IconFile'] = $icon }
+    Invoke-ps2exe @runtimeSplat
+    Write-Ok "Built $runtimeOut"
+
+    # Installer EXE
+    $installerSrc = Join-Path $RepoRoot 'installer\Installer.ps1'
+    if (Test-Path $installerSrc) {
+        $installerOut = Join-Path $RepoRoot 'LocalAIStackInstaller.exe'
+        $installerSplat = @{
+            InputFile  = $installerSrc
+            OutputFile = $installerOut
+            NoConsole  = $true
+            Title      = 'Local AI Stack Installer'
+            Company    = 'Local AI Stack'
+            requireAdmin = $true   # prereqs / vendor downloads need admin
+        }
+        if (Test-Path $icon) { $installerSplat['IconFile'] = $icon }
+        Invoke-ps2exe @installerSplat
+        Write-Ok "Built $installerOut"
+    } else {
+        Write-Warn2 "installer\Installer.ps1 missing — skipped LocalAIStackInstaller.exe build"
+    }
+}
+
+# ── SetupGui ─────────────────────────────────────────────────────────────────
+# Runs ONLY the setup wizard (no prereq check, no vendor downloads). Used
+# by the installer's -Reconfigure path when the user wants to change
+# .env values without re-running the whole setup pipeline.
+function Invoke-SetupGui {
+    Apply-Env (Read-EnvFile)
+    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
+    if (-not (Test-Path $guiPy)) {
+        throw "GUI venv missing at $guiPy — run -Setup (full) first."
+    }
+    Write-Step 'Launching setup wizard for reconfiguration'
+    & $guiPy (Join-Path $RepoRoot 'gui\main.py') '--mode' 'wizard'
 }
 
 # ── Admin ────────────────────────────────────────────────────────────────────
@@ -672,6 +732,7 @@ if (Test-Path $StepsDir) {
 if ($Help)             { Invoke-Help;             return }
 if ($InitEnv)          { Invoke-InitEnv;          return }
 if ($Setup)            { Invoke-Setup;             return }
+if ($SetupGui)         { Invoke-SetupGui;          return }
 if ($Stop)             { Invoke-Stop;              return }
 if ($Build)            { Invoke-Build;             return }
 if ($BuildInstaller)   { Invoke-BuildInstaller;    return }
