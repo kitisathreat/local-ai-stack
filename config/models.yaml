@@ -52,7 +52,11 @@ tiers:
     backend: llama_cpp
     port: 8010
     model_tag: "qwen3-next-80b-a3b-thinking"
-    context_window: 65536
+    context_window: 131072               # 131k via YaRN factor 4.0 below; the
+                                         # model is native 256K but we cap here
+                                         # to keep KV cache bounded at parallel=1.
+                                         # ~2-3 GB KV cache at q4_0 on the 12 full-
+                                         # attn layers of the 48-layer hybrid stack.
     think_default: true                  # Thinking variant — defaults on; user
                                          # can opt out via the Think checkbox.
     think_supported: true
@@ -97,7 +101,10 @@ tiers:
     backend: llama_cpp
     port: 8011
     model_tag: "qwen3.6-35b-a3b"
-    context_window: 65536                # was 16384; YaRN-extended
+    context_window: 131072               # was 65536; doubled now that expert
+                                         # offload (Step 5) freed ~15 GB of
+                                         # VRAM. Qwen3.6 is native 262K so
+                                         # this is well within trained range.
     think_default: false
     think_supported: true
     preserve_thinking: true             # Qwen3.6 feature — carries reasoning across agent turns
@@ -111,7 +118,11 @@ tiers:
     vram_estimate_gb: 6                  # was 21 — experts now spill to RAM via -ot.
                                          # GPU holds attention + KV + embeddings only.
     is_orchestrator: true
-    parallel_slots: 2
+    parallel_slots: 3                    # was 2; the q4_0 KV on hybrid attention
+                                         # is so cheap (~1 GB at 131k × 3 slots)
+                                         # that adding a third slot is essentially
+                                         # free. Lets the orchestrator host more
+                                         # concurrent multi-agent subtasks.
     n_gpu_layers: -1
     flash_attention: true
     # Qwen3.6-35B-A3B is hybrid attention: ~75% of layers are Gated
@@ -127,7 +138,8 @@ tiers:
       - ".ffn_.*_exps.=CPU"
     rope_scaling:
       type: yarn
-      factor: 2.0
+      factor: 4.0                       # was 2.0; updated for context_window
+                                         # 131072 (= 4.0 × orig_ctx 32768).
       orig_ctx: 32768
 
   # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
@@ -168,9 +180,12 @@ tiers:
     port: 8013
     model_tag: "qwen3-coder-30b-a3b"
     fallback_tag: "qwen2.5-coder-32b"
-    context_window: 65536               # 30B-A3B fits 64k ctx in 24 GB VRAM
-                                        # alongside the model. The 80B variant's
-                                        # 256k YaRN context isn't reachable here.
+    context_window: 131072              # was 65536; doubled now that expert
+                                        # offload (Step 5) freed ~14 GB. With
+                                        # standard (non-hybrid) attention, KV
+                                        # cache at q8_0 lands at ~6.5 GB at
+                                        # 131k × 1 slot — fits comfortably.
+                                        # Bigger ctx = more of a codebase fits.
     think_default: false                # was true (80B); 30B coder is faster and
                                         # users typically don't want reasoning
                                         # blocks on simple coding turns. User
@@ -210,7 +225,10 @@ tiers:
     port: 8001
     model_tag: "qwen3.6-35b-a3b"
     mmproj_path: "data/models/vision.mmproj.gguf"
-    context_window: 16384
+    context_window: 65536                # was 16384; quadrupled now that
+                                         # expert offload freed ~15 GB. Lets
+                                         # the vision tier carry larger
+                                         # documents and multi-image conversations.
     think_default: false
     think_supported: true
     chat_template_kwargs:
@@ -237,6 +255,10 @@ tiers:
     # MoE expert offload — same pattern as versatile.
     override_tensors:
       - ".ffn_.*_exps.=CPU"
+    rope_scaling:
+      type: yarn
+      factor: 2.0                       # 65536 = 2.0 × orig_ctx 32768.
+      orig_ctx: 32768
 
   # ── Embedding — nomic-embed-text-v1.5, pre-spawned, pinned ──────────────────
   embedding:
