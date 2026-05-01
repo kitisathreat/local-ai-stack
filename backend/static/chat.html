@@ -226,9 +226,74 @@
       background: var(--accent); color: white; border: 0;
       border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
     }
-    @media (max-width: 640px) {
-      #log, footer { padding: 10px; }
-      #sidebar { display: none; }
+    /* ── Mobile / phone layout ──────────────────────────────────────
+       Two triggers wear this hat: the CSS @media query (viewport
+       width) and the JS-applied `body.is-phone` class (UA + touch +
+       coarse pointer). The media query handles small desktop windows
+       too; the class lets us also adapt iPad-sized phones in landscape
+       and force the touch-friendly layout on real phones regardless of
+       a user-zoom that would otherwise cross 640px. */
+    #menu-btn { display: none; }
+    #drawer-backdrop { display: none; }
+    @media (max-width: 640px), (pointer: coarse) and (max-width: 900px) {
+      header { padding: 8px 10px; gap: 6px; flex-wrap: wrap; }
+      header .brand { font-size: 13px; }
+      header select { max-width: 140px; font-size: 13px; }
+      /* Status indicators and the username eat space on a phone — hide
+         them; the user can pull up /admin in a separate tab if they
+         need raw VRAM numbers. */
+      #vram-stat, #ctx-stat, #who { display: none; }
+      header label { font-size: 12px; }
+      #menu-btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        background: transparent; color: var(--fg);
+        border: 1px solid var(--border); border-radius: 6px;
+        width: 36px; height: 36px; cursor: pointer; padding: 0;
+        font-size: 18px;
+      }
+      header button#logout { padding: 6px 8px; font-size: 12px; }
+      /* Sidebar becomes an off-canvas drawer. Slides in from the left
+         when #menu-btn is tapped; tap the backdrop or a conv item to
+         dismiss. Width capped so the chat peek behind it stays
+         visible. */
+      #sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0;
+        width: min(280px, 80vw); z-index: 30;
+        transform: translateX(-100%);
+        transition: transform .2s ease-out;
+        border-right: 1px solid var(--border);
+      }
+      body.drawer-open #sidebar { transform: translateX(0); }
+      #drawer-backdrop {
+        display: block; position: fixed; inset: 0;
+        background: rgba(0,0,0,0.5); z-index: 20;
+        opacity: 0; pointer-events: none;
+        transition: opacity .2s;
+      }
+      body.drawer-open #drawer-backdrop {
+        opacity: 1; pointer-events: auto;
+      }
+      #log { padding: 10px; }
+      .msg { font-size: 15px; }   /* slightly larger for touch reading */
+      /* Stack the composer above the send button so the send button
+         spans full-width — easier thumb target than a narrow side button. */
+      footer {
+        flex-direction: column; padding: 8px;
+        /* Respect the iOS home-indicator safe area. */
+        padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+        gap: 6px;
+      }
+      #composer { min-height: 48px; font-size: 16px; }   /* 16px prevents iOS zoom-on-focus */
+      #send {
+        width: 100%; padding: 12px; min-height: 44px;
+        font-size: 15px;
+      }
+      .icon-btn { padding: 8px 10px; font-size: 13px; }
+      /* Tools popover on a tiny screen: span more of the width and
+         scroll inside instead of overflowing. */
+      #tools-popover {
+        left: 0; right: 0; min-width: 0; max-height: 50vh;
+      }
     }
   </style>
 </head>
@@ -246,12 +311,14 @@
   </div>
 
   <div id="chatapp" class="hidden" style="display:flex; flex-direction:row; flex:1; width:100%;">
+    <div id="drawer-backdrop"></div>
     <aside id="sidebar">
       <button id="new-conv-btn">+ New chat</button>
       <div id="conv-list"></div>
     </aside>
     <div style="display:flex; flex-direction:column; flex:1; min-width:0;">
       <header>
+        <button id="menu-btn" type="button" aria-label="Open conversations" title="Conversations">☰</button>
         <span class="brand">Local AI Stack</span>
         <select id="model"></select>
         <label><input type="checkbox" id="think"> Think</label>
@@ -318,6 +385,66 @@
     }
 
     const $ = id => document.getElementById(id);
+
+    // ── Phone browser detection ─────────────────────────────────────
+    // Cheap multi-signal check: UA hints, coarse pointer, narrow
+    // viewport. Any two of three counts as a phone. Pure UA sniffing
+    // is unreliable (desktop "request mobile site" sets mobile UA on
+    // a wide screen; iPad pretends to be a Mac). Pure viewport breaks
+    // when a desktop user shrinks the window. Combining them avoids
+    // both failure modes.
+    function detectPhone() {
+      const ua = (navigator.userAgent || '').toLowerCase();
+      const uaPhone = /iphone|ipod|android.*mobile|windows phone|blackberry|bb10|iemobile|opera mini/.test(ua);
+      const coarse  = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+      const narrow  = window.innerWidth <= 640;
+      // iPadOS 13+ reports "Macintosh"; disambiguate by touch + screen.
+      const ipadOS  = /macintosh/.test(ua) && navigator.maxTouchPoints > 1;
+      const score = (uaPhone ? 1 : 0) + (coarse ? 1 : 0) + (narrow ? 1 : 0);
+      return score >= 2 || ipadOS && narrow;
+    }
+    function applyPhoneClass() {
+      document.body.classList.toggle('is-phone', detectPhone());
+    }
+    applyPhoneClass();
+    // Re-check on rotation / resize so the layout follows the device.
+    // matchMedia change events would also work but resize covers
+    // user-zoom and split-screen transitions on iPadOS.
+    let _phoneResizeT = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(_phoneResizeT);
+      _phoneResizeT = setTimeout(applyPhoneClass, 100);
+    });
+
+    // ── Sidebar drawer (phone) ──────────────────────────────────────
+    // The sidebar is permanently visible on desktop. On phones the CSS
+    // turns it into an off-canvas panel; these handlers toggle the
+    // body.drawer-open class that drives the slide-in transform.
+    const menuBtn = $('menu-btn');
+    const drawerBackdrop = $('drawer-backdrop');
+    function closeDrawer() { document.body.classList.remove('drawer-open'); }
+    function openDrawer()  { document.body.classList.add('drawer-open'); }
+    if (menuBtn) {
+      menuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        document.body.classList.toggle('drawer-open');
+      });
+    }
+    if (drawerBackdrop) drawerBackdrop.addEventListener('click', closeDrawer);
+    // Tapping a conversation or "+ New chat" should close the drawer
+    // so the user lands on the chat view immediately.
+    document.addEventListener('click', (e) => {
+      if (!document.body.classList.contains('drawer-open')) return;
+      const t = e.target;
+      if (t.closest && (t.closest('.conv-item') || t.closest('#new-conv-btn'))) {
+        closeDrawer();
+      }
+    });
+    // Escape closes the drawer, mirroring desktop modal conventions.
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeDrawer();
+    });
+
     const logEl = $('log');
     const modelEl = $('model');
     const thinkEl = $('think');
