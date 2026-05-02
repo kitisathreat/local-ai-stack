@@ -19,10 +19,16 @@ from PySide6.QtWidgets import (
 )
 
 from gui.api_client import BackendClient, ChatTurn
+from gui.widgets.gauges import StatusGauges
 from gui.widgets.markdown_view import MarkdownView
 
 
 AIRGAP_POLL_MS = 5000
+TELEMETRY_POLL_MS = 2000
+
+# Rough character→token heuristic. Llama/Qwen BPEs land near 3.5–4.0
+# chars/token for English; 4.0 keeps the gauge from over-reporting.
+CHARS_PER_TOKEN = 4.0
 
 
 class ChatWindow(QMainWindow):
@@ -35,6 +41,8 @@ class ChatWindow(QMainWindow):
         self._streaming = False
         self._airgap: bool | None = None
         self._authenticated = False
+        # tier_id -> context_window tokens; populated by _load_models.
+        self._ctx_windows: dict[str, int] = {}
 
         # Stacked widget: 0 = guidance card (airgap off), 1 = chat UI.
         self._stack = QStackedWidget()
@@ -48,6 +56,13 @@ class ChatWindow(QMainWindow):
         self._poll.timeout.connect(self._poll_airgap)
         self._poll.start()
         asyncio.ensure_future(self._refresh_airgap())
+
+        # Telemetry poll for VRAM gauge (and indirectly the context gauge,
+        # since we redraw it on the same tick).
+        self._telemetry = QTimer(self)
+        self._telemetry.setInterval(TELEMETRY_POLL_MS)
+        self._telemetry.timeout.connect(self._poll_telemetry)
+        self._telemetry.start()
 
     # ── Views ─────────────────────────────────────────────────────
 
@@ -83,6 +98,7 @@ class ChatWindow(QMainWindow):
         # Toolbar
         self._model = QComboBox()
         self._model.setMinimumWidth(260)
+        self._model.currentIndexChanged.connect(lambda _i: self._refresh_context_gauge())
         self._think = QCheckBox("Think")
         clear = QPushButton("Clear")
         clear.clicked.connect(self._clear)
@@ -94,6 +110,10 @@ class ChatWindow(QMainWindow):
         top.addWidget(self._think)
         top.addWidget(clear)
         top.addWidget(self._status)
+
+        # Hollow-ring gauges for context window + VRAM.
+        self._gauges = StatusGauges()
+        self._refresh_context_gauge()
 
         # Conversation
         self._view = MarkdownView()
@@ -112,6 +132,7 @@ class ChatWindow(QMainWindow):
 
         root = QVBoxLayout()
         root.addLayout(top)
+        root.addWidget(self._gauges)
         root.addWidget(self._view, 1)
         root.addLayout(bottom)
 
@@ -185,6 +206,44 @@ class ChatWindow(QMainWindow):
     def _clear(self) -> None:
         self._history.clear()
         self._view.set_markdown("")
+        self._refresh_context_gauge()
+
+    # ── Gauges / telemetry ────────────────────────────────────────
+
+    def _poll_telemetry(self) -> None:
+        if self._airgap is not True:
+            return
+        asyncio.ensure_future(self._refresh_vram_gauge())
+
+    async def _refresh_vram_gauge(self) -> None:
+        try:
+            data = await self._client.vram_status()
+        except Exception:
+            return
+        total = float(data.get("total_vram_gb") or 0.0)
+        free = data.get("free_vram_gb_actual")
+        if free is None:
+            free = data.get("free_vram_gb_projected") or 0.0
+        used = max(0.0, total - float(free))
+        self._gauges.set_vram(used, total)
+
+    def _estimate_history_tokens(self) -> int:
+        chars = sum(len(t.content) for t in self._history)
+        return int(chars / CHARS_PER_TOKEN)
+
+    def _current_context_window(self) -> int:
+        tier_id = self._model.currentData() if hasattr(self, "_model") else None
+        if not tier_id:
+            return 0
+        return self._ctx_windows.get(str(tier_id), 0)
+
+    def _refresh_context_gauge(self) -> None:
+        if not hasattr(self, "_gauges"):
+            return
+        self._gauges.set_context(
+            self._estimate_history_tokens(),
+            self._current_context_window(),
+        )
 
     def _send_clicked(self) -> None:
         if self._streaming or self._airgap is not True:
@@ -199,6 +258,7 @@ class ChatWindow(QMainWindow):
         self._composer.clear()
         self._history.append(ChatTurn(role="user", content=text))
         self._view.append_markdown(f"\n\n**You:** {text}\n\n**Assistant:** ")
+        self._refresh_context_gauge()
         self._set_streaming(True)
         asyncio.ensure_future(self._stream_reply(model))
 
@@ -217,6 +277,7 @@ class ChatWindow(QMainWindow):
                 buffered += delta
                 self._view.append_markdown(delta)
             self._history.append(ChatTurn(role="assistant", content=buffered))
+            self._refresh_context_gauge()
         except Exception as exc:
             self._view.append_markdown(f"\n\n*Error: {exc}*\n")
         finally:
@@ -230,10 +291,15 @@ class ChatWindow(QMainWindow):
             self._view.append_markdown(f"*Could not load models: {exc}*\n")
             return
         self._model.clear()
+        self._ctx_windows.clear()
         for m in models:
             mid = m.get("id") or ""
             label = m.get("owned_by") or mid
+            ctx = int(m.get("context_window") or 0)
+            if mid and ctx:
+                self._ctx_windows[mid] = ctx
             self._model.addItem(f"{label} — {mid}", mid)
+        self._refresh_context_gauge()
 
     # Hide-on-close so the tray keeps things alive.
     def closeEvent(self, event):  # noqa: N802
