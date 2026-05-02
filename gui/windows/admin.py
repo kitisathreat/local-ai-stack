@@ -6,9 +6,11 @@ Requires an admin session; callers show LoginDialog(require_admin=True) first.
 from __future__ import annotations
 
 import asyncio
+import secrets
+import string
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -24,34 +26,98 @@ from gui.api_client import BackendClient
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _generate_password(length: int = 16) -> str:
+    """Cryptographically random password using a URL-safe alphabet."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*-_"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
 class _NewUserDialog(QDialog):
+    """Dialog for creating a new user.
+
+    Defaults to a non-admin local account. Email is optional — when blank a
+    placeholder `<username>@local.lan` is sent so the DB's NOT NULL UNIQUE
+    constraint is satisfied without forcing the admin to invent one.
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("New user")
+        self.setWindowTitle("Add user")
         self.setModal(True)
+
         self._username = QLineEdit()
+        self._username.setPlaceholderText("e.g. alice")
+
         self._email = QLineEdit()
+        self._email.setPlaceholderText("optional — defaults to <username>@local.lan")
+
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._is_admin = QCheckBox("Admin account")
+        self._password.setPlaceholderText("8+ characters")
+
+        self._show_password = QCheckBox("Show")
+        self._show_password.toggled.connect(self._on_show_password_toggled)
+
+        gen_btn = QPushButton("Generate")
+        gen_btn.setToolTip("Generate a strong random password and copy it to the clipboard.")
+        gen_btn.clicked.connect(self._on_generate_password)
+
+        pw_row = QHBoxLayout()
+        pw_row.addWidget(self._password, 1)
+        pw_row.addWidget(self._show_password)
+        pw_row.addWidget(gen_btn)
+
+        self._is_admin = QCheckBox("Admin account (grant dashboard access)")
+        self._is_admin.setChecked(False)
+
+        hint = QLabel(
+            "Leave “Admin account” unchecked to create a regular (non-admin) user "
+            "who can sign in to chat but cannot open the admin dashboard."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+
         form = QFormLayout()
         form.addRow("Username:", self._username)
         form.addRow("Email:", self._email)
-        form.addRow("Password:", self._password)
-        form.addRow(self._is_admin)
+        form.addRow("Password:", pw_row)
+        form.addRow("", self._is_admin)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create user")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+
         root = QVBoxLayout(self)
         root.addLayout(form)
+        root.addWidget(hint)
         root.addWidget(buttons)
+        self.resize(460, self.sizeHint().height())
+
+    def _on_show_password_toggled(self, checked: bool) -> None:
+        self._password.setEchoMode(
+            QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        )
+
+    def _on_generate_password(self) -> None:
+        pw = _generate_password()
+        self._password.setText(pw)
+        # Reveal so the admin can copy it down before closing the dialog.
+        self._show_password.setChecked(True)
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(pw)
 
     def values(self) -> dict:
+        username = self._username.text().strip()
+        email = self._email.text().strip()
+        if not email and username:
+            email = f"{username}@local.lan"
         return {
-            "username": self._username.text().strip(),
-            "email": self._email.text().strip(),
+            "username": username,
+            "email": email,
             "password": self._password.text(),
             "is_admin": self._is_admin.isChecked(),
         }
@@ -144,6 +210,10 @@ class AdminWindow(QMainWindow):
         )
 
         add = QPushButton("Add user")
+        add.setToolTip(
+            "Create a new account. Defaults to a non-admin user; tick the "
+            "“Admin account” box in the dialog to grant dashboard access."
+        )
         add.clicked.connect(self._on_add_user)
         edit = QPushButton("Change password")
         edit.clicked.connect(self._on_change_password)
@@ -174,15 +244,28 @@ class AdminWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         v = dlg.values()
-        if not v["username"] or not v["email"] or len(v["password"]) < 8:
-            QMessageBox.warning(self, "Invalid", "Username, email, and 8+ char password required.")
+        if not v["username"]:
+            QMessageBox.warning(self, "Invalid", "Username is required.")
             return
+        if len(v["password"]) < 8:
+            QMessageBox.warning(self, "Invalid", "Password must be at least 8 characters.")
+            return
+        # `values()` already fills in `<username>@local.lan` when the field
+        # is blank, so this is just a defensive guard.
+        if not v["email"]:
+            v["email"] = f"{v['username']}@local.lan"
+        kind = "admin" if v["is_admin"] else "non-admin"
         async def do():
             try:
                 await self._client.admin_create_user(**v)
-                await self._refresh_users()
             except Exception as exc:
                 QMessageBox.warning(self, "Create failed", str(exc))
+                return
+            await self._refresh_users()
+            QMessageBox.information(
+                self, "User created",
+                f"Created {kind} account “{v['username']}”.",
+            )
         asyncio.ensure_future(do())
 
     def _on_change_password(self) -> None:
