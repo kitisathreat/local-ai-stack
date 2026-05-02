@@ -139,6 +139,67 @@ tools:
     requires_service: null
     default_enabled: true
 
+  # ── Desktop Integration (Phase 9) ───────────────────────────────────────────
+  # Reach out of the backend process and into the host machine: filesystem,
+  # application launches, design-software automation. Off by default — toggle
+  # from the admin Tools panel after reviewing each tool's Valves. All seven
+  # carry `requires_service: host_*` so they're suppressed when airgap is on.
+  filesystem:
+    file: tools/filesystem.py
+    title: "Local Filesystem — Read/Write/Search C:/D:"
+    description: "Browse, read, search, and (opt-in) write/delete files anywhere on the host machine. Defaults to C:\\, D:\\, and the user's home; blocks Windows, Program Files\\WindowsApps, $Recycle.Bin, etc. Writes and deletes require flipping WRITE_ENABLED / DELETE_ENABLED on the tool's Valves."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  app_launcher:
+    file: tools/app_launcher.py
+    title: "App Launcher — Open Programs and Files"
+    description: "Launch desktop programs (KiCad, Blender, Fusion 360, FL Studio, Synthesizer V Studio, browsers, anything else) and open files in their default handler. Restricts launches to a configured APPS allow-list unless ALLOW_ARBITRARY_EXEC is on."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  kicad:
+    file: tools/kicad.py
+    title: "KiCad — Schematic / PCB Open & CLI Automation"
+    description: "Open KiCad projects, schematics, and PCB layouts, and run kicad-cli (KiCad 7+) headlessly to export Gerbers, drill files, STEP 3D models, schematic PDFs, BOMs, and netlists. Also runs ERC and DRC."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  blender:
+    file: tools/blender.py
+    title: "Blender — GUI launch + Headless Python Scripting"
+    description: "Open .blend files in Blender's GUI or run arbitrary Python in Blender's bundled interpreter (full bpy API). Can render single frames or animations and export models to glTF, FBX, OBJ, STL, USD, or Alembic."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  fusion360:
+    file: tools/fusion360.py
+    title: "Fusion 360 — Launch + Script/Add-in Installation"
+    description: "Open Fusion 360 (or .f3d / .f3z files) and install Python scripts and add-ins into Fusion's standard API folders. Add-ins can be configured to auto-load on Fusion launch."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  fl_studio:
+    file: tools/fl_studio.py
+    title: "FL Studio — Project Open + Headless Render + MIDI Send"
+    description: "Open .flp projects and .mid files in FL Studio, render projects to WAV/MP3/OGG/FLAC headlessly via FL64.exe's /R flag, install MIDI Scripting controller-surface scripts, and (optionally) send live MIDI via mido/python-rtmidi."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  synthv_studio:
+    file: tools/synthv_studio.py
+    title: "Synthesizer V Studio — Open + Batch Render + JS Scripting"
+    description: "Open Synthesizer V Studio Pro projects (.svp / .s5p), batch-render them to WAV via synthv-cli (or synthv-studio --batch-render), and install JavaScript automation scripts into the user scripts directory."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
 # Middleware (formerly Open WebUI pipelines) now lives in backend/middleware/.
 # It's invoked directly by the FastAPI chat endpoint — no separate service
 # required. Listed here for documentation only.

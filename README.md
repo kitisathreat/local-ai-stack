@@ -371,6 +371,9 @@ PATCH  /admin/airgap                → toggle airgap
   search, finance, science, dev utils, data repos). The registry is
   driven by [`config/tools.yaml`](config/tools.yaml); each tool exposes
   its JSON schema and is enable/disable-able from the admin Tools tab.
+  See [Desktop integration](#desktop-integration) below for the
+  filesystem / app-launcher / KiCad / Blender / Fusion 360 / FL Studio /
+  Synthesizer V Studio bridge.
 - **RAG.** Per-user collections in Qdrant, populated via `/rag/upload`.
   Embeddings are computed on the always-on `llama-server --embedding`
   pinned to port 8090.
@@ -450,6 +453,55 @@ docs/
   images/             SVG mockups (referenced by this README)
 .github/workflows/    ci.yml · install-and-startup.yml · update-project-fields.yml
 ```
+
+## Desktop integration
+
+The seven `host_*`-tagged tools in [`tools/`](tools/) let the model reach
+out of the backend process and into the host machine: read and write
+files anywhere on `C:\`/`D:\`, launch programs, and drive the major
+design suites you actually use day to day. They are **off by default**
+— flip them on per-account from the admin Tools tab once you've
+reviewed the per-tool Valves. Every desktop tool is also automatically
+suppressed when **airgap mode** is on (the model never sees an offering
+it can't fulfil), so you can reach for the public chat surface without
+worrying about the model trying to spawn `kicad.exe` over a tunnel.
+
+| Tool file | What the model can do |
+|---|---|
+| [`tools/filesystem.py`](tools/filesystem.py) | Browse, read (text + binary base64), search, hash, copy, move, write, append, delete files on the host. Allow-list of root directories (default `C:\`, `D:\`, `~`); blocks `Windows\`, `Program Files\WindowsApps\`, `$Recycle.Bin\`, etc. Writes and deletes require flipping `WRITE_ENABLED` / `DELETE_ENABLED` in the Valves. |
+| [`tools/app_launcher.py`](tools/app_launcher.py) | Launch any program registered in `APPS` (or arbitrary executables when `ALLOW_ARBITRARY_EXEC` is on), open files in the OS-default handler, list and terminate processes. Spawns are detached — the model gets a PID back. |
+| [`tools/kicad.py`](tools/kicad.py) | Open `.kicad_pro` / `.kicad_sch` / `.kicad_pcb` in the GUI; run `kicad-cli` (KiCad 7+) headlessly: `run_erc`, `run_drc`, `export_gerbers`, `export_drill`, `export_step`, `export_schematic_pdf`, `export_bom`, `export_netlist`. |
+| [`tools/blender.py`](tools/blender.py) | Open `.blend` files in Blender's GUI, or run arbitrary Python in Blender's bundled interpreter (full `bpy` API) headlessly via `blender -b -P`. Convenience wrappers for `render_frame`, `render_animation`, `export_model` (glb/gltf/fbx/obj/stl/usd/abc), and `scene_info`. |
+| [`tools/fusion360.py`](tools/fusion360.py) | Open Fusion 360 (or `.f3d` / `.f3z` files), and install Python scripts and add-ins into Fusion's standard `%APPDATA%\Autodesk\Autodesk Fusion 360\API\Scripts` and `\AddIns` folders (with manifests). Add-ins can be set to auto-load on Fusion launch. |
+| [`tools/fl_studio.py`](tools/fl_studio.py) | Open `.flp` projects and `.mid` files in FL Studio. Render projects to WAV/MP3/OGG/FLAC headlessly via `FL64.exe /R`. Install MIDI Scripting controller-surface scripts. Optionally pipe live MIDI to FL Studio's loopback port via `mido` + `python-rtmidi`. |
+| [`tools/synthv_studio.py`](tools/synthv_studio.py) | Open Synthesizer V Studio Pro projects (`.svp` / `.s5p`); batch-render to WAV via `synthv-cli` (or `synthv-studio --batch-render`); install JavaScript automation scripts into the user `scripts/` directory so they appear under Scripts → User. |
+
+### Enabling them
+
+1. In the GUI, open the admin window → **Tools tab** → tick the seven
+   `default_enabled: false` rows under `tools/filesystem.py`,
+   `tools/app_launcher.py`, etc.
+2. Click each tool's row to expand its Valves. Adjust `ALLOWED_ROOTS`,
+   executable paths (`KICAD_EXE`, `BLENDER_EXE`, `FL_EXE`, …),
+   `WRITE_ENABLED`, `DELETE_ENABLED`, and `ALLOW_ARBITRARY_EXEC` to
+   match your install.
+3. The settings persist across restarts via the same `config/tools.yaml`
+   surface as the rest of the registry. No code changes needed.
+
+### Safety posture
+
+- **Allow-list, not deny-list.** The filesystem tool refuses any path
+  outside `ALLOWED_ROOTS`. The app launcher refuses any executable
+  outside `APPS` unless explicitly opened up.
+- **Off by default.** Every desktop tool ships with
+  `default_enabled: false` so a fresh deploy can't accidentally hand
+  the model `C:\` write access.
+- **Airgap-aware.** All seven tools declare `requires_service:
+  host_filesystem` or `host_processes`. Airgap mode strips them from
+  the schema, and the dispatcher refuses calls to them mid-flight.
+- **Writes / deletes require dual opt-in.** The tool must be enabled
+  *and* `WRITE_ENABLED` / `DELETE_ENABLED` must be flipped before any
+  mutation can run.
 
 ## Roadmap & contributing
 
