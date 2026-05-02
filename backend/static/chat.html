@@ -233,6 +233,84 @@
     }
     #signin-err { color: var(--danger); margin-top: 10px; font-size: 13px; min-height: 18px; }
     .hidden { display: none !important; }
+    /* Admin dashboard — shown only after a sign-in where /admin/me
+       reports is_admin=true. Replaces the chat log pane in place; the
+       composer is hidden while it's active. Closing returns the user to
+       the chat with their conversation history intact. */
+    #admin-btn { display: none; }
+    body.is-admin #admin-btn { display: inline-block; }
+    #dashboard {
+      flex: 1; overflow: auto; padding: 18px 20px; max-width: 1100px;
+      margin: 0 auto; width: 100%;
+    }
+    #dashboard h2 { margin: 0 0 14px 0; font-size: 18px; font-weight: 600; }
+    .dash-tabs {
+      display: flex; gap: 4px; border-bottom: 1px solid var(--border);
+      margin-bottom: 14px;
+    }
+    .dash-tab {
+      background: transparent; color: var(--muted);
+      border: 0; border-bottom: 2px solid transparent;
+      padding: 8px 14px; cursor: pointer; font: inherit; font-size: 13px;
+    }
+    .dash-tab:hover { color: var(--fg); }
+    .dash-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+    .dash-pane { display: none; }
+    .dash-pane.active { display: block; }
+    .dash-cards {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px; margin-bottom: 18px;
+    }
+    .dash-card {
+      background: #1a1c23; border: 1px solid var(--border);
+      border-radius: 6px; padding: 10px 12px;
+    }
+    .dash-card .lbl {
+      font-size: 11px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .dash-card .val {
+      font-size: 20px; font-weight: 600; margin-top: 4px;
+      font-family: 'Cascadia Code', Consolas, monospace;
+    }
+    .dash-table {
+      width: 100%; border-collapse: collapse; font-size: 13px;
+      margin-top: 8px;
+    }
+    .dash-table th, .dash-table td {
+      text-align: left; padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .dash-table th {
+      background: #1a1c23; color: var(--muted);
+      font-weight: 500; font-size: 11px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .dash-table td.num { font-family: 'Cascadia Code', Consolas, monospace; }
+    .dash-table .pill {
+      display: inline-block; padding: 1px 8px; border-radius: 10px;
+      font-size: 11px; background: #2a2d36;
+    }
+    .dash-table .pill.admin { background: #3a4a6a; color: #cfe1ff; }
+    .dash-actions {
+      display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .dash-actions button {
+      background: #22252e; color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 12px; font: inherit; font-size: 13px;
+      cursor: pointer;
+    }
+    .dash-actions button:hover { background: #2a2d36; }
+    .dash-actions button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .dash-actions button.primary:hover { background: #2d7fdb; }
+    .dash-empty { color: var(--muted); padding: 20px 0; font-style: italic; }
+    .dash-banner {
+      padding: 10px 12px; border-radius: 6px;
+      background: #1f2a3a; border: 1px solid #3a4a6a;
+      color: #cfe1ff; font-size: 13px; margin-bottom: 14px;
+    }
+    .dash-banner.warn { background: #2a2415; border-color: #6a5a3a; color: #e0c060; }
     /* Conversation sidebar — lists the user's past chats. Click an
        item to resume; the chat history is repopulated and subsequent
        sends include conversation_id so the backend persists messages
@@ -367,9 +445,13 @@
           <span class="lbl">CTX</span> <span class="val" id="ctx-val">—</span>
         </span>
         <span id="who" style="color:var(--muted);"></span>
+        <button id="admin-btn" type="button" title="Open backend dashboard">⚙ Admin</button>
         <button id="logout">Sign out</button>
       </header>
-      <div id="main"><div id="log"></div></div>
+      <div id="main">
+        <div id="log"></div>
+        <div id="dashboard" class="hidden"></div>
+      </div>
     <footer>
       <div id="composer-wrap">
         <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
@@ -505,6 +587,7 @@
         if (r.ok) {
           const me = await r.json();
           whoEl.textContent = me.username;
+          applyAdminFlag(me.is_admin);
           await loadModels();
           await loadTools();
           await loadConversations();
@@ -513,6 +596,14 @@
           app.classList.remove('hidden');
         }
       } catch (_) {}
+    }
+
+    // Toggle the body.is-admin class so the ⚙ Admin button (CSS-gated)
+    // becomes visible. /admin/me is the source of truth — the same
+    // endpoint that gates every other /admin/* route by is_admin server
+    // side, so the UI can't fake itself into the dashboard.
+    function applyAdminFlag(isAdmin) {
+      document.body.classList.toggle('is-admin', !!isAdmin);
     }
 
     $('signin-form').addEventListener('submit', async (ev) => {
@@ -532,6 +623,7 @@
       }
       const info = await r.json();
       whoEl.textContent = info.username;
+      applyAdminFlag(info.is_admin);
       await loadModels();
       await loadTools();
       await loadConversations();
@@ -545,6 +637,8 @@
       await api('/auth/logout', { method: 'POST' });
       history.length = 0;
       logEl.innerHTML = '';
+      applyAdminFlag(false);
+      hideDashboard();
       app.classList.add('hidden');
       signinBox.classList.remove('hidden');
     });
@@ -1225,6 +1319,287 @@
       } finally {
         streaming = false;
         sendEl.disabled = false;
+      }
+    }
+
+    // ── Admin dashboard ──────────────────────────────────────────────
+    // Web equivalent of the Qt AdminWindow. Surfaces the same /admin/*
+    // endpoints that gate by is_admin server-side, so non-admin users
+    // get 403 even if they bypass the CSS-gated button. Tabs render a
+    // pragmatic subset: Overview (counters), Users (read-only list),
+    // Tools (count + link), Airgap (state + toggle), Errors (recent).
+    // Heavier admin operations (user CRUD, marketplaces, model pulls)
+    // remain in the desktop Qt window.
+    const dashboardEl = $('dashboard');
+    const adminBtn = $('admin-btn');
+    const composerFooter = document.querySelector('footer');
+    let dashboardOpen = false;
+    let dashboardActiveTab = 'overview';
+
+    function showDashboard() {
+      if (dashboardOpen) return;
+      dashboardOpen = true;
+      logEl.classList.add('hidden');
+      composerFooter.classList.add('hidden');
+      dashboardEl.classList.remove('hidden');
+      renderDashboardShell();
+      switchDashboardTab(dashboardActiveTab);
+    }
+
+    function hideDashboard() {
+      dashboardOpen = false;
+      dashboardEl.classList.add('hidden');
+      dashboardEl.innerHTML = '';
+      logEl.classList.remove('hidden');
+      composerFooter.classList.remove('hidden');
+    }
+
+    adminBtn.addEventListener('click', () => {
+      if (dashboardOpen) hideDashboard();
+      else showDashboard();
+    });
+
+    function renderDashboardShell() {
+      dashboardEl.innerHTML = `
+        <h2>Backend dashboard</h2>
+        <div class="dash-tabs">
+          <button class="dash-tab" data-tab="overview">Overview</button>
+          <button class="dash-tab" data-tab="users">Users</button>
+          <button class="dash-tab" data-tab="tools">Tools</button>
+          <button class="dash-tab" data-tab="airgap">Airgap</button>
+          <button class="dash-tab" data-tab="errors">Errors</button>
+        </div>
+        <div id="dash-pane-overview" class="dash-pane"></div>
+        <div id="dash-pane-users" class="dash-pane"></div>
+        <div id="dash-pane-tools" class="dash-pane"></div>
+        <div id="dash-pane-airgap" class="dash-pane"></div>
+        <div id="dash-pane-errors" class="dash-pane"></div>
+      `;
+      dashboardEl.querySelectorAll('.dash-tab').forEach(btn => {
+        btn.addEventListener('click', () => switchDashboardTab(btn.dataset.tab));
+      });
+    }
+
+    function switchDashboardTab(tab) {
+      dashboardActiveTab = tab;
+      dashboardEl.querySelectorAll('.dash-tab').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === tab);
+      });
+      dashboardEl.querySelectorAll('.dash-pane').forEach(p => {
+        p.classList.toggle('active', p.id === 'dash-pane-' + tab);
+      });
+      const loaders = {
+        overview: loadDashOverview,
+        users: loadDashUsers,
+        tools: loadDashTools,
+        airgap: loadDashAirgap,
+        errors: loadDashErrors,
+      };
+      const fn = loaders[tab];
+      if (fn) fn();
+    }
+
+    function fmtBytes(n) {
+      if (!n) return '0 B';
+      const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0; let v = n;
+      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+      return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
+    }
+
+    function fmtTs(ts) {
+      if (!ts) return '';
+      const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+      if (isNaN(d.getTime())) return String(ts);
+      return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+    }
+
+    async function loadDashOverview() {
+      const pane = $('dash-pane-overview');
+      pane.innerHTML = '<div class="dash-empty">Loading overview…</div>';
+      try {
+        const r = await api('/admin/overview');
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const o = await r.json();
+        const cards = [
+          ['Requests (24h)', o.requests],
+          ['Active users', o.active_users],
+          ['Tokens in', o.tokens_in],
+          ['Tokens out', o.tokens_out],
+          ['Avg latency', `${Math.round(o.latency_ms_avg)} ms`],
+          ['Errors', o.errors],
+          ['Total users', o.total_users],
+          ['Conversations', o.total_conversations],
+          ['Messages', o.total_messages],
+          ['RAG docs', `${o.total_rag_docs} (${fmtBytes(o.total_rag_bytes)})`],
+          ['Memories', o.total_memories],
+        ];
+        pane.innerHTML = '<div class="dash-cards">'
+          + cards.map(([l, v]) =>
+              `<div class="dash-card"><div class="lbl">${escapeHtml(l)}</div>`
+              + `<div class="val">${escapeHtml(String(v))}</div></div>`
+            ).join('')
+          + '</div>';
+      } catch (e) {
+        pane.innerHTML = `<div class="dash-empty">Failed to load overview: ${escapeHtml(String(e))}</div>`;
+      }
+    }
+
+    async function loadDashUsers() {
+      const pane = $('dash-pane-users');
+      pane.innerHTML = '<div class="dash-empty">Loading users…</div>';
+      try {
+        const r = await api('/admin/users');
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const j = await r.json();
+        const users = j.data || [];
+        if (users.length === 0) {
+          pane.innerHTML = '<div class="dash-empty">No users.</div>';
+          return;
+        }
+        const rows = users.map(u => `
+          <tr>
+            <td class="num">${u.id}</td>
+            <td>${escapeHtml(u.username || '')}</td>
+            <td>${escapeHtml(u.email || '')}</td>
+            <td>${u.is_admin ? '<span class="pill admin">admin</span>' : ''}</td>
+            <td class="num">${u.conversations || 0}</td>
+            <td>${escapeHtml(fmtTs(u.last_login_at))}</td>
+          </tr>
+        `).join('');
+        pane.innerHTML = `
+          <div class="dash-banner">User CRUD (create / edit / delete) lives in the desktop admin window. This view is read-only.</div>
+          <table class="dash-table">
+            <thead><tr>
+              <th>ID</th><th>Username</th><th>Email</th><th>Role</th>
+              <th>Chats</th><th>Last login</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      } catch (e) {
+        pane.innerHTML = `<div class="dash-empty">Failed to load users: ${escapeHtml(String(e))}</div>`;
+      }
+    }
+
+    async function loadDashTools() {
+      const pane = $('dash-pane-tools');
+      pane.innerHTML = '<div class="dash-empty">Loading tools…</div>';
+      try {
+        const r = await api('/admin/tools');
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const j = await r.json();
+        const tools = j.data || [];
+        const enabled = tools.filter(t => t.enabled).length;
+        const blocked = tools.filter(t => t.airgap_blocked).length;
+        const cards = [
+          ['Total tools', tools.length],
+          ['Enabled', enabled],
+          ['Disabled', tools.length - enabled],
+          ['Airgap-blocked', blocked],
+        ];
+        const rows = tools.slice(0, 100).map(t => `
+          <tr>
+            <td>${escapeHtml(t.name || '')}</td>
+            <td>${t.enabled ? '<span class="pill admin">on</span>' : '<span class="pill">off</span>'}</td>
+            <td>${escapeHtml((t.description || '').slice(0, 120))}</td>
+          </tr>
+        `).join('');
+        pane.innerHTML = '<div class="dash-cards">'
+          + cards.map(([l, v]) =>
+              `<div class="dash-card"><div class="lbl">${escapeHtml(l)}</div>`
+              + `<div class="val">${escapeHtml(String(v))}</div></div>`
+            ).join('')
+          + '</div>'
+          + '<div class="dash-banner">Per-tool toggles live in the desktop admin window. The chat composer\'s 🔧 Tools popover toggles for the next request only.</div>'
+          + (tools.length === 0 ? '<div class="dash-empty">No tools registered.</div>'
+              : `<table class="dash-table">
+                  <thead><tr><th>Name</th><th>State</th><th>Description</th></tr></thead>
+                  <tbody>${rows}</tbody>
+                </table>`)
+          + (tools.length > 100 ? `<div class="dash-empty">Showing first 100 of ${tools.length}.</div>` : '');
+      } catch (e) {
+        pane.innerHTML = `<div class="dash-empty">Failed to load tools: ${escapeHtml(String(e))}</div>`;
+      }
+    }
+
+    async function loadDashAirgap() {
+      const pane = $('dash-pane-airgap');
+      pane.innerHTML = '<div class="dash-empty">Loading airgap state…</div>';
+      try {
+        const r = await api('/admin/airgap');
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const a = await r.json();
+        const on = !!a.enabled;
+        pane.innerHTML = `
+          <div class="dash-banner ${on ? 'warn' : ''}">
+            Airgap mode is currently <strong>${on ? 'ON' : 'OFF'}</strong>.
+          </div>
+          <p style="color:var(--muted); max-width:640px;">${escapeHtml(a.description || '')}</p>
+          <div class="dash-actions">
+            <button id="airgap-toggle" class="${on ? '' : 'primary'}">${on ? 'Disable airgap' : 'Enable airgap'}</button>
+            <button id="airgap-refresh">Refresh</button>
+          </div>
+          <table class="dash-table">
+            <thead><tr><th>Field</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td>Enabled since</td><td>${escapeHtml(fmtTs(a.changed_at))}</td></tr>
+              <tr><td>Changed by</td><td>${escapeHtml(a.changed_by || '')}</td></tr>
+            </tbody>
+          </table>
+        `;
+        $('airgap-toggle').addEventListener('click', async () => {
+          if (!confirm(on
+            ? 'Disable airgap mode? Outbound search and external tools will be re-allowed.'
+            : 'Enable airgap mode? Outbound web search and external tools will be blocked.')
+          ) return;
+          try {
+            const tr = await api('/admin/airgap', {
+              method: 'PATCH',
+              body: JSON.stringify({ enabled: !on }),
+            });
+            if (!tr.ok) throw new Error(`${tr.status} ${tr.statusText}`);
+            loadDashAirgap();
+          } catch (e) {
+            alert('Failed to toggle airgap: ' + e);
+          }
+        });
+        $('airgap-refresh').addEventListener('click', loadDashAirgap);
+      } catch (e) {
+        pane.innerHTML = `<div class="dash-empty">Failed to load airgap state: ${escapeHtml(String(e))}</div>`;
+      }
+    }
+
+    async function loadDashErrors() {
+      const pane = $('dash-pane-errors');
+      pane.innerHTML = '<div class="dash-empty">Loading errors…</div>';
+      try {
+        const r = await api('/admin/errors');
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const j = await r.json();
+        const errs = j.data || [];
+        if (errs.length === 0) {
+          pane.innerHTML = '<div class="dash-empty">No recent errors.</div>';
+          return;
+        }
+        const rows = errs.map(e => `
+          <tr>
+            <td>${escapeHtml(fmtTs(e.ts))}</td>
+            <td>${escapeHtml(e.tier || '')}</td>
+            <td class="num">${e.user_id ?? ''}</td>
+            <td>${escapeHtml((e.error || '').slice(0, 200))}</td>
+          </tr>
+        `).join('');
+        pane.innerHTML = `
+          <table class="dash-table">
+            <thead><tr><th>Time</th><th>Tier</th><th>User</th><th>Error</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      } catch (e) {
+        pane.innerHTML = `<div class="dash-empty">Failed to load errors: ${escapeHtml(String(e))}</div>`;
       }
     }
 
