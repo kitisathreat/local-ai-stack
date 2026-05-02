@@ -1,22 +1,97 @@
 """Admin dashboard window — full write-parity with deleted Preact admin panel.
 
-Tabs: Users, Models, Tools, Airgap, VRAM, Router, Auth, Errors, Reload.
+Tabs: Users, Models, Tools, Marketplaces, Airgap, VRAM, Router, Auth, Errors, Reload.
 Requires an admin session; callers show LoginDialog(require_admin=True) first.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
-    QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+    QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QPushButton, QSpinBox, QDoubleSpinBox, QSplitter, QTableWidget,
+    QTableWidgetItem, QTabWidget, QTextEdit, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from gui.api_client import BackendClient
+
+
+# Recipe templates for the Marketplaces tab — kept in sync with
+# free_games.recipe_templates(). The names are display labels; the
+# `config` is the JSON the user pre-fills the form with.
+_RECIPE_TEMPLATES: list[tuple[str, dict]] = [
+    (
+        "WordPress (entry-title pattern)",
+        {
+            "name": "Example WordPress",
+            "search_url": "https://example.com/?s={query}",
+            "result_pattern": (
+                r'<h2[^>]*class="[^"]*entry-title[^"]*"[^>]*>'
+                r'\s*<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>'
+            ),
+            "download_pattern": (
+                r'href="(https?://[^"]+\.'
+                r'(?:zip|7z|rar|iso|exe|dmg|tar(?:\.[gx]z)?|tgz))"'
+            ),
+        },
+    ),
+    (
+        "Generic article cards (h2/h3 → a)",
+        {
+            "name": "Example",
+            "search_url": "https://example.com/search?q={query}",
+            "result_pattern": (
+                r'<(?:h2|h3)[^>]*>\s*<a[^>]+href="([^"]+)"'
+                r'[^>]*>([^<]+)</a>'
+            ),
+            "download_pattern": "",
+        },
+    ),
+    (
+        "Game-style listing (figure/card → title)",
+        {
+            "name": "Example",
+            "search_url": "https://example.com/?s={query}",
+            "result_pattern": (
+                r'<a[^>]+href="(/games?/[^"]+)"[^>]*>'
+                r'\s*(?:<img[^>]*>)?\s*'
+                r'<(?:span|div|h\d)[^>]*>([^<]+)</'
+            ),
+            "download_pattern": "",
+        },
+    ),
+    (
+        "Discourse forum (search results)",
+        {
+            "name": "Example Discourse",
+            "search_url": "https://forum.example.com/search?q={query}",
+            "result_pattern": (
+                r'<a[^>]+class="[^"]*search-link[^"]*"'
+                r'[^>]+href="([^"]+)"[^>]*>([^<]+)</a>'
+            ),
+            "download_pattern": "",
+        },
+    ),
+    (
+        "Magnet-link listing (TPB-style)",
+        {
+            "name": "Example tracker",
+            "search_url": "https://example.com/search?q={query}",
+            "result_pattern": (
+                r'<a[^>]+href="(/torrent/\d+/[^"]+)"'
+                r'[^>]*>([^<]+)</a>'
+            ),
+            "download_pattern": (
+                r'(magnet:\?xt=urn:btih:[a-fA-F0-9]+[^"\']*)'
+            ),
+        },
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +158,7 @@ class AdminWindow(QMainWindow):
         tabs.addTab(self._build_users_tab(), "Users")
         tabs.addTab(self._build_models_tab(), "Models")
         tabs.addTab(self._build_tools_tab(), "Tools")
+        tabs.addTab(self._build_marketplaces_tab(), "Marketplaces")
         tabs.addTab(self._build_airgap_tab(), "Airgap")
         tabs.addTab(self._build_vram_tab(), "VRAM")
         tabs.addTab(self._build_router_tab(), "Router")
@@ -550,6 +626,378 @@ class AdminWindow(QMainWindow):
         for i in range(self._tools_tree.topLevelItemCount()):
             visit(self._tools_tree.topLevelItem(i))
 
+    # ── Marketplaces tab ───────────────────────────────────────────────────
+    #
+    # Compiles the free_games marketplace workflow into a UI:
+    #   1. Pick a recipe template → fields prefill
+    #   2. Edit name / search_url / result_pattern / download_pattern
+    #   3. "Test config" → server runs probe, dumps diagnostic into the
+    #      report pane (status, blocker hints, regex match count, sample
+    #      matches, download-extraction probe)
+    #   4. "Save" → appends/replaces in the MARKETPLACES valve
+    #   5. Saved list on the right; per-row probe/delete
+    #   6. "Probe download URL" → HEAD-checks any URL before flipping
+    #      WRITE_ENABLED
+    #   7. DOWNLOAD_DIR + WRITE_ENABLED + REQUEST_HEADERS + USER_AGENT
+    #      editable inline, saved via PATCH /admin/marketplaces/valves
+
+    def _build_marketplaces_tab(self) -> QWidget:
+        outer = QSplitter(Qt.Orientation.Horizontal)
+
+        # ── Left: editor + probe + valves ─────────────────────────────
+        left = QWidget()
+        L = QVBoxLayout(left)
+
+        # Recipe picker
+        recipe_row = QHBoxLayout()
+        recipe_row.addWidget(QLabel("Recipe:"))
+        self._mp_recipe = QComboBox()
+        self._mp_recipe.addItem("(blank)", userData=None)
+        for label, cfg in _RECIPE_TEMPLATES:
+            self._mp_recipe.addItem(label, userData=cfg)
+        self._mp_recipe.currentIndexChanged.connect(self._on_recipe_pick)
+        recipe_row.addWidget(self._mp_recipe, 1)
+        L.addLayout(recipe_row)
+
+        # Editor form
+        form_box = QGroupBox("Marketplace config")
+        form = QFormLayout(form_box)
+        self._mp_name = QLineEdit()
+        self._mp_search_url = QLineEdit()
+        self._mp_search_url.setPlaceholderText("https://example.com/?s={query}")
+        self._mp_result_pat = QPlainTextEdit()
+        self._mp_result_pat.setPlaceholderText(
+            "regex with two capture groups: 1=item URL, 2=item title"
+        )
+        self._mp_result_pat.setMaximumHeight(80)
+        self._mp_download_pat = QPlainTextEdit()
+        self._mp_download_pat.setPlaceholderText(
+            "(optional) regex; one capture group = direct download URL or magnet"
+        )
+        self._mp_download_pat.setMaximumHeight(80)
+        self._mp_test_query = QLineEdit("test")
+        form.addRow("Name", self._mp_name)
+        form.addRow("Search URL", self._mp_search_url)
+        form.addRow("Result pattern", self._mp_result_pat)
+        form.addRow("Download pattern", self._mp_download_pat)
+        form.addRow("Test query", self._mp_test_query)
+        L.addWidget(form_box)
+
+        # Action buttons
+        btn_row = QHBoxLayout()
+        self._mp_btn_test = QPushButton("Test config")
+        self._mp_btn_test.clicked.connect(self._on_mp_test)
+        self._mp_btn_save = QPushButton("Save")
+        self._mp_btn_save.clicked.connect(self._on_mp_save)
+        self._mp_btn_clear = QPushButton("Clear")
+        self._mp_btn_clear.clicked.connect(self._on_mp_clear)
+        btn_row.addWidget(self._mp_btn_test)
+        btn_row.addWidget(self._mp_btn_save)
+        btn_row.addWidget(self._mp_btn_clear)
+        btn_row.addStretch(1)
+        L.addLayout(btn_row)
+
+        # Probe-download standalone
+        dl_box = QGroupBox("Probe download URL  (HEAD only — no write)")
+        dl_lay = QHBoxLayout(dl_box)
+        self._mp_dl_url = QLineEdit()
+        self._mp_dl_url.setPlaceholderText("https://example.com/file.zip or magnet:?xt=…")
+        self._mp_btn_probe_dl = QPushButton("Probe")
+        self._mp_btn_probe_dl.clicked.connect(self._on_mp_probe_download)
+        dl_lay.addWidget(self._mp_dl_url, 1)
+        dl_lay.addWidget(self._mp_btn_probe_dl)
+        L.addWidget(dl_box)
+
+        # Valves
+        valves_box = QGroupBox("Valves")
+        v_form = QFormLayout(valves_box)
+        self._mp_dir = QLineEdit()
+        self._mp_write = QCheckBox("WRITE_ENABLED  (let download() write to disk)")
+        self._mp_ua = QLineEdit()
+        self._mp_headers = QPlainTextEdit()
+        self._mp_headers.setMaximumHeight(70)
+        self._mp_headers.setPlaceholderText('JSON object, e.g. {"Cookie":"...","Referer":"..."}')
+        self._mp_btn_save_valves = QPushButton("Save valves")
+        self._mp_btn_save_valves.clicked.connect(self._on_mp_save_valves)
+        v_form.addRow("DOWNLOAD_DIR", self._mp_dir)
+        v_form.addRow("", self._mp_write)
+        v_form.addRow("User-Agent", self._mp_ua)
+        v_form.addRow("REQUEST_HEADERS", self._mp_headers)
+        v_form.addRow("", self._mp_btn_save_valves)
+        L.addWidget(valves_box)
+
+        L.addStretch(1)
+        outer.addWidget(left)
+
+        # ── Right: saved list + report pane ───────────────────────────
+        right = QWidget()
+        R = QVBoxLayout(right)
+
+        saved_box = QGroupBox("Saved marketplaces")
+        sb = QVBoxLayout(saved_box)
+        self._mp_table = QTableWidget(0, 4)
+        self._mp_table.setHorizontalHeaderLabels(["Name", "Search URL", "DL pattern?", ""])
+        self._mp_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._mp_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._mp_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self._mp_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        sb.addWidget(self._mp_table)
+        sb_btn_row = QHBoxLayout()
+        self._mp_btn_refresh = QPushButton("Refresh")
+        self._mp_btn_refresh.clicked.connect(
+            lambda: asyncio.ensure_future(self._refresh_marketplaces())
+        )
+        self._mp_btn_load = QPushButton("Load selected → editor")
+        self._mp_btn_load.clicked.connect(self._on_mp_load_selected)
+        self._mp_btn_probe = QPushButton("Probe selected")
+        self._mp_btn_probe.clicked.connect(self._on_mp_probe_selected)
+        self._mp_btn_delete = QPushButton("Delete selected")
+        self._mp_btn_delete.clicked.connect(self._on_mp_delete_selected)
+        for b in (
+            self._mp_btn_refresh,
+            self._mp_btn_load,
+            self._mp_btn_probe,
+            self._mp_btn_delete,
+        ):
+            sb_btn_row.addWidget(b)
+        sb_btn_row.addStretch(1)
+        sb.addLayout(sb_btn_row)
+        R.addWidget(saved_box)
+
+        report_box = QGroupBox("Report")
+        rb = QVBoxLayout(report_box)
+        self._mp_report = QPlainTextEdit()
+        self._mp_report.setReadOnly(True)
+        self._mp_report.setPlaceholderText(
+            "Diagnostic output goes here.  Workflow:\n"
+            "  1. Pick a recipe → fields prefill\n"
+            "  2. Edit the URL + regex for your target site\n"
+            "  3. Test config (the server runs a probe + reports status,\n"
+            "     blocker detection, regex match count, sample matches)\n"
+            "  4. Save when ✅\n"
+            "  5. Use 'Probe download URL' before flipping WRITE_ENABLED"
+        )
+        rb.addWidget(self._mp_report)
+        R.addWidget(report_box, 1)
+
+        outer.addWidget(right)
+        outer.setStretchFactor(0, 1)
+        outer.setStretchFactor(1, 1)
+
+        wrap = QWidget()
+        QVBoxLayout(wrap).addWidget(outer)
+        return wrap
+
+    # ── Marketplaces tab — handlers ────────────────────────────────────────
+
+    def _on_recipe_pick(self, idx: int) -> None:
+        cfg = self._mp_recipe.itemData(idx)
+        if not cfg:
+            return
+        self._mp_name.setText(cfg.get("name", ""))
+        self._mp_search_url.setText(cfg.get("search_url", ""))
+        self._mp_result_pat.setPlainText(cfg.get("result_pattern", ""))
+        self._mp_download_pat.setPlainText(cfg.get("download_pattern", ""))
+
+    def _on_mp_clear(self) -> None:
+        self._mp_name.clear()
+        self._mp_search_url.clear()
+        self._mp_result_pat.clear()
+        self._mp_download_pat.clear()
+        self._mp_recipe.setCurrentIndex(0)
+
+    def _editor_config(self) -> dict | None:
+        name = self._mp_name.text().strip()
+        url = self._mp_search_url.text().strip()
+        rp = self._mp_result_pat.toPlainText().strip()
+        dp = self._mp_download_pat.toPlainText().strip()
+        if not name or not url or not rp:
+            QMessageBox.warning(
+                self,
+                "Missing fields",
+                "name, search_url, and result_pattern are all required.",
+            )
+            return None
+        cfg = {"name": name, "search_url": url, "result_pattern": rp}
+        if dp:
+            cfg["download_pattern"] = dp
+        return cfg
+
+    def _on_mp_test(self) -> None:
+        cfg = self._editor_config()
+        if not cfg:
+            return
+        query = self._mp_test_query.text().strip() or "test"
+        self._mp_report.setPlainText(f"Testing '{cfg['name']}' with query='{query}'…\n")
+
+        async def do():
+            try:
+                res = await self._client.admin_marketplace_test(cfg, query=query)
+            except Exception as e:
+                self._mp_report.setPlainText(f"Test failed: {e}")
+                return
+            self._mp_report.setPlainText(res.get("markdown", "(empty)"))
+        asyncio.ensure_future(do())
+
+    def _on_mp_save(self) -> None:
+        cfg = self._editor_config()
+        if not cfg:
+            return
+
+        async def do():
+            try:
+                res = await self._client.admin_marketplace_save(cfg)
+            except Exception as e:
+                QMessageBox.warning(self, "Save failed", str(e))
+                return
+            verb = "replaced" if res.get("replaced") else "added"
+            self._mp_report.setPlainText(
+                f"✅ {verb} marketplace '{cfg['name']}'.  Total saved: {res.get('count')}"
+            )
+            await self._refresh_marketplaces()
+        asyncio.ensure_future(do())
+
+    def _on_mp_probe_download(self) -> None:
+        url = self._mp_dl_url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Missing URL", "Paste a download URL first.")
+            return
+        self._mp_report.setPlainText(f"Probing {url}…\n")
+
+        async def do():
+            try:
+                res = await self._client.admin_marketplace_probe_download(url)
+            except Exception as e:
+                self._mp_report.setPlainText(f"Probe failed: {e}")
+                return
+            self._mp_report.setPlainText(res.get("markdown", "(empty)"))
+        asyncio.ensure_future(do())
+
+    def _on_mp_save_valves(self) -> None:
+        body: dict = {
+            "download_dir": self._mp_dir.text().strip(),
+            "write_enabled": self._mp_write.isChecked(),
+            "user_agent": self._mp_ua.text().strip(),
+            "request_headers": self._mp_headers.toPlainText().strip() or "{}",
+        }
+        # Validate JSON early so the user gets a clear error here, not later.
+        try:
+            json.loads(body["request_headers"])
+        except json.JSONDecodeError as e:
+            QMessageBox.warning(self, "REQUEST_HEADERS not valid JSON", str(e))
+            return
+
+        async def do():
+            try:
+                await self._client.admin_marketplace_patch_valves(**body)
+            except Exception as e:
+                QMessageBox.warning(self, "Save valves failed", str(e))
+                return
+            self._mp_report.setPlainText("✅ Valves saved.")
+        asyncio.ensure_future(do())
+
+    def _selected_marketplace_name(self) -> str | None:
+        row = self._mp_table.currentRow()
+        if row < 0:
+            return None
+        item = self._mp_table.item(row, 0)
+        return item.text() if item else None
+
+    def _on_mp_load_selected(self) -> None:
+        name = self._selected_marketplace_name()
+        if not name:
+            return
+
+        async def do():
+            try:
+                payload = await self._client.admin_marketplaces()
+            except Exception as e:
+                self._mp_report.setPlainText(f"Refresh failed: {e}")
+                return
+            cfg = next(
+                (m for m in payload.get("marketplaces", []) if m.get("name", "").lower() == name.lower()),
+                None,
+            )
+            if not cfg:
+                self._mp_report.setPlainText(f"No saved marketplace '{name}'.")
+                return
+            self._mp_name.setText(cfg.get("name", ""))
+            self._mp_search_url.setText(cfg.get("search_url", ""))
+            self._mp_result_pat.setPlainText(cfg.get("result_pattern", ""))
+            self._mp_download_pat.setPlainText(cfg.get("download_pattern", ""))
+            self._mp_report.setPlainText(f"Loaded '{name}' into the editor.")
+        asyncio.ensure_future(do())
+
+    def _on_mp_probe_selected(self) -> None:
+        name = self._selected_marketplace_name()
+        if not name:
+            return
+        query = self._mp_test_query.text().strip() or "test"
+        self._mp_report.setPlainText(f"Probing '{name}' with query='{query}'…\n")
+
+        async def do():
+            try:
+                res = await self._client.admin_marketplace_probe(name, query)
+            except Exception as e:
+                self._mp_report.setPlainText(f"Probe failed: {e}")
+                return
+            self._mp_report.setPlainText(res.get("markdown", "(empty)"))
+        asyncio.ensure_future(do())
+
+    def _on_mp_delete_selected(self) -> None:
+        name = self._selected_marketplace_name()
+        if not name:
+            return
+        if QMessageBox.question(
+            self,
+            "Delete?",
+            f"Remove marketplace '{name}' from the MARKETPLACES valve?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        async def do():
+            try:
+                await self._client.admin_marketplace_delete(name)
+            except Exception as e:
+                QMessageBox.warning(self, "Delete failed", str(e))
+                return
+            await self._refresh_marketplaces()
+            self._mp_report.setPlainText(f"Deleted '{name}'.")
+        asyncio.ensure_future(do())
+
+    async def _refresh_marketplaces(self) -> None:
+        try:
+            payload = await self._client.admin_marketplaces()
+        except Exception as e:
+            self._mp_report.setPlainText(f"Refresh failed: {e}")
+            return
+        # Valve fields
+        self._mp_dir.setText(payload.get("download_dir", ""))
+        self._mp_write.setChecked(bool(payload.get("write_enabled")))
+        self._mp_ua.setText(payload.get("user_agent", ""))
+        rh = payload.get("request_headers") or "{}"
+        # Pretty-print if it parses as JSON.
+        try:
+            self._mp_headers.setPlainText(
+                json.dumps(json.loads(rh), indent=2) if rh.strip() else "{}"
+            )
+        except Exception:
+            self._mp_headers.setPlainText(rh)
+
+        entries = payload.get("marketplaces", [])
+        self._mp_table.setRowCount(len(entries))
+        for row, e in enumerate(entries):
+            self._mp_table.setItem(row, 0, QTableWidgetItem(e.get("name", "")))
+            self._mp_table.setItem(row, 1, QTableWidgetItem(e.get("search_url", "")))
+            self._mp_table.setItem(
+                row, 2, QTableWidgetItem("yes" if e.get("download_pattern") else "no"),
+            )
+            self._mp_table.setItem(row, 3, QTableWidgetItem(""))
+
     # ── Airgap tab ─────────────────────────────────────────────────────────
 
     def _build_airgap_tab(self) -> QWidget:
@@ -835,9 +1283,11 @@ class AdminWindow(QMainWindow):
             self._refresh_users(),
             self._refresh_models(),
             self._refresh_tools(),
+            self._refresh_marketplaces(),
             self._refresh_airgap(),
             self._refresh_vram(),
             self._refresh_router(cfg),
             self._refresh_auth_config(cfg),
             self._refresh_errors(),
+            return_exceptions=True,
         )

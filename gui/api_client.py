@@ -257,6 +257,68 @@ class BackendClient:
             r.raise_for_status()
             return r.json()
 
+    # ── free_games marketplace workflow ────────────────────────────────
+
+    async def admin_marketplaces(self) -> dict:
+        async with self._client() as c:
+            r = await c.get("/admin/marketplaces")
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_recipes(self) -> dict:
+        async with self._client() as c:
+            r = await c.get("/admin/marketplaces/recipes")
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_test(self, config: dict, query: str = "test") -> dict:
+        async with self._client() as c:
+            r = await c.post(
+                "/admin/marketplaces/test",
+                json={"config": config, "query": query},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_probe(self, name: str, query: str = "test") -> dict:
+        async with self._client() as c:
+            r = await c.post(
+                "/admin/marketplaces/probe",
+                json={"name": name, "query": query},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_probe_download(self, url: str) -> dict:
+        async with self._client() as c:
+            r = await c.post(
+                "/admin/marketplaces/probe-download",
+                json={"url": url},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_save(self, config: dict) -> dict:
+        async with self._client() as c:
+            r = await c.post("/admin/marketplaces", json=config)
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_delete(self, name: str) -> dict:
+        async with self._client() as c:
+            r = await c.delete(f"/admin/marketplaces/{name}")
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_patch_valves(self, **fields) -> dict:
+        async with self._client() as c:
+            r = await c.patch("/admin/marketplaces/valves", json=fields)
+            r.raise_for_status()
+            return r.json()
+
     async def airgap_state(self) -> dict:
         async with self._client() as c:
             r = await c.get("/admin/airgap")

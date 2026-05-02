@@ -876,3 +876,170 @@ async def set_airgap(body: dict, actor: dict = Depends(require_admin)):
         "ENABLED" if want else "DISABLED",
     )
     return {"ok": True, "unchanged": False, **snap}
+
+
+# ── free_games marketplace workflow ──────────────────────────────────────
+#
+# The free_games tool exposes a configurable marketplace layer (search /
+# extract / download arbitrary game-source sites the user configures via
+# its MARKETPLACES valve). These endpoints surface that workflow to the
+# desktop admin GUI so users can compose and test marketplace configs
+# from a UI instead of editing a JSON valve by hand.
+
+def _free_games_instance():
+    """Return the shared Tools() instance for the free_games tool, so we
+    can call its methods directly and read/write its valves."""
+    from . import main as backend_main
+    reg = backend_main.state.tools
+    # Any method on free_games shares the same Tools() — pick a stable one.
+    for name in (
+        "free_games.list_marketplaces",
+        "free_games.find_free",
+    ):
+        entry = reg.tools.get(name)
+        if entry is not None:
+            return entry.handler.__self__
+    raise HTTPException(503, "free_games tool not loaded.")
+
+
+def _read_marketplaces(instance) -> list[dict]:
+    import json as _json
+    try:
+        data = _json.loads(instance.valves.MARKETPLACES or "[]")
+    except _json.JSONDecodeError as e:
+        raise HTTPException(500, f"MARKETPLACES valve is not valid JSON: {e}")
+    if not isinstance(data, list):
+        raise HTTPException(500, "MARKETPLACES valve must be a JSON array.")
+    return data
+
+
+def _write_marketplaces(instance, entries: list[dict]) -> None:
+    import json as _json
+    instance.valves.MARKETPLACES = _json.dumps(entries, ensure_ascii=False)
+
+
+@router.get("/marketplaces")
+async def list_marketplaces(_: dict = Depends(require_admin)):
+    """List configured free_games marketplaces plus the relevant valve state."""
+    inst = _free_games_instance()
+    entries = _read_marketplaces(inst)
+    return {
+        "marketplaces": entries,
+        "download_dir": inst.valves.DOWNLOAD_DIR,
+        "write_enabled": bool(inst.valves.WRITE_ENABLED),
+        "request_headers": inst.valves.REQUEST_HEADERS,
+        "user_agent": inst.valves.USER_AGENT,
+    }
+
+
+@router.get("/marketplaces/recipes")
+async def get_recipe_templates(_: dict = Depends(require_admin)):
+    """Return the recipe templates the tool publishes for common site
+    layouts. The GUI uses these to populate a 'Browse Recipes' picker."""
+    inst = _free_games_instance()
+    return {"markdown": inst.recipe_templates()}
+
+
+@router.post("/marketplaces/test")
+async def test_marketplace_config(body: dict, _: dict = Depends(require_admin)):
+    """Run a marketplace config without saving it. Body: `{config: {...},
+    query: "..."}`. Returns the diagnostic Markdown."""
+    import json as _json
+    cfg = body.get("config")
+    if not isinstance(cfg, dict):
+        raise HTTPException(400, "Missing or non-object 'config'.")
+    query = body.get("query") or "test"
+    inst = _free_games_instance()
+    report = await inst.test_marketplace_config(_json.dumps(cfg), query=query)
+    return {"markdown": report}
+
+
+@router.post("/marketplaces/probe")
+async def probe_marketplace(body: dict, _: dict = Depends(require_admin)):
+    """Probe an *already-saved* marketplace by name. Body: `{name, query}`."""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Missing 'name'.")
+    query = body.get("query") or "test"
+    inst = _free_games_instance()
+    report = await inst.probe_marketplace(name, query)
+    return {"markdown": report}
+
+
+@router.post("/marketplaces/probe-download")
+async def probe_download(body: dict, _: dict = Depends(require_admin)):
+    """HEAD a candidate download URL and report what would be downloaded."""
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "Missing 'url'.")
+    inst = _free_games_instance()
+    report = await inst.probe_download(url)
+    return {"markdown": report}
+
+
+@router.post("/marketplaces")
+async def save_marketplace(body: dict, _: dict = Depends(require_admin)):
+    """Append or overwrite a marketplace config. Body must include name,
+    search_url, result_pattern; download_pattern is optional. If a
+    marketplace with the same name already exists, it is replaced."""
+    for k in ("name", "search_url", "result_pattern"):
+        if not body.get(k):
+            raise HTTPException(400, f"Missing required field '{k}'.")
+    cfg = {
+        "name": str(body["name"]).strip(),
+        "search_url": str(body["search_url"]),
+        "result_pattern": str(body["result_pattern"]),
+    }
+    if body.get("download_pattern"):
+        cfg["download_pattern"] = str(body["download_pattern"])
+    inst = _free_games_instance()
+    entries = _read_marketplaces(inst)
+    replaced = False
+    for i, e in enumerate(entries):
+        if e.get("name", "").lower() == cfg["name"].lower():
+            entries[i] = cfg
+            replaced = True
+            break
+    if not replaced:
+        entries.append(cfg)
+    _write_marketplaces(inst, entries)
+    return {"ok": True, "replaced": replaced, "count": len(entries)}
+
+
+@router.delete("/marketplaces/{name}")
+async def delete_marketplace(name: str, _: dict = Depends(require_admin)):
+    inst = _free_games_instance()
+    entries = _read_marketplaces(inst)
+    new_entries = [e for e in entries if e.get("name", "").lower() != name.lower()]
+    if len(new_entries) == len(entries):
+        raise HTTPException(404, f"No marketplace named '{name}'.")
+    _write_marketplaces(inst, new_entries)
+    return {"ok": True, "name": name, "count": len(new_entries)}
+
+
+@router.patch("/marketplaces/valves")
+async def patch_marketplace_valves(body: dict, _: dict = Depends(require_admin)):
+    """Update DOWNLOAD_DIR / WRITE_ENABLED / REQUEST_HEADERS / USER_AGENT.
+    Any subset of fields can be supplied."""
+    inst = _free_games_instance()
+    if "download_dir" in body:
+        inst.valves.DOWNLOAD_DIR = str(body["download_dir"])
+    if "write_enabled" in body:
+        inst.valves.WRITE_ENABLED = bool(body["write_enabled"])
+    if "request_headers" in body:
+        # Accept a JSON object or pre-stringified JSON.
+        rh = body["request_headers"]
+        if isinstance(rh, str):
+            inst.valves.REQUEST_HEADERS = rh
+        else:
+            import json as _json
+            inst.valves.REQUEST_HEADERS = _json.dumps(rh)
+    if "user_agent" in body:
+        inst.valves.USER_AGENT = str(body["user_agent"])
+    return {
+        "ok": True,
+        "download_dir": inst.valves.DOWNLOAD_DIR,
+        "write_enabled": bool(inst.valves.WRITE_ENABLED),
+        "request_headers": inst.valves.REQUEST_HEADERS,
+        "user_agent": inst.valves.USER_AGENT,
+    }
