@@ -329,7 +329,9 @@ async def vram_status(request: Request, _: dict = Depends(require_admin)):
 @router.get("/tools")
 async def list_tools(_: dict = Depends(require_admin)):
     from . import main as backend_main
+    reg = backend_main.state.tools
     return {
+        "groups": backend_main._serialize_taxonomy(reg),
         "data": [
             {
                 "name": t.name,
@@ -337,8 +339,14 @@ async def list_tools(_: dict = Depends(require_admin)):
                 "default_enabled": t.default_enabled,
                 "enabled": t.default_enabled,
                 "requires_service": t.requires_service,
+                "tier": t.tier,
+                "tier_title": reg.tier_title(t.tier),
+                "group": t.group,
+                "group_title": reg.group_title(t.group),
+                "subgroup": t.subgroup,
+                "subgroup_title": reg.group_title(t.group, t.subgroup),
             }
-            for t in backend_main.state.tools.tools.values()
+            for t in reg.tools.values()
         ],
     }
 
@@ -352,6 +360,39 @@ async def toggle_tool(name: str, body: dict, _: dict = Depends(require_admin)):
     enabled = bool(body.get("enabled", True))
     tool.default_enabled = enabled
     return {"ok": True, "name": name, "enabled": enabled}
+
+
+@router.patch("/tools")
+async def bulk_toggle_tools(body: dict, _: dict = Depends(require_admin)):
+    """Enable or disable multiple tools at once. The body accepts either
+    `names` (an explicit list) or `tier` + `group` + `subgroup` filters
+    (any subset). All tools matching the filter set are flipped to
+    `enabled`. Returns the list of names that were changed."""
+    from . import main as backend_main
+    reg = backend_main.state.tools
+    enabled = bool(body.get("enabled", True))
+
+    names = set(body.get("names") or [])
+    tier = body.get("tier")
+    group = body.get("group")
+    subgroup = body.get("subgroup")
+
+    matches: list[str] = []
+    for t in reg.tools.values():
+        if names:
+            if t.name not in names:
+                continue
+        else:
+            if tier and t.tier != tier:
+                continue
+            if group and t.group != group:
+                continue
+            if subgroup and t.subgroup != subgroup:
+                continue
+        t.default_enabled = enabled
+        matches.append(t.name)
+
+    return {"ok": True, "enabled": enabled, "changed": matches, "count": len(matches)}
 
 
 # ── Config GET ──────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
-    QTextEdit, QVBoxLayout, QWidget,
+    QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from gui.api_client import BackendClient
@@ -355,51 +355,200 @@ class AdminWindow(QMainWindow):
             self._pull_timer.stop()
 
     # ── Tools tab ──────────────────────────────────────────────────────────
+    #
+    # Tree shape: Tier → Topical group → Subgroup → Tool
+    # Every non-leaf node has its own checkbox. Toggling a non-leaf flips
+    # every descendant in one bulk PATCH /admin/tools call.
 
     def _build_tools_tab(self) -> QWidget:
-        self._tools_table = QTableWidget(0, 3)
-        self._tools_table.setHorizontalHeaderLabels(["Name", "Enabled", "Description"])
-        self._tools_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._tools_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
-        )
-        self._tools_table.cellClicked.connect(self._on_tool_clicked)
+        self._tools_tree = QTreeWidget()
+        self._tools_tree.setHeaderLabels(["Tool", "Description"])
+        self._tools_tree.setColumnCount(2)
+        self._tools_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._tools_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._tools_tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # Suppress checkbox-driven recursion while we sync state programmatically.
+        self._suppress_tool_change = False
+        self._tools_tree.itemChanged.connect(self._on_tools_item_changed)
+
+        # Search filter.
+        self._tools_filter = QLineEdit()
+        self._tools_filter.setPlaceholderText("Filter tools…")
+        self._tools_filter.textChanged.connect(self._apply_tools_filter)
 
         w = QWidget()
         lay = QVBoxLayout(w)
-        hint = QLabel("Click the Enabled column to toggle a tool on or off.")
+        hint = QLabel(
+            "Toggle a tool's checkbox to enable or disable it. "
+            "Use the tier / group / subgroup checkboxes to flip everything beneath at once."
+        )
         hint.setStyleSheet("color: #888;")
         lay.addWidget(hint)
-        lay.addWidget(self._tools_table)
+        lay.addWidget(self._tools_filter)
+        lay.addWidget(self._tools_tree)
         return w
 
-    def _on_tool_clicked(self, row: int, col: int) -> None:
-        if col != 1:
-            return
-        name_item = self._tools_table.item(row, 0)
-        if not name_item:
-            return
-        name = name_item.text()
-        current = self._tools_table.item(row, 1).text() == "yes"
-        async def do():
-            try:
-                await self._client.admin_set_tool_enabled(name, not current)
-                await self._refresh_tools()
-            except Exception as exc:
-                QMessageBox.warning(self, "Failed", str(exc))
-        asyncio.ensure_future(do())
+    # Each tree node carries metadata in Qt's UserRole.
+    # Leaf:  {"kind": "tool", "name": "..."}
+    # Inner: {"kind": "group" | "subgroup" | "tier", "tier": ..., "group": ..., "subgroup": ..., "names": [...]}
+    _ROLE_META = Qt.ItemDataRole.UserRole
 
     async def _refresh_tools(self) -> None:
         try:
-            tools = await self._client.admin_tools()
+            payload = await self._client.admin_tools()
         except Exception:
-            tools = []
-        self._tools_table.setRowCount(0)
-        for row, t in enumerate(tools):
-            self._tools_table.insertRow(row)
-            self._tools_table.setItem(row, 0, QTableWidgetItem(t.get("name", "")))
-            self._tools_table.setItem(row, 1, QTableWidgetItem("yes" if t.get("enabled") else ""))
-            self._tools_table.setItem(row, 2, QTableWidgetItem(t.get("description", "")))
+            payload = {"data": [], "groups": []}
+        groups = payload.get("groups", []) or []
+        data = {t["name"]: t for t in (payload.get("data") or [])}
+
+        self._suppress_tool_change = True
+        try:
+            self._tools_tree.clear()
+            for tier in groups:
+                tier_names = [n for g in tier["groups"]
+                              for s in g["subgroups"] for n in s["tools"]]
+                tier_item = QTreeWidgetItem(self._tools_tree)
+                tier_item.setText(0, f"{tier['title']} ({len(tier_names)})")
+                tier_item.setFlags(tier_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                tier_item.setData(0, self._ROLE_META, {
+                    "kind": "tier", "tier": tier["tier"], "names": tier_names,
+                })
+
+                for group in tier["groups"]:
+                    group_names = [n for s in group["subgroups"] for n in s["tools"]]
+                    group_item = QTreeWidgetItem(tier_item)
+                    group_item.setText(0, f"{group['title']} ({len(group_names)})")
+                    group_item.setFlags(group_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    group_item.setData(0, self._ROLE_META, {
+                        "kind": "group", "tier": tier["tier"],
+                        "group": group["group"], "names": group_names,
+                    })
+
+                    for sub in group["subgroups"]:
+                        sub_item = QTreeWidgetItem(group_item)
+                        sub_item.setText(0, f"{sub['title']} ({len(sub['tools'])})")
+                        sub_item.setFlags(sub_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        sub_item.setData(0, self._ROLE_META, {
+                            "kind": "subgroup", "tier": tier["tier"],
+                            "group": group["group"], "subgroup": sub["subgroup"],
+                            "names": list(sub["tools"]),
+                        })
+
+                        for name in sub["tools"]:
+                            t = data.get(name, {})
+                            leaf = QTreeWidgetItem(sub_item)
+                            leaf.setText(0, name)
+                            leaf.setText(1, t.get("description", "")[:160])
+                            leaf.setFlags(leaf.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                            leaf.setData(0, self._ROLE_META, {"kind": "tool", "name": name})
+                            leaf.setCheckState(
+                                0,
+                                Qt.CheckState.Checked if t.get("enabled")
+                                else Qt.CheckState.Unchecked,
+                            )
+
+                self._refresh_aggregate_state(tier_item)
+                tier_item.setExpanded(False)
+        finally:
+            self._suppress_tool_change = False
+        self._apply_tools_filter(self._tools_filter.text())
+
+    def _refresh_aggregate_state(self, item: QTreeWidgetItem) -> None:
+        """Walk children to set tristate (Checked / Unchecked / PartiallyChecked) on `item`."""
+        meta = item.data(0, self._ROLE_META) or {}
+        if meta.get("kind") == "tool":
+            return
+        on = total = 0
+        for i in range(item.childCount()):
+            child = item.child(i)
+            self._refresh_aggregate_state(child)
+            cm = child.data(0, self._ROLE_META) or {}
+            if cm.get("kind") == "tool":
+                total += 1
+                if child.checkState(0) == Qt.CheckState.Checked:
+                    on += 1
+            else:
+                cnames = cm.get("names", [])
+                total += len(cnames)
+                if child.checkState(0) == Qt.CheckState.Checked:
+                    on += len(cnames)
+                elif child.checkState(0) == Qt.CheckState.PartiallyChecked:
+                    on += 1   # any non-zero — exact value doesn't matter for tristate logic
+        if total == 0 or on == 0:
+            state = Qt.CheckState.Unchecked
+        elif on >= total:
+            state = Qt.CheckState.Checked
+        else:
+            state = Qt.CheckState.PartiallyChecked
+        item.setCheckState(0, state)
+
+    def _on_tools_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._suppress_tool_change or column != 0:
+            return
+        meta = item.data(0, self._ROLE_META) or {}
+        kind = meta.get("kind")
+        enabled = item.checkState(0) == Qt.CheckState.Checked
+
+        if kind == "tool":
+            async def do_one():
+                try:
+                    await self._client.admin_set_tool_enabled(meta["name"], enabled)
+                except Exception as exc:
+                    QMessageBox.warning(self, "Failed", str(exc))
+                    await self._refresh_tools()
+                    return
+                # Re-aggregate ancestors locally without a full refresh.
+                self._suppress_tool_change = True
+                try:
+                    p = item.parent()
+                    while p is not None:
+                        self._refresh_aggregate_state(p)
+                        p = p.parent()
+                finally:
+                    self._suppress_tool_change = False
+            asyncio.ensure_future(do_one())
+            return
+
+        # Group / subgroup / tier — bulk PATCH.
+        async def do_bulk():
+            try:
+                kwargs: dict = {}
+                if kind == "tier":
+                    kwargs["tier"] = meta["tier"]
+                elif kind == "group":
+                    kwargs["tier"] = meta["tier"]
+                    kwargs["group"] = meta["group"]
+                elif kind == "subgroup":
+                    kwargs["tier"] = meta["tier"]
+                    kwargs["group"] = meta["group"]
+                    kwargs["subgroup"] = meta["subgroup"]
+                await self._client.admin_bulk_set_tools(enabled=enabled, **kwargs)
+            except Exception as exc:
+                QMessageBox.warning(self, "Failed", str(exc))
+            await self._refresh_tools()
+        asyncio.ensure_future(do_bulk())
+
+    def _apply_tools_filter(self, text: str) -> None:
+        q = (text or "").lower().strip()
+
+        def visit(item: QTreeWidgetItem) -> bool:
+            """Return True if any descendant matches the filter."""
+            meta = item.data(0, self._ROLE_META) or {}
+            if meta.get("kind") == "tool":
+                match = (not q) or q in meta["name"].lower()
+                item.setHidden(not match)
+                return match
+            any_match = False
+            for i in range(item.childCount()):
+                if visit(item.child(i)):
+                    any_match = True
+            item.setHidden(not any_match)
+            if q and any_match:
+                item.setExpanded(True)
+            return any_match
+
+        for i in range(self._tools_tree.topLevelItemCount()):
+            visit(self._tools_tree.topLevelItem(i))
 
     # ── Airgap tab ─────────────────────────────────────────────────────────
 

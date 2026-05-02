@@ -114,3 +114,77 @@ def test_dispatch_many(registry):
     assert len(results) == 2
     assert "2" in results[0]["content"]
     assert "9" in results[1]["content"]
+
+
+# ── Taxonomy (group / subgroup / tier) ─────────────────────────────────
+
+def test_groups_yaml_loaded(registry):
+    """tool_groups.yaml should populate the registry's display map."""
+    assert registry.groups, "Expected tool_groups.yaml to populate ToolRegistry.groups"
+    # Spot-check a few canonical groups exist with display titles.
+    for slug in ("research", "finance", "entertainment", "desktop"):
+        assert slug in registry.groups, f"Missing group {slug!r} in tool_groups.yaml"
+    assert registry.group_title("desktop") == "Desktop Integration"
+    assert registry.group_title("entertainment", "torrents") == "Torrents"
+
+
+def test_every_tool_has_group(registry):
+    """Every method registered must carry a group/subgroup. Tools without
+    yaml entries fall back to ('uncategorized', 'general')."""
+    for name, t in registry.tools.items():
+        assert t.group, f"{name}: empty group"
+        assert t.subgroup, f"{name}: empty subgroup"
+
+
+def test_uncategorized_floor_is_low(registry):
+    """If most tools end up in the 'uncategorized' bucket the YAML
+    annotations have drifted out of sync with the file system. Keep the
+    bar at <5% so a regression here is loud."""
+    total = len(registry.tools)
+    uncat = sum(1 for t in registry.tools.values() if t.group == "uncategorized")
+    assert uncat / total < 0.05, (
+        f"{uncat}/{total} tool methods are uncategorized — "
+        "add their module name to config/tools.yaml with group/subgroup."
+    )
+
+
+def test_tier_classification(registry):
+    """Tools with requires_service starting `host_` are host-tier; rest network."""
+    from backend.tools.registry import TIER_HOST, TIER_NETWORK
+    sample = {
+        "filesystem.list_directory":  TIER_HOST,
+        "kicad.run_erc":              TIER_HOST,
+        "qbittorrent.list_torrents":  TIER_HOST,
+        "spotify.search":             TIER_NETWORK,
+        "calculator.calculate":       TIER_NETWORK,
+        "torrent_search.search_movies": TIER_NETWORK,
+    }
+    for name, expected in sample.items():
+        t = registry.get(name)
+        if t is None:
+            continue   # Tool may have failed to import in a constrained env.
+        assert t.tier == expected, f"{name}: tier={t.tier!r}, expected {expected!r}"
+
+
+def test_tier_titles_resolve(registry):
+    from backend.tools.registry import TIER_HOST, TIER_NETWORK, ToolRegistry
+    assert ToolRegistry.tier_title(TIER_HOST) == "Host / System Access"
+    assert ToolRegistry.tier_title(TIER_NETWORK) == "Network-only Tools"
+    # Network is shown above host in the UI.
+    assert ToolRegistry.tier_order(TIER_NETWORK) < ToolRegistry.tier_order(TIER_HOST)
+
+
+def test_tools_yaml_merges_all_sections(registry):
+    """The original tools.yaml split tools across `tools:` and
+    `additional_tools:` sections. Both must be honoured by the loader."""
+    # finance is under additional_tools historically; filesystem under tools.
+    finance = registry.get("finance.stock_quote") or next(
+        (t for n, t in registry.tools.items() if n.startswith("finance.")), None,
+    )
+    if finance is not None:
+        # If the additional_tools section is being read, finance has a
+        # group set. If it's being silently ignored, group falls back
+        # to "uncategorized".
+        assert finance.group != "uncategorized", (
+            "additional_tools: section is not being read by the loader"
+        )

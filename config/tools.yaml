@@ -9,6 +9,8 @@ tools:
   # ── Search & Research ─────────────────────────────────────────────────────────
   web_search:
     file: tools/web_search.py
+    group: web_geo
+    subgroup: web_search
     title: "Web Search"
     description: "Search the web in real time via the configured provider (Brave or DuckDuckGo). Gives models access to current events and live data."
     requires_service: null
@@ -16,6 +18,8 @@ tools:
 
   wikipedia:
     file: tools/wikipedia.py
+    group: research
+    subgroup: reference
     title: "Wikipedia Lookup"
     description: "Retrieve Wikipedia article summaries and full content. Great for encyclopedic knowledge."
     requires_service: null
@@ -23,6 +27,8 @@ tools:
 
   arxiv_search:
     file: tools/arxiv_search.py
+    group: research
+    subgroup: computer_science
     title: "ArXiv Paper Search"
     description: "Search and retrieve academic papers from ArXiv. Gives models access to research."
     requires_service: null
@@ -30,6 +36,8 @@ tools:
 
   url_reader:
     file: tools/url_reader.py
+    group: web_geo
+    subgroup: web_search
     title: "URL Reader"
     description: "Fetch and extract readable text from any URL. Lets the model read web pages."
     requires_service: null
@@ -38,6 +46,8 @@ tools:
   # ── Computation & Data ────────────────────────────────────────────────────────
   calculator:
     file: tools/calculator.py
+    group: code_data_compute
+    subgroup: compute_notebooks
     title: "Calculator"
     description: "Perform arithmetic, algebra, unit conversions, and financial calculations accurately."
     requires_service: null
@@ -45,6 +55,8 @@ tools:
 
   datetime_tool:
     file: tools/datetime_tool.py
+    group: code_data_compute
+    subgroup: dev_utilities
     title: "Date & Time"
     description: "Get current date/time in any timezone, calculate date differences, parse dates."
     requires_service: null
@@ -52,6 +64,8 @@ tools:
 
   weather:
     file: tools/weather.py
+    group: web_geo
+    subgroup: weather
     title: "Weather (Open-Meteo)"
     description: "Real-time weather and 7-day forecast via free Open-Meteo API. No API key needed."
     requires_service: null
@@ -60,6 +74,8 @@ tools:
   # ── Academic & Scientific ─────────────────────────────────────────────────────
   pubmed:
     file: tools/pubmed.py
+    group: research
+    subgroup: life_sciences
     title: "PubMed / NCBI Biomedical Search"
     description: "Search 35M+ biomedical articles. Covers medicine, biology, pharmacology, genetics, neuroscience."
     requires_service: null
@@ -68,6 +84,8 @@ tools:
 
   semantic_scholar:
     file: tools/semantic_scholar.py
+    group: research
+    subgroup: cross_disciplinary
     title: "Semantic Scholar"
     description: "AI-powered search across 220M+ papers in all fields. Finds open-access PDFs, citation counts, and author profiles."
     requires_service: null
@@ -76,6 +94,8 @@ tools:
 
   crossref:
     file: tools/crossref.py
+    group: research
+    subgroup: cross_disciplinary
     title: "CrossRef — DOI & Citation Lookup"
     description: "Resolve any DOI, search 150M+ scholarly works, get citation counts, and look up journal metadata."
     requires_service: null
@@ -84,6 +104,8 @@ tools:
 
   openalex:
     file: tools/openalex.py
+    group: research
+    subgroup: cross_disciplinary
     title: "OpenAlex — Open Scholarly Catalog"
     description: "Search 250M+ scholarly works, explore scientific concepts, and look up institution research output."
     requires_service: null
@@ -92,6 +114,8 @@ tools:
 
   zenodo:
     file: tools/zenodo.py
+    group: research
+    subgroup: cross_disciplinary
     title: "Zenodo — CERN Open Repository"
     description: "Search Zenodo for open research datasets, software, papers, and presentations with persistent DOIs."
     requires_service: null
@@ -100,6 +124,8 @@ tools:
 
   dblp:
     file: tools/dblp.py
+    group: research
+    subgroup: computer_science
     title: "DBLP — CS Bibliography"
     description: "Search DBLP for computer science publications from all major venues (NeurIPS, ICML, CVPR, ACL, SOSP...)."
     requires_service: null
@@ -108,6 +134,8 @@ tools:
 
   nasa_ads:
     file: tools/nasa_ads.py
+    group: research
+    subgroup: physical_sciences
     title: "NASA ADS — Astrophysics Data System"
     description: "Search 15M+ astronomy and astrophysics papers. Free API token required (1-minute signup)."
     requires_service: null
@@ -117,6 +145,8 @@ tools:
 
   unpaywall:
     file: tools/unpaywall.py
+    group: research
+    subgroup: cross_disciplinary
     title: "Unpaywall — Free Paper Finder"
     description: "Find free legal PDFs of paywalled papers by DOI. Sources from PubMed Central, ArXiv, institutional repos."
     requires_service: null
@@ -126,6 +156,8 @@ tools:
   # ── Code & Development ────────────────────────────────────────────────────────
   github_search:
     file: tools/github_search.py
+    group: code_data_compute
+    subgroup: code_search
     title: "GitHub Search"
     description: "Search GitHub repositories, issues, and code. Useful for development assistance."
     requires_service: null
@@ -134,6 +166,8 @@ tools:
   # ── Memory & Persistence ──────────────────────────────────────────────────────
   memory_tool:
     file: tools/memory_tool.py
+    group: code_data_compute
+    subgroup: memory_interaction
     title: "Long-Term Memory"
     description: "Store and recall facts across conversations. Persist important user context."
     requires_service: null
@@ -146,6 +180,8 @@ tools:
   # carry `requires_service: host_*` so they're suppressed when airgap is on.
   filesystem:
     file: tools/filesystem.py
+    group: desktop
+    subgroup: system
     title: "Local Filesystem — Read/Write/Search C:/D:"
     description: "Browse, read, search, and (opt-in) write/delete files anywhere on the host machine. Defaults to C:\\, D:\\, and the user's home; blocks Windows, Program Files\\WindowsApps, $Recycle.Bin, etc. Writes and deletes require flipping WRITE_ENABLED / DELETE_ENABLED on the tool's Valves."
     requires_service: host_filesystem
@@ -154,6 +190,8 @@ tools:
 
   app_launcher:
     file: tools/app_launcher.py
+    group: desktop
+    subgroup: system
     title: "App Launcher — Open Programs and Files"
     description: "Launch desktop programs (KiCad, Blender, Fusion 360, FL Studio, Synthesizer V Studio, browsers, anything else) and open files in their default handler. Restricts launches to a configured APPS allow-list unless ALLOW_ARBITRARY_EXEC is on."
     requires_service: host_processes
@@ -162,6 +200,8 @@ tools:
 
   kicad:
     file: tools/kicad.py
+    group: desktop
+    subgroup: eda
     title: "KiCad — Schematic / PCB Open & CLI Automation"
     description: "Open KiCad projects, schematics, and PCB layouts, and run kicad-cli (KiCad 7+) headlessly to export Gerbers, drill files, STEP 3D models, schematic PDFs, BOMs, and netlists. Also runs ERC and DRC."
     requires_service: host_processes
@@ -170,6 +210,8 @@ tools:
 
   blender:
     file: tools/blender.py
+    group: desktop
+    subgroup: cad_3d
     title: "Blender — GUI launch + Headless Python Scripting"
     description: "Open .blend files in Blender's GUI or run arbitrary Python in Blender's bundled interpreter (full bpy API). Can render single frames or animations and export models to glTF, FBX, OBJ, STL, USD, or Alembic."
     requires_service: host_processes
@@ -178,6 +220,8 @@ tools:
 
   fusion360:
     file: tools/fusion360.py
+    group: desktop
+    subgroup: cad_3d
     title: "Fusion 360 — Launch + Script/Add-in Installation"
     description: "Open Fusion 360 (or .f3d / .f3z files) and install Python scripts and add-ins into Fusion's standard API folders. Add-ins can be configured to auto-load on Fusion launch."
     requires_service: host_processes
@@ -186,6 +230,8 @@ tools:
 
   fl_studio:
     file: tools/fl_studio.py
+    group: desktop
+    subgroup: audio_production
     title: "FL Studio — Project Open + Headless Render + MIDI Send"
     description: "Open .flp projects and .mid files in FL Studio, render projects to WAV/MP3/OGG/FLAC headlessly via FL64.exe's /R flag, install MIDI Scripting controller-surface scripts, and (optionally) send live MIDI via mido/python-rtmidi."
     requires_service: host_processes
@@ -194,6 +240,8 @@ tools:
 
   synthv_studio:
     file: tools/synthv_studio.py
+    group: desktop
+    subgroup: audio_production
     title: "Synthesizer V Studio — Open + Batch Render + JS Scripting"
     description: "Open Synthesizer V Studio Pro projects (.svp / .s5p), batch-render them to WAV via synthv-cli (or synthv-studio --batch-render), and install JavaScript automation scripts into the user scripts directory."
     requires_service: host_processes
@@ -207,6 +255,8 @@ tools:
   # are online-API-only.
   steam:
     file: tools/steam.py
+    group: entertainment
+    subgroup: games
     title: "Steam — Launch Games + Library Inspection"
     description: "Launch installed Steam games via the steam:// URL protocol, list installed games by parsing libraryfolders.vdf, and (with a free Steam Web API key) fetch a public profile's owned-games list, recently played, and player summary."
     requires_service: host_processes
@@ -216,6 +266,8 @@ tools:
 
   musicbee:
     file: tools/musicbee.py
+    group: entertainment
+    subgroup: local_player
     title: "MusicBee — Local Music Player Control"
     description: "Drive a local MusicBee install via its command-line switches: launch, play / pause / next / previous, set volume, mute, queue and play files, open library/playlists."
     requires_service: host_processes
@@ -224,6 +276,8 @@ tools:
 
   spotify:
     file: tools/spotify.py
+    group: entertainment
+    subgroup: streaming_music
     title: "Spotify — Web API Search + Playback Control"
     description: "Spotify Web API for catalogue search, playlist browsing, and playback control. Public-catalogue endpoints work with a client_id+secret; playback control needs a long-lived user refresh_token."
     requires_service: null
@@ -233,6 +287,8 @@ tools:
 
   torrent_search:
     file: tools/torrent_search.py
+    group: entertainment
+    subgroup: torrents
     title: "Torrent Search — YTS, EZTV, Nyaa, Pirate Bay, Internet Archive, Jackett"
     description: "Search public torrent indexers for movies (YTS), TV (EZTV), anime (Nyaa), the long-tail (apibay.org), and Internet Archive's public-domain collection. Optional Jackett/Prowlarr meta-search routes one query through every configured tracker. Returns magnet URIs / .torrent links — pair with the qBittorrent client to actually download."
     requires_service: null
@@ -241,6 +297,8 @@ tools:
 
   qbittorrent:
     file: tools/qbittorrent.py
+    group: entertainment
+    subgroup: torrents
     title: "qBittorrent — Web API Client"
     description: "Drive a local or remote qBittorrent instance via its Web API. Add torrents from a magnet URI or .torrent URL, list and filter the queue, pause / resume / delete (with optional file removal), set per-torrent download limits, and fetch global transfer stats."
     requires_service: host_processes
@@ -249,6 +307,8 @@ tools:
 
   free_music:
     file: tools/free_music.py
+    group: entertainment
+    subgroup: p2p_music
     title: "Free Music — FMA, Internet Archive Audio, Jamendo"
     description: "Search and download legitimately-free music from Free Music Archive (CC-licensed indie), Internet Archive Audio (public-domain & CC concerts/broadcasts/78rpm rips, often FLAC), and Jamendo (CC-licensed releases from 600k+ artists, FLAC with a free API key)."
     requires_service: null
@@ -285,36 +345,48 @@ middleware:
 additional_tools:
   finance:
     file: tools/finance.py
+    group: finance
+    subgroup: markets
     title: "Finance — Stocks & Crypto"
     description: "Real-time stock quotes (Yahoo Finance) + crypto prices (CoinGecko). No API key required."
     api_key_required: false
 
   clinicaltrials:
     file: tools/clinicaltrials.py
+    group: research
+    subgroup: life_sciences
     title: "ClinicalTrials.gov"
     description: "Search 480,000+ clinical trials worldwide. Find active studies, eligibility, and sponsors."
     api_key_required: false
 
   openfda:
     file: tools/openfda.py
+    group: research
+    subgroup: life_sciences
     title: "OpenFDA — Drug, Food & Device"
     description: "FDA drug labels, adverse event reports (FAERS), and product recalls. Free API."
     api_key_required: false
 
   pubchem:
     file: tools/pubchem.py
+    group: research
+    subgroup: life_sciences
     title: "PubChem — Chemical Compounds"
     description: "Look up 115M+ chemicals by name, formula, or CAS. Get properties, SMILES, safety data."
     api_key_required: false
 
   open_library:
     file: tools/open_library.py
+    group: entertainment
+    subgroup: books
     title: "Open Library — Books"
     description: "Search 20M+ books, get author bios, covers, and links to free full-text via Internet Archive."
     api_key_required: false
 
   annas_archive:
     file: tools/annas_archive.py
+    group: entertainment
+    subgroup: books
     title: "Anna's Archive — Shadow Library Search & Download"
     description: "Search Anna's Archive (and mirrors annas-archive.li/.se/.gd/.gl/.vg/.pm) for books, papers, comics, magazines, and standards. Look up records by MD5, enumerate free mirrors (LibGen, Sci-Hub, IPFS, partner servers), pull a member fast-download URL, and stream the file to disk. No key needed for search/lookup; AA_MEMBER_KEY (donor key) needed for fast downloads."
     requires_service: null
@@ -324,42 +396,56 @@ additional_tools:
 
   rss_reader:
     file: tools/rss_reader.py
+    group: news_public_affairs
+    subgroup: news_media
     title: "RSS / Atom Feed Reader"
     description: "Read any RSS or Atom feed. 25+ presets: HN, ArXiv, BBC, TechCrunch, Nature, NASA, Reddit, OpenAI Blog..."
     api_key_required: false
 
   hackernews:
     file: tools/hackernews.py
+    group: news_public_affairs
+    subgroup: news_media
     title: "Hacker News"
     description: "Browse HN top/new/best/ask/show stories and search all past discussions via Algolia."
     api_key_required: false
 
   dictionary:
     file: tools/dictionary.py
+    group: research
+    subgroup: reference
     title: "Dictionary & Thesaurus"
     description: "Definitions, pronunciation, etymology, synonyms, antonyms, rhymes, and word associations."
     api_key_required: false
 
   dev_utils:
     file: tools/dev_utils.py
+    group: code_data_compute
+    subgroup: dev_utilities
     title: "Developer Utilities"
     description: "Hash (MD5/SHA256/SHA512), UUID gen, Base64 encode/decode, JSON format, regex test, URL encode, color convert."
     api_key_required: false
 
   package_search:
     file: tools/package_search.py
+    group: code_data_compute
+    subgroup: code_search
     title: "Package Search — PyPI / npm / DockerHub"
     description: "Search Python packages on PyPI, JS packages on npm, and container images on Docker Hub."
     api_key_required: false
 
   network_tools:
     file: tools/network_tools.py
+    group: code_data_compute
+    subgroup: dev_utilities
     title: "Network Tools — IP / DNS / WHOIS"
     description: "IP geolocation, ASN lookup, DNS resolution, and domain WHOIS/RDAP data."
     api_key_required: false
 
   n8n_trigger:
     file: tools/n8n_trigger.py
+    group: code_data_compute
+    subgroup: workflows
     title: "n8n Workflow Trigger"
     description: "Trigger any n8n automation workflow from chat. List workflows, call webhooks, get results."
     requires_service: n8n
@@ -368,6 +454,8 @@ additional_tools:
 # ── Excel & Spreadsheet ───────────────────────────────────────────────────────
   excel_tool:
     file: tools/excel_tool.py
+    group: code_data_compute
+    subgroup: compute_notebooks
     title: "Excel & Spreadsheet Tool"
     description: "Read/analyze Excel and CSV files from URLs, generate Python openpyxl code to create workbooks, analyze pasted CSV data with statistics, and get Excel formula help for financial/data tasks."
     api_key_required: false
@@ -376,6 +464,8 @@ additional_tools:
 # ── Finance & Economics ───────────────────────────────────────────────────────
   fred:
     file: tools/fred.py
+    group: finance
+    subgroup: macro_public_data
     title: "FRED — Federal Reserve Economic Data"
     description: "Access 800,000+ economic series from the St. Louis Fed. GDP, CPI, unemployment, Fed funds rate, treasury yields, M2, VIX, housing, trade, and consumer data. Free API key required."
     api_key_required: true
@@ -383,36 +473,48 @@ additional_tools:
 
   yahoo_finance_extended:
     file: tools/yahoo_finance_extended.py
+    group: finance
+    subgroup: markets
     title: "Yahoo Finance Extended — Financials, History & Options"
     description: "Deep financial data: historical OHLCV prices, income/balance/cashflow statements, key ratios (P/E, P/B, beta), options chains, earnings calendar, and analyst recommendations."
     api_key_required: false
 
   sec_edgar:
     file: tools/sec_edgar.py
+    group: finance
+    subgroup: disclosures
     title: "SEC EDGAR — Company Filings & Disclosures"
     description: "Search SEC EDGAR for 10-K annual reports, 10-Q quarterly reports, 8-K current events, S-1 IPOs, proxy statements, and insider transactions. Find companies by name or ticker."
     api_key_required: false
 
   forex:
     file: tools/forex.py
+    group: finance
+    subgroup: markets
     title: "Forex — Live Exchange Rates & Currency Conversion"
     description: "Real-time foreign exchange rates via ECB/Frankfurter API. Convert between 30+ currencies, view historical rate charts, and get live rate tables. No API key required."
     api_key_required: false
 
   financial_calculator:
     file: tools/financial_calculator.py
+    group: finance
+    subgroup: analysis
     title: "Financial Calculator — NPV, IRR, DCF, Options & Portfolio"
     description: "Professional financial math: NPV/IRR analysis, loan amortization schedules, Black-Scholes options pricing, bond yield-to-maturity, compound interest, and portfolio Sharpe/Sortino/drawdown metrics."
     api_key_required: false
 
   world_bank:
     file: tools/world_bank.py
+    group: finance
+    subgroup: macro_public_data
     title: "World Bank — Global Economic & Development Data"
     description: "200+ countries, 1000+ indicators: GDP, inflation, unemployment, poverty, education, health, trade, CO2 emissions. Compare countries side-by-side and build country profiles."
     api_key_required: false
 
   technical_analysis:
     file: tools/technical_analysis.py
+    group: finance
+    subgroup: analysis
     title: "Technical Analysis — RSI, MACD, Bollinger Bands & More"
     description: "Full technical analysis from live Yahoo Finance data. RSI (overbought/oversold), MACD crossovers, Bollinger Bands, SMA/EMA golden/death cross, and full technical reports with overall signals."
     api_key_required: false
@@ -420,6 +522,8 @@ additional_tools:
 # ── Engineering & Physics ─────────────────────────────────────────────────────
   nasa_apis:
     file: tools/nasa_apis.py
+    group: research
+    subgroup: physical_sciences
     title: "NASA Open APIs — APOD, NEO, Mars Rover & Exoplanets"
     description: "Astronomy Picture of the Day, Near Earth Object (asteroid) tracking, Mars Rover photos (Curiosity/Perseverance), and NASA Exoplanet Archive queries. Free API key at api.nasa.gov."
     api_key_required: true
@@ -427,6 +531,8 @@ additional_tools:
 
   materials_project:
     file: tools/materials_project.py
+    group: research
+    subgroup: physical_sciences
     title: "Materials Project — Computational Materials Science"
     description: "Search 150,000+ inorganic compounds for crystal structure, band gap, formation energy, stability, and magnetic properties. Computed via DFT. Free API key at materialsproject.org."
     api_key_required: true
@@ -434,12 +540,16 @@ additional_tools:
 
   simbad:
     file: tools/simbad.py
+    group: research
+    subgroup: physical_sciences
     title: "SIMBAD — Astronomical Database (Stars, Galaxies, Nebulae)"
     description: "Query 15+ million astronomical objects: stars, galaxies, pulsars, nebulae. Get coordinates, spectral type, parallax, proper motion, magnitude, and radial velocity from the CDS Strasbourg. No API key."
     api_key_required: false
 
   usgs:
     file: tools/usgs.py
+    group: research
+    subgroup: earth_climate
     title: "USGS — Earthquakes, Geology & Water Resources"
     description: "Real-time and historical earthquake data (worldwide M3+), USGS stream gauge water levels, and seismic hazard analysis for any region. No API key required."
     api_key_required: false
@@ -447,6 +557,8 @@ additional_tools:
 # ── Defense & Geopolitics ─────────────────────────────────────────────────────
   acled:
     file: tools/acled.py
+    group: news_public_affairs
+    subgroup: conflict_compliance
     title: "ACLED — Armed Conflict Location & Event Data"
     description: "Real-time global conflict events: battles, explosions, protests, riots, and violence against civilians. 200+ countries since 1997. Fatalities, actors, and geographic detail. Free API key at acleddata.com."
     api_key_required: true
@@ -455,6 +567,8 @@ additional_tools:
 # ── Finance (Extended) ────────────────────────────────────────────────────────
   alpha_vantage:
     file: tools/alpha_vantage.py
+    group: finance
+    subgroup: markets
     title: "Alpha Vantage — Stocks, Forex, Crypto & Economic Data"
     description: "Real-time and historical stock prices, 50+ technical indicators, forex rates, crypto OHLCV, and US macro data (GDP, CPI, inflation, treasury yields). Free API key at alphavantage.co."
     api_key_required: true
@@ -462,6 +576,8 @@ additional_tools:
 
   finnhub:
     file: tools/finnhub.py
+    group: finance
+    subgroup: markets
     title: "Finnhub — Real-Time Stocks, Fundamentals & News"
     description: "Real-time quotes, company profiles, earnings history, analyst recommendations, insider transactions, news sentiment, and IPO calendar. 60 requests/minute free. API key at finnhub.io."
     api_key_required: true
@@ -470,6 +586,8 @@ additional_tools:
 # ── Humanities & Cultural Heritage ───────────────────────────────────────────
   europeana:
     file: tools/europeana.py
+    group: culture
+    subgroup: museums
     title: "Europeana — European Cultural Heritage"
     description: "Search 50M+ cultural objects from 2,500 European museums, archives, and libraries. Paintings, manuscripts, maps, photographs, audio, and 3D objects. Filter by country, era, media type. Free API key."
     api_key_required: true
@@ -478,6 +596,8 @@ additional_tools:
 # ── Natural Science ───────────────────────────────────────────────────────────
   noaa_climate:
     file: tools/noaa_climate.py
+    group: research
+    subgroup: earth_climate
     title: "NOAA Climate Data — Historical Weather & Climate Records"
     description: "Historical temperature, precipitation, snowfall, and extreme weather from 100,000+ global stations dating to 1763. US climate normals (30-year averages). Free API token at ncei.noaa.gov."
     api_key_required: true
@@ -485,12 +605,16 @@ additional_tools:
 
   uniprot:
     file: tools/uniprot.py
+    group: research
+    subgroup: life_sciences
     title: "UniProt — Protein Sequences, Functions & Interactions"
     description: "Search 250M+ protein sequences (Swiss-Prot + TrEMBL). Get amino acid sequences, domains, PTMs, disease associations, 3D structures (PDB links), Gene Ontology, and pathways. No API key required."
     api_key_required: false
 
   ensembl:
     file: tools/ensembl.py
+    group: research
+    subgroup: life_sciences
     title: "Ensembl — Genomics, Gene Sequences & Variants"
     description: "Query Ensembl for 250+ species. Gene coordinates, DNA/protein sequences, SNP/variant data, ortholog mapping across species, and gene expression. Essential for bioinformatics. No API key required."
     api_key_required: false
@@ -498,6 +622,8 @@ additional_tools:
 # ── Phase 6: Financial Modelling & Charting ───────────────────────────────────
   chart_generator:
     file: tools/chart_generator.py
+    group: finance
+    subgroup: analysis
     title: "Financial Chart Generator — Candlesticks, Comparison & Technical Charts"
     description: "Generate inline financial charts: candlestick price history with volume, multi-asset normalized comparison, full technical analysis panel (RSI/MACD/Bollinger), and return correlation heatmap. Works for stocks, ETFs, crypto, forex. No API key required."
     api_key_required: false
@@ -505,6 +631,8 @@ additional_tools:
 
   financial_model:
     file: tools/financial_model.py
+    group: finance
+    subgroup: analysis
     title: "Financial Modelling — DCF, Monte Carlo, Efficient Frontier & Scenarios"
     description: "Professional financial models with embedded charts: DCF valuation with WACC/terminal-growth sensitivity heatmap, Monte Carlo stock price simulation (GBM fan chart), Markowitz Efficient Frontier for portfolio optimization, and bear/base/bull scenario P&L analysis."
     api_key_required: false
@@ -512,6 +640,8 @@ additional_tools:
 
   jupyter_tool:
     file: tools/jupyter_tool.py
+    group: code_data_compute
+    subgroup: compute_notebooks
     title: "Jupyter Code Executor — Run Custom Python"
     description: "Execute arbitrary Python in the local Jupyter kernel (scipy-notebook with pandas, numpy, scipy, matplotlib, scikit-learn, statsmodels). Returns stdout and matplotlib figures as inline images. Ideal for custom models, data analysis, and ML experiments."
     requires_service: jupyter
@@ -521,6 +651,8 @@ additional_tools:
 # ── Interaction & UX ──────────────────────────────────────────────────────────
   ask_clarification:
     file: tools/ask_clarification.py
+    group: code_data_compute
+    subgroup: memory_interaction
     title: "Ask Clarification — Multiple-Choice Questions"
     description: "Lets the model present structured clarifying questions before tackling ambiguous tasks. Renders numbered multiple-choice options with an optional free-text field. Model calls ask_user(), ask_yes_no(), or ask_scope() — user replies with a number or custom text."
     api_key_required: false
@@ -530,24 +662,32 @@ additional_tools:
 # Knowledge & Reference
   wikidata:
     file: tools/wikidata.py
+    group: research
+    subgroup: reference
     title: "Wikidata — Structured Knowledge Graph"
     description: "Query Wikidata, the structured knowledge graph behind Wikipedia. Entity lookup by name, claims/statements, and SPARQL over 100M+ items."
     api_key_required: false
 
   rest_countries:
     file: tools/rest_countries.py
+    group: research
+    subgroup: reference
     title: "REST Countries — Country Profiles"
     description: "Population, capital, currencies, languages, borders, timezones, and calling codes for 250+ countries. No key required."
     api_key_required: false
 
   wayback:
     file: tools/wayback.py
+    group: culture
+    subgroup: libraries_archives
     title: "Wayback Machine — Internet Archive"
     description: "Find historical snapshots of URLs, capture history timelines, and request fresh archives via the Internet Archive's Wayback Machine."
     api_key_required: false
 
   stackexchange:
     file: tools/stackexchange.py
+    group: research
+    subgroup: reference
     title: "Stack Exchange — SO, Math, SuperUser & 170+ sites"
     description: "Search Q&A across Stack Overflow, Math, Server Fault, Super User, Ask Ubuntu, Cross Validated, TeX, Unix, and more."
     api_key_required: false
@@ -555,24 +695,32 @@ additional_tools:
 # Geo & Events
   openstreetmap:
     file: tools/openstreetmap.py
+    group: web_geo
+    subgroup: maps_places
     title: "OpenStreetMap — Geocoding & POIs"
     description: "Free geocoding (Nominatim), reverse geocoding, and POI search (Overpass). Addresses, landmarks, amenities worldwide."
     api_key_required: false
 
   gdelt:
     file: tools/gdelt.py
+    group: news_public_affairs
+    subgroup: news_media
     title: "GDELT — Global News & Events Database"
     description: "Search billions of news articles worldwide in 65+ languages. Tone/sentiment analysis and topic timelines since 2015."
     api_key_required: false
 
   nasa_eonet:
     file: tools/nasa_eonet.py
+    group: research
+    subgroup: earth_climate
     title: "NASA EONET — Natural Events Tracker"
     description: "Live feed of wildfires, storms, volcanoes, floods, icebergs, sea/lake ice, dust/haze, earthquakes worldwide."
     api_key_required: false
 
   openaq:
     file: tools/openaq.py
+    group: research
+    subgroup: earth_climate
     title: "OpenAQ — Global Air Quality"
     description: "Real-time and historical PM2.5, PM10, NO2, O3, SO2, CO, BC from 17,000+ stations in 100+ countries."
     api_key_required: false
@@ -580,18 +728,24 @@ additional_tools:
 # Culture & Arts
   met_museum:
     file: tools/met_museum.py
+    group: culture
+    subgroup: museums
     title: "MET Museum — Open Access Art Collection"
     description: "Search The Met's 470,000+ CC0 open-access art objects with high-resolution images."
     api_key_required: false
 
   musicbrainz:
     file: tools/musicbrainz.py
+    group: entertainment
+    subgroup: music_metadata
     title: "MusicBrainz — Open Music Metadata"
     description: "Open music encyclopedia: artists, releases, recordings, labels, works with MBIDs and relationships."
     api_key_required: false
 
   qobuz_dl:
     file: tools/qobuz_dl.py
+    group: entertainment
+    subgroup: streaming_music
     title: "Qobuz-DL — Hi-Res Music Search & Download"
     description: "Search Qobuz for tracks/albums/artists and download lossless or hi-res audio via the qobuz-dl CLI. Requires a Qobuz subscription plus `pip install qobuz-dl` (run `qobuz-dl -r` once to configure)."
     requires_service: null
@@ -601,6 +755,8 @@ additional_tools:
 
   soulseek:
     file: tools/soulseek.py
+    group: entertainment
+    subgroup: p2p_music
     title: "Soulseek — P2P Music Search & Download (slskd)"
     description: "Search the Soulseek network and queue downloads through a slskd daemon (run separately: https://github.com/slskd/slskd). Point SLSKD_URL + SLSKD_API_KEY at your instance."
     requires_service: null
@@ -608,14 +764,18 @@ additional_tools:
     api_key_required: true
     api_key_url: "https://github.com/slskd/slskd"
 
-  library_of_congress:
+  loc:
     file: tools/loc.py
+    group: culture
+    subgroup: libraries_archives
     title: "Library of Congress — Historical Collections"
     description: "Search 20M+ items: photos, maps, manuscripts, audio, and Chronicling America (1777–1963 newspapers)."
     api_key_required: false
 
   smithsonian:
     file: tools/smithsonian.py
+    group: culture
+    subgroup: museums
     title: "Smithsonian Open Access — 4.5M+ Objects"
     description: "Art, natural history, aerospace, science, and history from the Smithsonian's 19 museums & archives. Free API key required."
     api_key_required: true
@@ -623,6 +783,8 @@ additional_tools:
 
   rijksmuseum:
     file: tools/rijksmuseum.py
+    group: culture
+    subgroup: museums
     title: "Rijksmuseum — Dutch Masters & Beyond"
     description: "700,000+ works including Rembrandt, Vermeer, Van Gogh. CC0 high-res images. Free API key required."
     api_key_required: true
@@ -631,36 +793,48 @@ additional_tools:
 # Life & Chemical Sciences
   gbif:
     file: tools/gbif.py
+    group: research
+    subgroup: life_sciences
     title: "GBIF — Global Biodiversity"
     description: "2.5B+ species occurrence records plus the GBIF taxonomic backbone."
     api_key_required: false
 
   inaturalist:
     file: tools/inaturalist.py
+    group: research
+    subgroup: life_sciences
     title: "iNaturalist — Citizen-Science Observations"
     description: "200M+ wildlife observations with photos, locations, and research-grade IDs."
     api_key_required: false
 
   rcsb_pdb:
     file: tools/rcsb_pdb.py
+    group: research
+    subgroup: life_sciences
     title: "RCSB PDB — Protein Data Bank"
     description: "200,000+ 3D macromolecular structures (X-ray, NMR, cryo-EM). Full-text search and entry lookup."
     api_key_required: false
 
   chembl:
     file: tools/chembl.py
+    group: research
+    subgroup: life_sciences
     title: "ChEMBL — Bioactive Molecules & Targets"
     description: "2.3M+ bioactive molecules, 15,000+ drug targets, and 20M+ bioactivity measurements from EMBL-EBI."
     api_key_required: false
 
   europepmc:
     file: tools/europepmc.py
+    group: research
+    subgroup: life_sciences
     title: "Europe PMC — Life Sciences Literature"
     description: "40M+ abstracts and 9M+ open-access full-text biomedical papers. Citation graph, OA PDF links."
     api_key_required: false
 
   doaj:
     file: tools/doaj.py
+    group: research
+    subgroup: cross_disciplinary
     title: "DOAJ — Directory of Open Access Journals"
     description: "20,000+ peer-reviewed OA journals and 10M+ OA articles with full-text links."
     api_key_required: false
@@ -668,24 +842,32 @@ additional_tools:
 # Economics & Public Data
   imf:
     file: tools/imf.py
+    group: finance
+    subgroup: macro_public_data
     title: "IMF Data — Macro Statistics"
     description: "GDP, inflation, unemployment, debt, current account via IMF DataMapper (WEO/IFS)."
     api_key_required: false
 
   eurostat:
     file: tools/eurostat.py
+    group: finance
+    subgroup: macro_public_data
     title: "Eurostat — European Statistics"
     description: "EU27 + EFTA + candidate country stats via JSON-stat: GDP, labor, trade, energy, demographics."
     api_key_required: false
 
   oecd:
     file: tools/oecd.py
+    group: finance
+    subgroup: macro_public_data
     title: "OECD Data — Member Economies"
     description: "SDMX-JSON access to OECD statistics: GDP, CPI, trade, labour, health, education, environment."
     api_key_required: false
 
-  census_bureau:
+  census:
     file: tools/census.py
+    group: finance
+    subgroup: macro_public_data
     title: "US Census Bureau — Demographics & Economics"
     description: "American Community Survey (ACS), Decennial Census, Population Estimates, Economic Indicators. Free API key."
     api_key_required: true
@@ -693,6 +875,8 @@ additional_tools:
 
   bls:
     file: tools/bls.py
+    group: finance
+    subgroup: macro_public_data
     title: "BLS — US Bureau of Labor Statistics"
     description: "Unemployment, CPI, employment (CES), wages, productivity via BLS Public Data API. Free key for higher limits."
     api_key_required: true
@@ -700,6 +884,8 @@ additional_tools:
 
   bea:
     file: tools/bea.py
+    group: finance
+    subgroup: macro_public_data
     title: "BEA — US Bureau of Economic Analysis"
     description: "US GDP, personal income, trade, regional & industry accounts. Free API key."
     api_key_required: true
@@ -707,6 +893,8 @@ additional_tools:
 
   un_comtrade:
     file: tools/un_comtrade.py
+    group: finance
+    subgroup: macro_public_data
     title: "UN Comtrade — Global Trade Statistics"
     description: "Bilateral trade flows by country/commodity/year using the free UN Comtrade public API."
     api_key_required: false
@@ -714,6 +902,8 @@ additional_tools:
 # News & Media
   guardian:
     file: tools/guardian.py
+    group: news_public_affairs
+    subgroup: news_media
     title: "The Guardian — News Archive Search"
     description: "Search 2M+ Guardian articles (politics, world, business, culture, sport) back to 1999. Free API key."
     api_key_required: true
@@ -721,6 +911,8 @@ additional_tools:
 
   nytimes:
     file: tools/nytimes.py
+    group: news_public_affairs
+    subgroup: news_media
     title: "The New York Times — Archive, Top Stories & Bestsellers"
     description: "NYT Article Search (1851+), Top Stories by section, and NYT Bestseller lists. Free API key."
     api_key_required: true
@@ -728,6 +920,8 @@ additional_tools:
 
   tmdb:
     file: tools/tmdb.py
+    group: entertainment
+    subgroup: movies_tv
     title: "TMDB — Movies & TV"
     description: "800,000+ movies and 150,000+ TV shows. Cast, crew, ratings, overviews, posters, and trending. Free API key."
     api_key_required: true
@@ -735,6 +929,8 @@ additional_tools:
 
   omdb:
     file: tools/omdb.py
+    group: entertainment
+    subgroup: movies_tv
     title: "OMDb — Open Movie DB (IMDb data)"
     description: "IMDb/Rotten Tomatoes/Metacritic ratings, cast, plot, box office. Free API key (1,000 req/day)."
     api_key_required: true
@@ -743,6 +939,8 @@ additional_tools:
 # Security, Legal & Compliance
   nvd:
     file: tools/nvd.py
+    group: news_public_affairs
+    subgroup: security
     title: "NVD — CVE Vulnerability Database (Defensive)"
     description: "NIST National Vulnerability Database: CVE lookup, keyword search, CVSS scores. Key optional for higher limits."
     api_key_required: false
@@ -750,18 +948,24 @@ additional_tools:
 
   osv:
     file: tools/osv.py
+    group: news_public_affairs
+    subgroup: security
     title: "OSV.dev — Open Source Vulnerabilities (Defensive)"
     description: "Vulns for PyPI, npm, Go, Maven, crates.io, RubyGems, Packagist, NuGet, Hex, Pub, Android, Linux distros."
     api_key_required: false
 
   uspto:
     file: tools/uspto.py
+    group: news_public_affairs
+    subgroup: legal_ip
     title: "USPTO PatentsView — US Patents"
     description: "8M+ granted US patents with inventors, assignees, classifications, and citations. Key optional."
     api_key_required: false
 
   courtlistener:
     file: tools/courtlistener.py
+    group: news_public_affairs
+    subgroup: legal_ip
     title: "CourtListener — US Court Opinions & Dockets"
     description: "9M+ US court opinions (SCOTUS, all federal circuits, state supremes) and PACER dockets. Free token."
     api_key_required: false
@@ -769,6 +973,8 @@ additional_tools:
 
   open_sanctions:
     file: tools/open_sanctions.py
+    group: news_public_affairs
+    subgroup: conflict_compliance
     title: "OpenSanctions — Sanctions, PEPs & Watchlists (Compliance)"
     description: "Consolidated OFAC/EU/UN/UK sanctions, politically-exposed persons, warrants, and criminal entities."
     api_key_required: false
@@ -777,18 +983,24 @@ additional_tools:
 # Data Catalogs & Extras
   data_gov:
     file: tools/data_gov.py
+    group: finance
+    subgroup: macro_public_data
     title: "Data.gov — US Government Open Data Catalog"
     description: "Search 300,000+ open datasets from US federal, state and local agencies via the Data.gov CKAN catalog."
     api_key_required: false
 
   google_books:
     file: tools/google_books.py
+    group: entertainment
+    subgroup: books
     title: "Google Books — Book Metadata & Previews"
     description: "Search 40M+ titles with descriptions, ratings, ISBNs, and preview links. Works without a key."
     api_key_required: false
 
   coincap:
     file: tools/coincap.py
+    group: finance
+    subgroup: markets
     title: "CoinCap — Free Crypto Prices & History"
     description: "Key-free crypto asset prices, market caps, and historical candles. Broader altcoin coverage than the basic finance tool."
     api_key_required: false

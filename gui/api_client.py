@@ -196,16 +196,36 @@ class BackendClient:
             r = await c.delete(f"/admin/users/{user_id}")
             r.raise_for_status()
 
-    async def admin_tools(self) -> list[dict]:
+    async def admin_tools(self) -> dict:
+        """Returns {"data": [...tools...], "groups": [...taxonomy tree...]}."""
         async with self._client() as c:
             r = await c.get("/admin/tools")
             r.raise_for_status()
-            return (r.json() or {}).get("data", [])
+            payload = r.json() or {}
+            return {"data": payload.get("data", []), "groups": payload.get("groups", [])}
 
     async def admin_set_tool_enabled(self, name: str, enabled: bool) -> None:
         async with self._client() as c:
             r = await c.patch(f"/admin/tools/{name}", json={"enabled": enabled})
             r.raise_for_status()
+
+    async def admin_bulk_set_tools(
+        self, enabled: bool, *,
+        tier: str | None = None, group: str | None = None,
+        subgroup: str | None = None, names: list[str] | None = None,
+    ) -> dict:
+        """Flip many tools at once. Pass `names` for an explicit list, or
+        any combination of tier/group/subgroup to use the taxonomy filter.
+        Returns the server response with the changed-name list and count."""
+        body: dict = {"enabled": enabled}
+        if names is not None: body["names"] = list(names)
+        if tier is not None:     body["tier"] = tier
+        if group is not None:    body["group"] = group
+        if subgroup is not None: body["subgroup"] = subgroup
+        async with self._client() as c:
+            r = await c.patch("/admin/tools", json=body)
+            r.raise_for_status()
+            return r.json() or {}
 
     async def admin_set_airgap(self, enabled: bool) -> dict:
         async with self._client() as c:

@@ -36,6 +36,27 @@ logger = logging.getLogger(__name__)
 _INJECTED_PARAMS = {"__user__", "__event_emitter__", "__metadata__", "__request__"}
 
 
+# Top-level tier slugs. Tools whose `requires_service` starts with `host_`
+# need direct host access (filesystem, processes, design software). Everything
+# else either talks to local stack services (qdrant, redis, llama_cpp) or
+# external HTTP APIs and so is "network-only".
+TIER_HOST = "host"
+TIER_NETWORK = "network"
+
+
+def _classify_tier(requires_service: str | None) -> str:
+    if requires_service and requires_service.startswith("host_"):
+        return TIER_HOST
+    return TIER_NETWORK
+
+
+_TIER_TITLES = {
+    TIER_HOST: "Host / System Access",
+    TIER_NETWORK: "Network-only Tools",
+}
+_TIER_ORDER = {TIER_NETWORK: 10, TIER_HOST: 20}
+
+
 # Map Python typing hints to JSON-schema types.
 def _py_type_to_json(annotation: Any) -> dict[str, Any]:
     if annotation is inspect.Parameter.empty or annotation is None:
@@ -128,6 +149,9 @@ class ToolEntry:
     handler: Callable         # bound method on the Tools instance
     default_enabled: bool = True
     requires_service: str | None = None
+    group: str = "uncategorized"      # Topical taxonomy slug (config/tool_groups.yaml)
+    subgroup: str = "general"         # Second-level taxonomy slug
+    tier: str = TIER_NETWORK          # "host" or "network" — derived from requires_service
 
 
 # Services considered safe to reach from an airgap environment because they
@@ -156,12 +180,38 @@ def _is_airgap_safe(entry: "ToolEntry") -> bool:
 class ToolRegistry:
     def __init__(self):
         self.tools: dict[str, ToolEntry] = {}
+        # Display config from tool_groups.yaml: {slug: {title, order, subgroups}}.
+        self.groups: dict[str, Any] = {}
 
     def __contains__(self, name: str) -> bool:
         return name in self.tools
 
     def get(self, name: str) -> ToolEntry | None:
         return self.tools.get(name)
+
+    def group_title(self, group: str, subgroup: str | None = None) -> str:
+        """Resolve a group/subgroup slug to its display title, falling
+        back to the slug itself when not declared in tool_groups.yaml."""
+        g = self.groups.get(group, {})
+        if subgroup is None:
+            return (g or {}).get("title") or group.replace("_", " ").title()
+        sg = (g.get("subgroups") or {}).get(subgroup, {})
+        return sg.get("title") or subgroup.replace("_", " ").title()
+
+    def group_order(self, group: str, subgroup: str | None = None) -> int:
+        g = self.groups.get(group, {})
+        if subgroup is None:
+            return int((g or {}).get("order", 999))
+        sg = (g.get("subgroups") or {}).get(subgroup, {})
+        return int(sg.get("order", 999))
+
+    @staticmethod
+    def tier_title(tier: str) -> str:
+        return _TIER_TITLES.get(tier, tier.title())
+
+    @staticmethod
+    def tier_order(tier: str) -> int:
+        return _TIER_ORDER.get(tier, 999)
 
     def all_schemas(
         self, only_enabled: bool = True, *, airgap: bool = False,
@@ -227,11 +277,47 @@ def _import_tool_module(path: Path) -> Any | None:
 
 
 def _load_tools_yaml(config_dir: Path) -> dict[str, dict]:
+    """Read every top-level dict whose values look like tool entries and
+    merge them into a single name -> entry map.
+
+    Historically tools.yaml used `tools:` for the original ~15 tools and
+    `additional_tools:` (etc.) for everything else as a documentation
+    aid. The registry treats them all equivalently — the section name
+    is just a comment-like grouping aid, never surfaced anywhere."""
     path = config_dir / "tools.yaml"
     if not path.exists():
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return data.get("tools", {}) or {}
+    merged: dict[str, dict] = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        # A "tool entries" dict has nested dicts whose `file:` paths point
+        # under tools/. The `middleware:` block doesn't (its files live
+        # under backend/middleware/) and is documentation-only.
+        entries = [v for v in value.values() if isinstance(v, dict) and "file" in v]
+        if not entries:
+            continue
+        if not all(str(v["file"]).startswith("tools/") for v in entries):
+            continue
+        for name, entry in value.items():
+            if name in merged:
+                logger.warning(
+                    "tools.yaml: %s defined in multiple sections — last definition wins", name,
+                )
+            merged[name] = entry
+    return merged
+
+
+def _load_tool_groups_yaml(config_dir: Path) -> dict[str, Any]:
+    """Read the optional config/tool_groups.yaml mapping group/subgroup
+    slugs to display titles and ordering. Returns an empty dict if the
+    file is absent — callers should fall back to slug-as-title."""
+    path = config_dir / "tool_groups.yaml"
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return data.get("groups", {}) or {}
 
 
 def build_registry(
@@ -250,7 +336,9 @@ def build_registry(
         logger.warning("Tools directory not found: %s", tools_dir)
         return reg
 
-    yaml_entries = _load_tools_yaml(config_dir or tools_dir.parent / "config")
+    cfg_dir = config_dir or tools_dir.parent / "config"
+    yaml_entries = _load_tools_yaml(cfg_dir)
+    reg.groups = _load_tool_groups_yaml(cfg_dir)
 
     for py in sorted(tools_dir.glob("*.py")):
         if py.name.startswith("_") or py.name == "__init__.py":
@@ -263,6 +351,8 @@ def build_registry(
         yaml_entry = yaml_entries.get(module, {})
         default_enabled = bool(yaml_entry.get("default_enabled", True))
         requires_service = yaml_entry.get("requires_service")
+        group = yaml_entry.get("group", "uncategorized")
+        subgroup = yaml_entry.get("subgroup", "general")
 
         for meth_name, meth in inspect.getmembers(instance, predicate=inspect.ismethod):
             if meth_name.startswith("_"):
@@ -279,6 +369,9 @@ def build_registry(
                 handler=meth,
                 default_enabled=default_enabled,
                 requires_service=requires_service,
+                group=group,
+                subgroup=subgroup,
+                tier=_classify_tier(requires_service),
             )
 
     logger.info("Loaded %d tool methods from %s", len(reg.tools), tools_dir)
