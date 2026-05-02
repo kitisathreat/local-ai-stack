@@ -72,6 +72,13 @@ class ChatRequest(BaseModel):
     # Translated to llama-server's json_schema request field at dispatch.
     # When None (default), the model generates free-form text.
     response_format: dict | None = None
+    # OpenAI's per-token log-probabilities. When `logprobs: true`, every
+    # generated token's chosen logprob is included in the response.
+    # `top_logprobs: N` (0-20) additionally includes the N most-likely
+    # alternatives at each position. Required by lm-evaluation-harness's
+    # loglikelihood tasks (most of MMLU, HellaSwag, ARC, TruthfulQA-MC).
+    logprobs: bool | None = None
+    top_logprobs: int | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None

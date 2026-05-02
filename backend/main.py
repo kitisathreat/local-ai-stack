@@ -829,6 +829,11 @@ async def _to_non_streaming_response(
     finish_reason = "stop"
     last_event: str | None = None
     err_message: str | None = None
+    # Aggregated logprobs across the streamed deltas. llama-server emits
+    # one {"content": [...tokens...]} per chunk; concatenating the
+    # `content` arrays yields the per-token logprobs for the whole
+    # response, in OpenAI's documented non-streaming shape.
+    logprobs_tokens: list[dict] = []
 
     async for raw in sse_producer:
         if raw.startswith("event:"):
@@ -859,6 +864,11 @@ async def _to_non_streaming_response(
             content = delta.get("content")
             if isinstance(content, str):
                 text_chunks.append(content)
+            lp = choice.get("logprobs")
+            if isinstance(lp, dict):
+                tokens = lp.get("content")
+                if isinstance(tokens, list):
+                    logprobs_tokens.extend(tokens)
             fr = choice.get("finish_reason")
             if isinstance(fr, str):
                 finish_reason = fr
@@ -873,16 +883,19 @@ async def _to_non_streaming_response(
     # Approximate token counts via whitespace split — matches the metrics
     # path's accuracy and avoids a second tokenizer pass on the hot loop.
     tokens_out = max(1, len(full.split())) if full else 0
+    choice_obj: dict = {
+        "index": 0,
+        "message": {"role": "assistant", "content": full},
+        "finish_reason": finish_reason,
+    }
+    if logprobs_tokens:
+        choice_obj["logprobs"] = {"content": logprobs_tokens}
     return JSONResponse({
         "id": f"chatcmpl-{uuid.uuid4().hex[:16]}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model_id,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": full},
-            "finish_reason": finish_reason,
-        }],
+        "choices": [choice_obj],
         "usage": {
             "prompt_tokens": 0,    # filled in by future tokenizer hookup
             "completion_tokens": tokens_out,
@@ -893,18 +906,29 @@ async def _to_non_streaming_response(
 
 # ── SSE producers ─────────────────────────────────────────────────────────
 
-def _openai_chunk(content: str, model: str, done: bool = False) -> str:
-    """Format a streaming chunk in OpenAI's SSE shape."""
+def _openai_chunk(
+    content: str, model: str, done: bool = False, logprobs: dict | None = None,
+) -> str:
+    """Format a streaming chunk in OpenAI's SSE shape.
+
+    `logprobs` (when provided) is forwarded into the choice as-is — the
+    upstream llama-server already ships an OpenAI-compatible logprobs
+    object per chunk: {"content": [{"token", "logprob", "bytes",
+    "top_logprobs": [...]}, ...]}.
+    """
+    choice: dict = {
+        "index": 0,
+        "delta": {} if done else {"content": content},
+        "finish_reason": "stop" if done else None,
+    }
+    if logprobs is not None:
+        choice["logprobs"] = logprobs
     payload = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:16]}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {} if done else {"content": content},
-            "finish_reason": "stop" if done else None,
-        }],
+        "choices": [choice],
     }
     return f"data: {json.dumps(payload)}\n\n"
 
@@ -1087,21 +1111,32 @@ async def _single_agent_sse(
             ):
                 yield sse
             accumulator = ToolCallAccumulator()
-            # Translate OpenAI's response_format into llama-server's
-            # request-level json_schema constraint, if requested.
-            extra_options = _response_format_to_extra_options(req.response_format)
+            # Build the chat_stream extra_options merge: response_format
+            # constraint + logprobs flags. Both can be set on the same
+            # request and llama-server combines them cleanly.
+            extra_options: dict = {}
+            rf_extra = _response_format_to_extra_options(req.response_format)
+            if rf_extra:
+                extra_options.update(rf_extra)
+            if req.logprobs:
+                extra_options["logprobs"] = True
+                if req.top_logprobs is not None:
+                    extra_options["top_logprobs"] = int(req.top_logprobs)
             try:
                 async for chunk in client.chat_stream(
                     tier, msg_payload, think=decision.think,
                     tools=tool_schemas,
-                    extra_options=extra_options,
+                    extra_options=(extra_options or None),
                 ):
                     for choice in chunk.get("choices", []):
                         delta = choice.get("delta") or {}
                         text = delta.get("content")
+                        # Pass logprobs through verbatim — llama-server
+                        # already ships them in OpenAI's documented shape.
+                        chunk_logprobs = choice.get("logprobs") if req.logprobs else None
                         if text:
                             assembled_text.append(text)
-                            yield _openai_chunk(text, model_id)
+                            yield _openai_chunk(text, model_id, logprobs=chunk_logprobs)
                         accumulator.feed(delta.get("tool_calls"))
             finally:
                 await state.scheduler.release(decision.tier_name)
