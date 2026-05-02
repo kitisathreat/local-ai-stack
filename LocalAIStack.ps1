@@ -655,27 +655,15 @@ function Invoke-Start {
     # by the backend's VRAMScheduler — they cold-spawn on first request.
     $llamaBin = Join-Path $VendorDir 'llama-server\llama-server.exe'
 
-    Write-Step 'Starting llama-server (vision tier, port 8001)'
-    $visionGguf = Join-Path $DataDir 'models\vision.gguf'
-    $visionMmproj = Join-Path $DataDir 'models\vision.mmproj.gguf'
-    if ((Test-Path $llamaBin) -and (Test-Path $visionGguf)) {
-        # NOTE: --jinja was added in llama.cpp ≥ b4500. The launcher's
-        # pinned build (b4404) rejects it and the tier crashes. Probe
-        # the binary's --help output and only pass the flag when
-        # supported, so a future bump to LAI_LLAMACPP_VERSION picks it
-        # up automatically.
-        # `-fa on` (b8992+) instead of bare `-fa` (b4404). Both
-        # old and new binaries accept the explicit form.
-        $visionArgs = @('--host', '127.0.0.1', '--port', '8001', '-m', $visionGguf,
-                        '--ctx-size', '16384', '--parallel', '2', '-ngl', '-1', '-fa', 'on',
-                        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0')
-        $help = & $llamaBin --help 2>&1 | Out-String
-        if ($help -match '(?m)^\s*--jinja\b') { $visionArgs += '--jinja' }
-        if (Test-Path $visionMmproj) { $visionArgs += @('--mmproj', $visionMmproj) }
-        $pids['llama-server'] = Record-PidEntry (Start-TrackedProcess -Name 'llama-server' -FilePath $llamaBin `
-            -Args $visionArgs -LogDir $LogsDir)
-    } else {
-        Write-Warn2 "llama-server or vision GGUF missing — vision tier disabled"
+    # Vision tier is now COLD-SPAWNED by the VRAMScheduler on first
+    # image-bearing request (router.py auto-routes when an image_url
+    # part is in the message). Pre-spawning it consumed ~6.5 GB VRAM
+    # 24/7 just to handle the rare image case — moving it to cold-spawn
+    # frees that budget for the everyday chat tiers (versatile + fast)
+    # to coexist when pre-warmed on user connect. First image message
+    # pays a ~5-10 s spawn cost; subsequent ones are warm.
+    if (Test-Path (Join-Path $DataDir 'models\vision.gguf')) {
+        Write-Host '   vision tier will cold-spawn on first image request' -ForegroundColor DarkGray
     }
 
     Write-Step 'Starting llama-server (embedding tier, port 8090)'

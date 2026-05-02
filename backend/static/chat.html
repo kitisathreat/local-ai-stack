@@ -609,6 +609,20 @@
       return r;
     }
 
+    // Pre-warm the everyday chat tiers (versatile + fast) so the user's
+    // first message doesn't pay the 5-30 s cold-spawn cost. Backend
+    // does the actual loading as a background task — this call returns
+    // immediately. Idempotent: no-op when tiers are already resident.
+    // Throttled to once per minute to avoid pestering the scheduler
+    // when the page is rapidly hidden/shown or repeatedly focused.
+    let _lastWarmMs = 0;
+    async function warmChatTiers() {
+      const now = Date.now();
+      if (now - _lastWarmMs < 60_000) return;
+      _lastWarmMs = now;
+      try { await api('/api/warm', { method: 'POST', body: '{}' }); } catch (_) {}
+    }
+
     async function bootstrap() {
       try {
         const r = await api('/admin/me');
@@ -622,9 +636,22 @@
           pollVram();
           signinBox.classList.add('hidden');
           app.classList.remove('hidden');
+          // Existing session resume — fresh /auth/login didn't fire,
+          // so trigger the warm explicitly here.
+          warmChatTiers();
         }
       } catch (_) {}
     }
+
+    // Re-warm when the tab becomes visible after being hidden — covers
+    // the "left for lunch, came back" pattern where loaded tiers may
+    // have been evicted by the VRAM scheduler's idle-eviction sweep.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible'
+          && !app.classList.contains('hidden')) {
+        warmChatTiers();
+      }
+    });
 
     // Toggle the body.is-admin class so the ⚙ Admin button (CSS-gated)
     // becomes visible. /admin/me is the source of truth — the same
