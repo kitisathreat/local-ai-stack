@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from pathlib import Path
 
-from . import admin, airgap, auth, db, history_store, memory, metrics, rag
+from . import admin, airgap, auth, db, history_store, kv_cache_manager, memory, metrics, rag
 from .backends.llama_cpp import LlamaCppClient, ToolCallAccumulator
 from .config import AppConfig, CompiledSignals
 from .middleware.clarification import (
@@ -86,6 +86,9 @@ class AppState:
     # backend refuses outbound calls and persists all new chat + memory
     # content to separate encrypted stores.
     airgap: airgap.AirgapState
+    # In-process bank for context segments evicted by the KV pressure
+    # manager so a later turn can recall them.
+    spill_store: kv_cache_manager.SpillStore
     # Optional Redis client — populated when REDIS_URL (env or config) is
     # set. Used by the rate limiter (and future cross-worker scheduler
     # coordination). None means "single-worker, in-memory only".
@@ -166,6 +169,10 @@ async def lifespan(app: FastAPI):
     airgap.set_current(state.airgap)
     if state.airgap.enabled:
         logger.warning("Airgap mode is ENABLED (from persisted state)")
+
+    state.spill_store = kv_cache_manager.SpillStore(
+        max_entries_per_conv=state.config.vram.kv_cache.max_spill_entries_per_conv,
+    )
 
     # Optional Redis client for cross-worker rate limiting.
     state.redis = await _init_redis(state.config)
@@ -501,6 +508,43 @@ async def airgap_status():
     return snap
 
 
+def _apply_kv_pressure(
+    messages: list[ChatMessage],
+    tier,
+    *,
+    conversation_id: int | None = None,
+) -> tuple[list[ChatMessage], dict | None]:
+    """Prune low-importance segments before dispatch when KV pressure is high.
+
+    Returns the (possibly shaped) message list plus a spill event dict for
+    SSE surfacing, or None when no action was taken. Evicted segments are
+    stashed in `state.spill_store` so a later turn can recall them.
+    """
+    cfg = state.config.vram.kv_cache
+    if not cfg.enable or not messages:
+        return messages, None
+    weights = kv_cache_manager.ScoringWeights(
+        recency=cfg.weights.recency,
+        relevance=cfg.weights.relevance,
+        role_prior=cfg.weights.role_prior,
+        size_penalty=cfg.weights.size_penalty,
+        hot_window=cfg.weights.hot_window,
+    )
+    assessment = kv_cache_manager.assess_and_plan(
+        messages,
+        kv_budget_tokens=tier.context_window,
+        reserve_for_output=cfg.reserve_output_tokens,
+        spill_trigger_fraction=cfg.spill_trigger_fraction,
+        weights=weights,
+    )
+    if assessment.plan is None or not assessment.plan.spilled:
+        return messages, None
+    if conversation_id is not None:
+        state.spill_store.stash(conversation_id, assessment.plan.spilled)
+    shaped = kv_cache_manager.apply_plan(messages, assessment.plan)
+    return shaped, assessment.plan.as_event(tier_id=tier.name)
+
+
 async def _inject_user_context(req: ChatRequest, user: dict) -> None:
     """Prepend RAG + memory context to the system message for a signed-in
     user. Runs inline (needs embeddings before streaming starts).
@@ -761,9 +805,21 @@ async def _single_agent_sse(
         model_id,
     )
 
+    # Shape the conversation if it would push the tier's KV slot into RAM
+    # spillover. The manager keeps system prompts, the live user turn, and
+    # tool_call/result pairs pinned; only stale assistant chatter and
+    # think-block bloat get evicted.
+    shaped_messages, spill_event = _apply_kv_pressure(
+        req.messages, tier, conversation_id=req.conversation_id,
+    )
+    if spill_event is not None:
+        yield _agent_event_sse(
+            AgentEvent(type="kv.spillover", data=spill_event), model_id,
+        )
+
     # Serialize messages for the tool loop (needs to append role=tool entries).
     from .backends.llama_cpp import _messages_to_payload as _llama_msgs
-    msg_payload = _llama_msgs(req.messages)
+    msg_payload = _llama_msgs(shaped_messages)
 
     tool_schemas: list[dict] | None = None
     if req.tools is None:
@@ -967,10 +1023,26 @@ async def _multi_agent_sse(
     from .router import last_user_text
     user_msg = last_user_text(req.messages)
 
+    # Apply KV pressure shaping at the orchestrator entry. The orchestrator
+    # tier carries the full transcript through planning + synthesis, so it
+    # benefits most from pruning before dispatch.
+    orch_tier_name = state.config.router.multi_agent.orchestrator_tier
+    orch_tier = state.config.models.tiers.get(orch_tier_name)
+    if orch_tier is not None:
+        shaped_messages, spill_event = _apply_kv_pressure(
+            req.messages, orch_tier, conversation_id=req.conversation_id,
+        )
+        if spill_event is not None:
+            yield _agent_event_sse(
+                AgentEvent(type="kv.spillover", data=spill_event), model_id,
+            )
+    else:
+        shaped_messages = req.messages
+
     try:
         async for ev in state.orchestrator.run(
             user_message=user_msg,
-            conversation=req.messages,
+            conversation=shaped_messages,
             think_synthesis=decision.think,
             options=options,
         ):
