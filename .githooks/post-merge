@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# post-merge — runs after `git pull` (and any other merge that updates HEAD).
+# Invokes scripts/refresh-backend.ps1 under pwsh 7+ to:
+#   - pip install backend/gui dep changes
+#   - bounce the backend so it picks up new code and re-discovers tools
+#
+# The script is idempotent and exits cleanly when nothing relevant changed.
+# Designed for the native-Windows stack; runs under git-for-windows' bundled
+# busybox sh so we use POSIX syntax + plain `powershell.exe` style discovery.
+
+set -e
+
+# Squash-merge flag (1 = squash, 0 = normal). We refresh in both cases.
+squash="$1"
+
+# Repo root, in posix form. git-for-windows hooks run with cwd = repo root.
+repo="$(git rev-parse --show-toplevel)"
+script="$repo/scripts/refresh-backend.ps1"
+
+if [ ! -f "$script" ]; then
+    # Older clones predate the script — nothing to do.
+    exit 0
+fi
+
+# ORIG_HEAD points at the pre-merge tip; passing it lets the refresh script
+# diff exactly what changed in this pull.
+prev="$(git rev-parse ORIG_HEAD 2>/dev/null || true)"
+
+# Locate pwsh. Prefer it on PATH; fall back to the Windows-installed paths
+# that winget / the MSI installer use.
+if command -v pwsh >/dev/null 2>&1; then
+    pwsh_exe="pwsh"
+elif [ -x "/c/Program Files/PowerShell/7/pwsh.exe" ]; then
+    pwsh_exe="/c/Program Files/PowerShell/7/pwsh.exe"
+elif [ -x "/c/Users/$USER/AppData/Local/Microsoft/WindowsApps/pwsh.exe" ]; then
+    pwsh_exe="/c/Users/$USER/AppData/Local/Microsoft/WindowsApps/pwsh.exe"
+else
+    echo "post-merge: pwsh 7+ not found on PATH. Skipping backend refresh." >&2
+    echo "  Install:  winget install --id Microsoft.PowerShell --source winget" >&2
+    echo "  Refresh manually after install:  pwsh scripts/refresh-backend.ps1 -Force" >&2
+    exit 0
+fi
+
+echo ""
+echo "==> post-merge: refreshing Local AI Stack backend"
+"$pwsh_exe" -NoProfile -ExecutionPolicy Bypass -File "$script" -PrevSha "$prev"

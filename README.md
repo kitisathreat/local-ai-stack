@@ -16,17 +16,40 @@ PowerShell launcher (`LocalAIStack.ps1`) and a native PySide6 desktop app.
 
 ## Quickstart
 
+**Requires PowerShell 7 or higher.** The launcher refuses to run under
+Windows PowerShell 5.1 (em-dashes in string literals break 5.1's
+Windows-1252 default parser). If `pwsh` isn't installed:
+
 ```powershell
-.\LocalAIStack.ps1 -InitEnv     # write a default .env (edit it: secrets, optional Brave key)
-.\LocalAIStack.ps1 -Setup       # install prereqs, download binaries, create venvs, pull models
-.\LocalAIStack.ps1              # start everything and launch the native Qt GUI
+winget install --id Microsoft.PowerShell --source winget
 ```
+
+Then:
+
+```powershell
+pwsh .\LocalAIStack.ps1 -InitEnv   # write a default .env (edit it: secrets, optional Brave key)
+pwsh .\LocalAIStack.ps1 -Setup     # install prereqs, download binaries, create venvs, pull models
+pwsh .\LocalAIStack.ps1            # start everything and launch the native Qt GUI
+```
+
+After cloning, opt in to the auto-refresh git hook so future `git pull`s
+restart the backend with the new code:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+This wires up [`.githooks/post-merge`](.githooks/post-merge), which calls
+[`scripts/refresh-backend.ps1`](scripts/refresh-backend.ps1) — diffs the
+pull, `pip install`s any `requirements.txt` changes, and bounces the
+backend so the new tool registry + admin endpoints are live without
+manual intervention.
 
 All operator instructions — daily commands, cloudflared ingress snippet,
 log locations, model update policy, uninstall — live in:
 
 ```powershell
-.\LocalAIStack.ps1 -Help
+pwsh .\LocalAIStack.ps1 -Help
 ```
 
 ## What ships

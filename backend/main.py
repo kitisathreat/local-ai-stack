@@ -183,10 +183,16 @@ async def lifespan(app: FastAPI):
     )
 
     logger.info("Discovering tools…")
-    tools_dir = Path(os.getenv("LAI_TOOLS_DIR", "/app/tools"))
-    config_dir = Path(os.getenv("LAI_CONFIG_DIR", "/app/config"))
+    # Default to repo-relative paths (resolved from this file's location) so
+    # the registry works regardless of how the backend was launched. The
+    # `/app/*` Docker-era defaults are dead weight on native Windows and
+    # caused silent registry-empty bugs whenever LAI_TOOLS_DIR didn't
+    # propagate from the launcher's parent shell.
+    _repo_root = Path(__file__).resolve().parent.parent
+    tools_dir = Path(os.getenv("LAI_TOOLS_DIR") or (_repo_root / "tools"))
+    config_dir = Path(os.getenv("LAI_CONFIG_DIR") or (_repo_root / "config"))
     state.tools = build_registry(tools_dir=tools_dir, config_dir=config_dir)
-    logger.info("Tool registry ready: %d tools", len(state.tools.tools))
+    logger.info("Tool registry ready: %d tools (from %s)", len(state.tools.tools), tools_dir)
 
     # llama.cpp is the only backend now. The client manages one
     # llama-server subprocess per tier; vision + embedding are pre-spawned

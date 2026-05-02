@@ -54,6 +54,41 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# ── PowerShell version gate ──────────────────────────────────────────────────
+# This script uses UTF-8 (em-dash, ellipsis, …) in string literals and modern
+# language features. Windows PowerShell 5.1 reads the file as Windows-1252
+# without a BOM and produces parser errors on every non-ASCII line.
+# If we're running under 5.1, transparently re-launch under pwsh 7+ when
+# available, otherwise fail loudly with a one-line install hint.
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+    if (-not $pwsh) {
+        Write-Host ''
+        Write-Host 'LocalAIStack.ps1 requires PowerShell 7 or higher.' -ForegroundColor Red
+        Write-Host "You're running Windows PowerShell $($PSVersionTable.PSVersion)." -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Install with one of:' -ForegroundColor Yellow
+        Write-Host '  winget install --id Microsoft.PowerShell --source winget' -ForegroundColor Yellow
+        Write-Host '  https://aka.ms/install-powershell' -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host 'Then re-run with:  pwsh .\LocalAIStack.ps1 ...' -ForegroundColor Yellow
+        exit 1
+    }
+    # Re-exec under pwsh, preserving every original argument. With a [CmdletBinding]
+    # param block, automatic $args is empty, so reconstruct from PSBoundParameters.
+    $forwardArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $MyInvocation.MyCommand.Path)
+    foreach ($k in $PSBoundParameters.Keys) {
+        $v = $PSBoundParameters[$k]
+        if ($v -is [System.Management.Automation.SwitchParameter]) {
+            if ($v.IsPresent) { $forwardArgs += "-$k" }
+        } else {
+            $forwardArgs += "-$k", "$v"
+        }
+    }
+    & $pwsh.Source @forwardArgs
+    exit $LASTEXITCODE
+}
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 $Script:RepoRoot  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Script:StepsDir  = Join-Path $RepoRoot 'scripts\steps'
@@ -540,9 +575,19 @@ function Invoke-Start {
     if (-not (Test-Path $backendPy)) {
         throw "Backend venv missing at $backendPy — run -Setup."
     }
+    # Pass LAI_* paths explicitly via -Env. Apply-Env sets these on the parent
+    # shell, but Start-Process env propagation has been unreliable in the wild
+    # (silent fallback to the Docker /app/* paths → empty tool registry).
+    # Belt-and-suspenders: backend/main.py also defaults to repo-relative paths
+    # when these vars are absent, so this is a redundant guard.
     $pids['backend'] = Record-PidEntry (Start-TrackedProcess -Name 'backend' -FilePath $backendPy `
         -Args @('-m','uvicorn','backend.main:app','--host','127.0.0.1','--port','18000') `
-        -LogDir $LogsDir -WorkDir $RepoRoot)
+        -LogDir $LogsDir -WorkDir $RepoRoot `
+        -Env @{
+            LAI_TOOLS_DIR  = (Join-Path $RepoRoot 'tools')
+            LAI_CONFIG_DIR = (Join-Path $RepoRoot 'config')
+            LAI_DATA_DIR   = $DataDir
+        })
 
     if (Get-Command Wait-HealthOk -ErrorAction SilentlyContinue) {
         Wait-HealthOk -Urls @(

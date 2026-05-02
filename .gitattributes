@@ -2,6 +2,10 @@
 *.sh        text eol=lf
 Dockerfile  text eol=lf
 
+# Git hooks are sh scripts run by git-for-windows' bundled bash.
+# CRLF in the shebang line breaks them silently on Windows checkouts.
+.githooks/* text eol=lf
+
 # Windows-native scripts keep CRLF
 *.ps1       text eol=crlf
 *.bat       text eol=crlf
