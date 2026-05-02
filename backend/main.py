@@ -730,18 +730,165 @@ async def chat_completions(
             )
 
     if decision.multi_agent:
-        return StreamingResponse(
-            _wrap(_multi_agent_sse(req, decision, options=req.multi_agent_options)),
-            media_type="text/event-stream",
-        )
-
-    return StreamingResponse(
-        _wrap(_single_agent_sse(
+        producer = _wrap(_multi_agent_sse(req, decision, options=req.multi_agent_options))
+    else:
+        producer = _wrap(_single_agent_sse(
             req, decision, client, tier, user=user,
             user_text_for_planner=user_text_for_planner,
-        )),
-        media_type="text/event-stream",
+        ))
+
+    # Honor OpenAI's `stream` semantics. Resolution order:
+    #   1. Explicit `stream: true|false` in the request body always wins.
+    #   2. When omitted, infer from the Accept header — `text/event-stream`
+    #      means the client wants SSE; everything else gets JSON.
+    # OpenAI's actual default is `stream: false`, so this matches every
+    # tool that doesn't set the header (lm-eval, openai SDK, HF
+    # InferenceClient, smolagents, Ragas). The chat UI sends
+    # `Accept: text/event-stream` and gets SSE either way.
+    if req.stream is None:
+        accept = (request.headers.get("accept") or "").lower()
+        wants_stream = "text/event-stream" in accept
+    else:
+        wants_stream = bool(req.stream)
+
+    if not wants_stream:
+        return await _to_non_streaming_response(
+            producer, model_id=f"tier.{decision.tier_name}",
+        )
+
+    # OpenAI's stream_options.include_usage — when set, append a final
+    # chunk with empty choices + usage stats just before [DONE]. Closes
+    # umbrella issue #154 sub-item.
+    include_usage = bool(
+        (req.stream_options or {}).get("include_usage")
     )
+    if include_usage:
+        producer = _with_usage_chunk(producer, model_id=f"tier.{decision.tier_name}", req=req)
+    return StreamingResponse(producer, media_type="text/event-stream")
+
+
+async def _with_usage_chunk(
+    inner: AsyncIterator[str], *, model_id: str, req: ChatRequest,
+) -> AsyncIterator[str]:
+    """Wrap an SSE stream so the final chunk before `[DONE]` carries an
+    OpenAI-style usage object. Same approximate token math as the metrics
+    path (whitespace split — close enough for billing trends, no second
+    tokenizer pass on the hot loop)."""
+    out_text: list[str] = []
+    pending_done: str | None = None
+    async for chunk in inner:
+        if chunk.strip() == "data: [DONE]":
+            # Hold the [DONE] sentinel; emit usage chunk first.
+            pending_done = chunk
+            continue
+        if chunk.startswith("data:") and '"content"' in chunk:
+            try:
+                payload = json.loads(chunk[5:].strip())
+                t = ((payload.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                if isinstance(t, str):
+                    out_text.append(t)
+            except Exception:
+                pass
+        yield chunk
+    # Emit the usage chunk just before [DONE].
+    full = "".join(out_text)
+    tokens_out = max(1, len(full.split())) if full else 0
+    prompt_words = sum(
+        len(m.content.split()) for m in req.messages if isinstance(m.content, str)
+    )
+    usage_payload = {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:16]}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_id,
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt_words,
+            "completion_tokens": tokens_out,
+            "total_tokens": prompt_words + tokens_out,
+        },
+    }
+    yield f"data: {json.dumps(usage_payload)}\n\n"
+    if pending_done:
+        yield pending_done
+
+
+async def _to_non_streaming_response(
+    sse_producer: AsyncIterator[str],
+    *,
+    model_id: str,
+) -> JSONResponse:
+    """Drain an SSE producer and return a single ChatCompletion JSON object.
+
+    Treats `event: agent` chunks (route.decision, queue.update, errors,
+    etc.) as out-of-band telemetry: error events surface as a 502 with
+    the message; everything else is dropped. OpenAI-shaped `data: {...}`
+    chunks are accumulated by `delta.content` into the response message.
+    """
+    text_chunks: list[str] = []
+    finish_reason = "stop"
+    last_event: str | None = None
+    err_message: str | None = None
+
+    async for raw in sse_producer:
+        if raw.startswith("event:"):
+            last_event = raw[len("event:"):].strip()
+            continue
+        if not raw.startswith("data:"):
+            if raw == "" or raw == "\n":
+                last_event = None
+            continue
+        body = raw[len("data:"):].strip()
+        if body == "[DONE]":
+            continue
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+
+        # Custom agent events use {"type": ..., "data": {...}} shape.
+        if last_event == "agent" and isinstance(payload.get("type"), str):
+            if payload["type"] == "error":
+                err_message = (payload.get("data") or {}).get("message") or "stream error"
+            # Drop everything else (route.decision, vram.making_room, etc.)
+            continue
+
+        # Standard OpenAI streaming shape: {choices:[{delta:{content:...}}]}
+        for choice in payload.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if isinstance(content, str):
+                text_chunks.append(content)
+            fr = choice.get("finish_reason")
+            if isinstance(fr, str):
+                finish_reason = fr
+
+    if err_message:
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"message": err_message, "type": "stream_error"}},
+        )
+
+    full = "".join(text_chunks)
+    # Approximate token counts via whitespace split — matches the metrics
+    # path's accuracy and avoids a second tokenizer pass on the hot loop.
+    tokens_out = max(1, len(full.split())) if full else 0
+    return JSONResponse({
+        "id": f"chatcmpl-{uuid.uuid4().hex[:16]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model_id,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": full},
+            "finish_reason": finish_reason,
+        }],
+        "usage": {
+            "prompt_tokens": 0,    # filled in by future tokenizer hookup
+            "completion_tokens": tokens_out,
+            "total_tokens": tokens_out,
+        },
+    })
 
 
 # ── SSE producers ─────────────────────────────────────────────────────────
@@ -1112,6 +1259,68 @@ async def _multi_agent_sse(
 
     yield _openai_chunk("", model_id, done=True)
     yield "data: [DONE]\n\n"
+
+
+# ── OpenAI-compat passthrough endpoints ──────────────────────────────────
+
+@app.post("/v1/embeddings")
+async def v1_embeddings(req: dict, request: Request):
+    """OpenAI-compatible embeddings proxy. Forwards to the always-on
+    embedding tier llama-server (port 8090). Closes umbrella issue #154
+    sub-item: external tools (RAG eval frameworks, vector DB ingestion
+    scripts, lm-eval embedding benchmarks) can now hit the public
+    `:18000/v1/*` namespace as a drop-in for `api.openai.com`.
+
+    Request body matches OpenAI's spec: {"model": "...", "input": "..." | [...]}.
+    `model` is ignored (we always route to the embedding tier).
+    """
+    emb_tier = state.config.models.tiers.get("embedding")
+    if emb_tier is None:
+        raise HTTPException(503, "Embedding tier not configured")
+    target = emb_tier.resolved_endpoint().rstrip("/") + "/embeddings"
+    # Rate-limit by user/IP just like chat — embedders are cheap but
+    # batch ingestion can still saturate the slot pool.
+    rate_key = (
+        request.headers.get("x-forwarded-for")
+        or (request.client.host if request.client else "anon")
+    )
+    await rate_limiter.check(rate_key)
+    try:
+        async with httpx_async_client() as cx:
+            r = await cx.post(target, json=req)
+            return JSONResponse(status_code=r.status_code, content=r.json())
+    except httpx_module().RequestError as e:
+        raise HTTPException(502, f"Embedding upstream error: {e}")
+
+
+@app.post("/v1/rerank")
+async def v1_rerank(req: dict, request: Request):
+    """Rerank proxy. Mirrors Cohere's /rerank shape (and llama-server's
+    own implementation): {"model": "...", "query": "...", "documents": [...]}.
+    Forwards to the dedicated reranker llama-server on :8091.
+
+    Closes umbrella issue #154 sub-item — exposing this means external
+    RAG pipelines (Haystack, LangChain, LlamaIndex) can use the local
+    reranker without bypassing the public ingress.
+    """
+    target_url = os.getenv("RERANKER_URL", "http://127.0.0.1:8091").rstrip("/") + "/v1/rerank"
+    rate_key = (
+        request.headers.get("x-forwarded-for")
+        or (request.client.host if request.client else "anon")
+    )
+    await rate_limiter.check(rate_key)
+    try:
+        async with httpx_async_client() as cx:
+            r = await cx.post(target_url, json=req)
+            return JSONResponse(status_code=r.status_code, content=r.json())
+    except httpx_module().RequestError as e:
+        # Reranker is best-effort — never block the public endpoint.
+        raise HTTPException(502, f"Reranker upstream error: {e}")
+
+
+def httpx_module():
+    import httpx as _httpx
+    return _httpx
 
 
 # ── Auth routes ─────────────────────────────────────────────────────────

@@ -550,9 +550,21 @@ function Invoke-Start {
     Write-Step 'Starting llama-server (embedding tier, port 8090)'
     $embedGguf = Join-Path $DataDir 'models\embedding.gguf'
     if ((Test-Path $llamaBin) -and (Test-Path $embedGguf)) {
+        # Pooling strategy depends on the embedder. Qwen3-Embedding-* uses
+        # last-token pooling (decoder-style); nomic-embed-text uses mean
+        # pooling (BERT-style). Detect by inspecting the symlink target —
+        # safer than reading the GGUF metadata in PowerShell.
+        $embedTarget = ''
+        try { $embedTarget = (Get-Item $embedGguf).Target } catch {}
+        if ($embedTarget -and ($embedTarget -match 'Qwen3-Embedding')) {
+            $embedPooling = 'last'
+        } else {
+            $embedPooling = 'mean'
+        }
         $embedArgs = @('--host', '127.0.0.1', '--port', '8090', '-m', $embedGguf,
                        '--ctx-size', '8192', '--parallel', '4', '-ngl', '-1',
-                       '--embedding', '--pooling', 'mean')
+                       '--embedding', '--pooling', $embedPooling)
+        Write-Host ("   embedder pooling: {0}" -f $embedPooling) -ForegroundColor DarkGray
         $pids['embedding'] = Record-PidEntry (Start-TrackedProcess -Name 'embedding' -FilePath $llamaBin `
             -Args $embedArgs -LogDir $LogsDir)
     } else {

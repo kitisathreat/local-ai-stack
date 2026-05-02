@@ -54,7 +54,18 @@ class MultiAgentOptions(BaseModel):
 class ChatRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
-    stream: bool = True
+    # `stream` is OPTIONAL on the wire. When omitted, the handler picks
+    # the response shape from the Accept header (text/event-stream → SSE,
+    # else → JSON). This mirrors OpenAI's behavior (their default is
+    # `stream: false`) while keeping the chat UI's existing SSE flow
+    # working — it sends `Accept: text/event-stream` and doesn't pass
+    # the field. Setting `stream: true|false` explicitly always wins.
+    stream: bool | None = None
+    # OpenAI's stream_options.include_usage — when true on a streaming
+    # request, the final chunk before [DONE] carries an empty `choices`
+    # array plus a `usage` object with token counts. Required by some
+    # billing/observability tools that depend on per-request token math.
+    stream_options: dict | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
