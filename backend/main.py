@@ -909,6 +909,41 @@ def _openai_chunk(content: str, model: str, done: bool = False) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def _response_format_to_extra_options(response_format: dict | None) -> dict | None:
+    """Translate OpenAI's response_format field into llama-server's
+    request-level constraint fields. Returns extra_options to merge into
+    the chat payload, or None when no constraint is requested.
+
+    Two OpenAI shapes supported:
+      {"type": "json_object"}                           → any JSON
+      {"type": "json_schema", "json_schema": {...}}     → schema-constrained
+
+    For json_schema mode, OpenAI nests the actual schema under
+    `json_schema.schema` (alongside name/description). llama-server's
+    `json_schema` field expects the schema object itself, so we unwrap.
+    """
+    if not response_format:
+        return None
+    rtype = response_format.get("type")
+    if rtype == "json_object":
+        # `type: object` is the broadest JSON-object schema. llama-server
+        # treats an empty {} as "no constraint" at the request level
+        # (despite the CLI doc note), so we make the constraint explicit.
+        # additionalProperties:true keeps it permissive — any keys, any
+        # values — same effect as OpenAI's documented json_object mode.
+        return {"json_schema": {"type": "object", "additionalProperties": True}}
+    if rtype == "json_schema":
+        wrapper = response_format.get("json_schema") or {}
+        # OpenAI wraps as {"name": "...", "schema": {...}}; some clients
+        # send the schema flat. Accept both.
+        schema = wrapper.get("schema") if isinstance(wrapper, dict) else None
+        if schema is None and isinstance(wrapper, dict) and "type" in wrapper:
+            schema = wrapper
+        if isinstance(schema, dict):
+            return {"json_schema": schema}
+    return None
+
+
 def _agent_event_sse(ev: AgentEvent, model: str) -> str:
     """Custom event payload for multi-agent visualization. Uses a named SSE
     event so our frontend can filter, while preserving OpenAI-shaped data
@@ -1052,10 +1087,14 @@ async def _single_agent_sse(
             ):
                 yield sse
             accumulator = ToolCallAccumulator()
+            # Translate OpenAI's response_format into llama-server's
+            # request-level json_schema constraint, if requested.
+            extra_options = _response_format_to_extra_options(req.response_format)
             try:
                 async for chunk in client.chat_stream(
                     tier, msg_payload, think=decision.think,
                     tools=tool_schemas,
+                    extra_options=extra_options,
                 ):
                     for choice in chunk.get("choices", []):
                         delta = choice.get("delta") or {}

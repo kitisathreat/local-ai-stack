@@ -66,6 +66,12 @@ class ChatRequest(BaseModel):
     # array plus a `usage` object with token counts. Required by some
     # billing/observability tools that depend on per-request token math.
     stream_options: dict | None = None
+    # OpenAI's response_format. Two forms accepted:
+    #   {"type": "json_object"}              → any valid JSON
+    #   {"type": "json_schema", "json_schema": {"schema": {...}}}  → constrained
+    # Translated to llama-server's json_schema request field at dispatch.
+    # When None (default), the model generates free-form text.
+    response_format: dict | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
