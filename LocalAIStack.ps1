@@ -559,6 +559,24 @@ function Invoke-Start {
         Write-Warn2 "llama-server or embedding GGUF missing — RAG and memory distillation disabled"
     }
 
+    Write-Step 'Starting llama-server (reranker, port 8091)'
+    # Qwen3-Reranker-0.6B served via llama-server's --reranking endpoint.
+    # Improves RAG retrieval quality by re-scoring top-N embedding hits
+    # with a model better suited to query-document relevance than cosine.
+    # Cheap (~1 GB VRAM, single GPU layer-set) and called once per chat
+    # turn that runs RAG. Optional: missing GGUF degrades cleanly to
+    # embedding-only retrieval.
+    $rerankerGguf = Join-Path $DataDir 'models\reranker.gguf'
+    if ((Test-Path $llamaBin) -and (Test-Path $rerankerGguf)) {
+        $rerankerArgs = @('--host', '127.0.0.1', '--port', '8091', '-m', $rerankerGguf,
+                          '--ctx-size', '8192', '--parallel', '2', '-ngl', '-1',
+                          '--reranking', '--pooling', 'rank')
+        $pids['reranker'] = Record-PidEntry (Start-TrackedProcess -Name 'reranker' -FilePath $llamaBin `
+            -Args $rerankerArgs -LogDir $LogsDir)
+    } else {
+        Write-Warn2 "llama-server or reranker GGUF missing — RAG falls back to embedding-only ranking"
+    }
+
     Write-Step 'Starting jupyter-lab (code interpreter)'
     $jupyter = Join-Path $VendorDir 'venv-jupyter\Scripts\jupyter-lab.exe'
     if (Test-Path $jupyter) {

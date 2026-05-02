@@ -85,23 +85,40 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 
-# S4U = service-for-user: runs whether logged in or not, no stored password,
-# no admin needed to register for self.
-$principal = New-ScheduledTaskPrincipal `
-    -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-    -LogonType S4U `
-    -RunLevel Limited
-
-try {
-    Register-ScheduledTask -TaskName $TaskName -Force `
-        -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
-} catch {
-    Write-Host "Register-ScheduledTask failed: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "If this is an access denied error, run pwsh as Administrator once and retry." -ForegroundColor Yellow
+# S4U (service-for-user) lets the task fire whether or not the operator
+# is interactively logged on — ideal for a chat backend that should keep
+# refreshing 24/7. But registering S4U typically requires elevation.
+# Try S4U first; on Access Denied, fall back to Interactive (runs when
+# the operator is logged in — fine for a personal dev machine that's
+# almost always active anyway).
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$registered = $false
+foreach ($logonType in @('S4U', 'Interactive')) {
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $currentUser -LogonType $logonType -RunLevel Limited
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Force `
+            -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
+        Write-Host "Registered scheduled task '$TaskName' (every $IntervalMinutes min, LogonType=$logonType)." -ForegroundColor Green
+        if ($logonType -eq 'Interactive') {
+            Write-Host "Note: Interactive logon means the task only runs while you're signed in." -ForegroundColor DarkYellow
+            Write-Host "      For 24/7 polling without sign-in, re-run this script as Administrator." -ForegroundColor DarkYellow
+        }
+        $registered = $true
+        break
+    } catch [System.UnauthorizedAccessException] {
+        # Drop to next attempt
+        continue
+    } catch {
+        if ($_.Exception.Message -match 'denied|0x80070005') { continue }
+        Write-Host "Register-ScheduledTask failed: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+}
+if (-not $registered) {
+    Write-Host "Could not register scheduled task with any LogonType. Try running pwsh as Administrator." -ForegroundColor Red
     exit 1
 }
-
-Write-Host "Registered scheduled task '$TaskName' (every $IntervalMinutes min)." -ForegroundColor Green
 Write-Host ''
 Write-Host 'Status:' -ForegroundColor DarkGray
 Get-ScheduledTaskInfo -TaskName $TaskName |

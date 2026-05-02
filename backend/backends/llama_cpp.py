@@ -65,16 +65,14 @@ def llama_server_binary() -> str:
 
 
 _jinja_supported_cache: bool | None = None
+_help_text_cache: str | None = None
 
 
-def _llama_supports_jinja() -> bool:
-    """Run `llama-server --help` once and check whether the binary
-    accepts the --jinja flag. Older builds (≤ b4499) emit only
-    `--chat-template`; newer ones list `--jinja` separately. Result is
-    cached for the process lifetime."""
-    global _jinja_supported_cache
-    if _jinja_supported_cache is not None:
-        return _jinja_supported_cache
+def _llama_help_text() -> str:
+    """Cached output of `llama-server --help` (stdout+stderr concatenated)."""
+    global _help_text_cache
+    if _help_text_cache is not None:
+        return _help_text_cache
     import subprocess
     try:
         out = subprocess.run(
@@ -82,15 +80,37 @@ def _llama_supports_jinja() -> bool:
             capture_output=True, text=True, timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        haystack = (out.stdout or "") + (out.stderr or "")
-        # Look for `--jinja` as a standalone flag, not the substring
-        # inside `--chat-template JINJA_TEMPLATE` help text.
-        _jinja_supported_cache = bool(
-            re.search(r"(?m)^\s*--jinja\b", haystack)
-        )
+        _help_text_cache = (out.stdout or "") + (out.stderr or "")
     except (OSError, subprocess.TimeoutExpired):
-        _jinja_supported_cache = False
+        _help_text_cache = ""
+    return _help_text_cache
+
+
+def _llama_supports_jinja() -> bool:
+    """Older builds (≤ b4499) emit only `--chat-template`; newer ones list
+    `--jinja` separately. Cached."""
+    global _jinja_supported_cache
+    if _jinja_supported_cache is None:
+        _jinja_supported_cache = bool(
+            re.search(r"(?m)^\s*--jinja\b", _llama_help_text())
+        )
     return _jinja_supported_cache
+
+
+def _draft_flag_names() -> tuple[str, str]:
+    """Return the (max-flag, min-flag) names for the spec-decode draft.
+
+    Recent llama.cpp upstream renamed `--draft-max`/`--draft-min` to
+    `--spec-draft-n-max`/`--spec-draft-n-min`. The vendored binary may
+    be either side of that change depending on when it was last
+    re-downloaded by the launcher, so probe `--help` instead of pinning
+    a single name. Spawning with the wrong name kills the server at
+    startup with the cryptic `argument has been removed` error.
+    """
+    help_text = _llama_help_text()
+    if re.search(r"(?m)^\s*--spec-draft-n-max\b", help_text):
+        return ("--spec-draft-n-max", "--spec-draft-n-min")
+    return ("--draft-max", "--draft-min")
 
 
 def build_argv(tier: TierConfig) -> list[str]:
@@ -161,11 +181,16 @@ def build_argv(tier: TierConfig) -> list[str]:
         # identical, just no speedup.
         from pathlib import Path as _P
         if _P(tier.draft_gguf_path).exists():
+            # Recent llama.cpp upstream renamed --draft-max / --draft-min to
+            # --spec-draft-n-max / --spec-draft-n-min. Probe the binary for
+            # the right pair instead of pinning either — wrong name aborts
+            # the server before it even loads weights.
+            max_flag, min_flag = _draft_flag_names()
             argv += [
                 "-md", tier.draft_gguf_path,
                 "-ngld", str(tier.draft_n_gpu_layers),
-                "--draft-max", str(tier.draft_max),
-                "--draft-min", str(tier.draft_min),
+                max_flag, str(tier.draft_max),
+                min_flag, str(tier.draft_min),
             ]
         else:
             import logging as _logging

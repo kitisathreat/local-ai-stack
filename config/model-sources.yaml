@@ -178,9 +178,27 @@ tiers:
   # tokenizer family) — that tier intentionally has no draft.
   draft_qwen3_06b:
     source: huggingface
-    repo: "unsloth/Qwen3-0.6B-Instruct-GGUF"
+    # The "-Instruct" suffix repo doesn't exist on HF — Unsloth ships the
+    # 0.6B as `unsloth/Qwen3-0.6B-GGUF`. Wrong name silently 404'd every
+    # previous draft pull, leaving spec-decode disabled across all tiers.
+    repo: "unsloth/Qwen3-0.6B-GGUF"
     file: "*UD-Q4_K_XL.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-0.6B-Instruct-UD-Q4_K_XL.gguf"
+      file: "Qwen3-0.6B-UD-Q4_K_XL.gguf"
+
+  # Qwen3-Reranker-0.6B — RAG retrieval reranker. ggml-org's official
+  # GGUF build, designed for llama-server's --reranking endpoint. Pulled
+  # alongside the rest so post-merge refreshes pick it up automatically.
+  # Same Qwen3 tokenizer as the chat tiers, so chunk-token semantics line
+  # up with the embedder + generator. ~640 MB on disk at Q8_0; ~1 GB
+  # resident on the dedicated reranker llama-server.
+  reranker:
+    source: huggingface
+    repo: "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
+    file: "*.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "qwen3-reranker-0.6b-q8_0.gguf"
