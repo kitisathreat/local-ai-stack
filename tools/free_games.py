@@ -34,8 +34,11 @@ STEAM_SEARCH = "https://store.steampowered.com/api/storesearch"
 GOG_CATALOG = "https://catalog.gog.com/v1/catalog"
 ITCH_SEARCH = "https://itch.io/games/free"
 LIBREGW_API = "https://libregamewiki.org/api.php"
+FREEGAMEDEV_API = "https://freegamedev.net/wiki/api.php"
 MYABANDON = "https://www.myabandonware.com"
 OLDGAMES = "https://www.oldgamesdownload.com"
+ABANDONIA = "https://www.abandonia.com"
+GAMEJOLT = "https://gamejolt.com"
 
 
 def _strip_html(s: str, n: int = 600) -> str:
@@ -637,6 +640,175 @@ class Tools:
             )
         return "\n".join(out)
 
+    # ── FreeGameDev wiki (FOSS / open-source games — second source) ──────
+
+    async def freegamedev(
+        self,
+        query: str,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Search the FreeGameDev wiki — companion FOSS-games index to
+        libregamewiki. Same MediaWiki search pattern. Use both: their
+        coverage overlaps but each has titles the other doesn't.
+        :param query: Title or genre keyword.
+        :return: Markdown list with FreeGameDev wiki page URLs.
+        """
+        params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": self.valves.MAX_RESULTS,
+            "format": "json",
+        }
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT) as c:
+            try:
+                r = await c.get(FREEGAMEDEV_API, params=params, headers={"User-Agent": _UA, "Accept": "application/json"})
+            except Exception as e:
+                return f"FreeGameDev request failed: {e}"
+            if r.status_code >= 400:
+                return f"FreeGameDev error {r.status_code}"
+            try:
+                data = r.json()
+            except Exception:
+                return "FreeGameDev returned non-JSON."
+
+        hits = (data.get("query") or {}).get("search") or []
+        if not hits:
+            return f"FreeGameDev: no results for {query}"
+        out = [f"## FreeGameDev wiki — FOSS games: {query}\n"]
+        for h in hits[: self.valves.MAX_RESULTS]:
+            title = h.get("title", "—")
+            slug = title.replace(" ", "_")
+            snippet = _strip_html(h.get("snippet", ""), 240)
+            out.append(
+                f"- **{title}**\n"
+                f"   {snippet}\n"
+                f"   https://freegamedev.net/wiki/{slug}"
+            )
+        return "\n".join(out)
+
+    # ── Game Jolt (free indies) ──────────────────────────────────────────
+
+    async def gamejolt_free(
+        self,
+        query: str = "",
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Browse Game Jolt's free indie catalogue. When `query` is empty
+        returns a slice of currently-popular free games; otherwise scans
+        the free-games browse page for matching titles.
+        :param query: Optional title substring filter.
+        :return: Markdown list with title, dev, Game Jolt URL.
+        """
+        url = f"{GAMEJOLT}/games/free"
+        if query:
+            url = f"{GAMEJOLT}/games?q={quote(query, safe='')}&maxprice=0"
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=True) as c:
+            try:
+                r = await c.get(url, headers={"User-Agent": _UA})
+            except Exception as e:
+                return f"Game Jolt request failed: {e}"
+            if r.status_code >= 400:
+                return f"Game Jolt error {r.status_code}"
+            html = r.text
+
+        # Game Jolt embeds its current state as a JSON payload in the page;
+        # also has anchor hrefs of the form /games/<slug>/<id>.
+        seen: set[str] = set()
+        rows: list[dict] = []
+        anchor_re = re.compile(r'<a[^>]+href="(/games/([^/"]+)/(\d+))"[^>]*>', re.IGNORECASE)
+        title_after_re = re.compile(r'>([^<]{2,100})</a>')
+        for m in anchor_re.finditer(html):
+            full_path = m.group(1)
+            slug = m.group(2)
+            gid = m.group(3)
+            if gid in seen:
+                continue
+            seen.add(gid)
+            # Try to grab the visible title near the anchor.
+            tail = html[m.end(): m.end() + 400]
+            tm = title_after_re.search(tail)
+            title = (tm.group(1).strip() if tm else slug.replace("-", " ")).strip()
+            rows.append({
+                "title": html_mod.unescape(title),
+                "url": f"{GAMEJOLT}{full_path}",
+                "id": gid,
+            })
+            if len(rows) >= self.valves.MAX_RESULTS * 2:
+                break
+
+        if query:
+            ql = query.lower()
+            rows = [r for r in rows if ql in r["title"].lower()] or rows
+
+        if not rows:
+            return f"Game Jolt: no free games surfaced" + (f" for '{query}'" if query else "")
+
+        out = [f"## Game Jolt — free indies" + (f": {query}" if query else "") + "\n"]
+        for r in rows[: self.valves.MAX_RESULTS]:
+            out.append(f"- **{r['title']}**\n   {r['url']}")
+        return "\n".join(out)
+
+    # ── Abandonia (abandoned commercial titles, third source) ────────────
+
+    async def abandonia(
+        self,
+        query: str,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Search Abandonia — long-running archive of abandoned DOS/Windows
+        commercial games (rightsholders ceased commercial activity). Each
+        result page hosts its own download. Companion to MyAbandonware /
+        OldGamesDownload — different catalogues, different curation.
+        :param query: Title query.
+        :return: Markdown list with year, platform, Abandonia URL.
+        """
+        url = f"{ABANDONIA}/en/games/list/{quote(query, safe='')}"
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=True) as c:
+            try:
+                r = await c.get(url, headers={"User-Agent": _UA})
+            except Exception as e:
+                return f"Abandonia request failed: {e}"
+            if r.status_code == 404:
+                # Fall back to their search endpoint.
+                try:
+                    r = await c.get(
+                        f"{ABANDONIA}/en/index.php",
+                        params={"op": "search", "q": query},
+                        headers={"User-Agent": _UA},
+                    )
+                except Exception as e:
+                    return f"Abandonia request failed: {e}"
+            if r.status_code >= 400:
+                return f"Abandonia error {r.status_code}"
+            html = r.text
+
+        # Listing rows: each game card has <a href="/en/games/NNN/Title.html">Title</a>
+        rows = re.findall(
+            r'<a[^>]+href="(/en/games/\d+/[^"]+\.html)"[^>]*>([^<]{2,120})</a>',
+            html,
+        )
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        deduped = []
+        for path, title in rows:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append((path, title))
+            if len(deduped) >= self.valves.MAX_RESULTS:
+                break
+
+        if not deduped:
+            return f"Abandonia: no results for {query}"
+        out = [f"## Abandonia: {query}\n_(rightsholder-abandoned titles; download from each game's page)_\n"]
+        for path, title in deduped:
+            out.append(f"- **{html_mod.unescape(title.strip())}**\n   {ABANDONIA}{path}")
+        return "\n".join(out)
+
     # ── Configurable marketplace layer ───────────────────────────────────
 
     async def list_marketplaces(self, __user__: Optional[dict] = None) -> str:
@@ -923,17 +1095,22 @@ class Tools:
         __user__: Optional[dict] = None,
     ) -> str:
         """
-        One-shot search: currently-free promos (GamerPower + Epic + Steam +
-        GOG + itch.io) plus, when `include_archives`, preservation archives
-        (Internet Archive software library + MyAbandonware +
-        OldGamesDownload), plus FOSS games (libregamewiki) when
-        `include_foss`, plus every entry in the MARKETPLACES valve when
-        `include_marketplaces` and one or more marketplaces are configured.
+        One-shot search across every layer:
+          - currently-free promos: GamerPower, Epic, Steam, GOG, itch.io,
+            Game Jolt
+          - preservation archives (when `include_archives`): Internet
+            Archive Software Library, MyAbandonware, OldGamesDownload,
+            Abandonia
+          - FOSS games (when `include_foss`): libregamewiki, FreeGameDev
+            wiki
+          - every entry in the MARKETPLACES valve (when
+            `include_marketplaces` and one or more marketplaces are
+            configured)
         :param query: Title or keyword. When empty, returns only the
                       promotional sources (which list whatever's free now).
         :param include_archives: Include preservation archives (only useful
                                  when `query` is set).
-        :param include_foss: Include libregamewiki FOSS-games search.
+        :param include_foss: Include FOSS-game wiki searches.
         :param include_marketplaces: Include every configured marketplace.
         :return: Combined Markdown digest.
         """
@@ -951,19 +1128,25 @@ class Tools:
         ]
         if query:
             coros.append(self.itchio_free(query))
+            coros.append(self.gamejolt_free(query))
             labels.append("itch.io (free indies — query-filtered)")
+            labels.append("Game Jolt (free indies)")
         if query and include_archives:
             coros.append(self.ia_software(query, collection="softwarelibrary"))
             coros.append(self.myabandonware(query))
             coros.append(self.oldgamesdownload(query))
+            coros.append(self.abandonia(query))
             labels += [
                 "Internet Archive Software Library (preservation, often browser-playable)",
                 "MyAbandonware (abandoned commercial titles)",
                 "OldGamesDownload (abandoned commercial titles)",
+                "Abandonia (abandoned commercial titles)",
             ]
         if query and include_foss:
             coros.append(self.libregamewiki(query))
+            coros.append(self.freegamedev(query))
             labels.append("libregamewiki (FOSS games)")
+            labels.append("FreeGameDev wiki (FOSS games)")
         if query and include_marketplaces:
             try:
                 mps = self._marketplaces()
