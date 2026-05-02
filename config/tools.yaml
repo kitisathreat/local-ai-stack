@@ -1099,6 +1099,106 @@ additional_tools:
     api_key_required: true
     api_key_url: "https://github.com/vitiko98/qobuz-dl"
 
+  bandcamp:
+    file: tools/bandcamp.py
+    group: entertainment
+    subgroup: p2p_music
+    title: "Bandcamp — Search, Album Details & Free FLAC"
+    description: "Search Bandcamp's catalogue and inspect releases for free / name-your-price FLAC eligibility. Free direct-from-artist lossless source. Download primitive is gated behind WRITE_ENABLED."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  free_lossless:
+    file: tools/free_lossless.py
+    group: entertainment
+    subgroup: p2p_music
+    title: "Free Lossless — ccMixter, NPR, KEXP, Live Music Archive"
+    description: "Aggregator for free, legal, FLAC-friendly sources outside FMA/Jamendo: ccMixter (CC remixes with WAV/FLAC), Internet Archive's etree Live Music Archive (taper recordings, mostly FLAC/SHN), KEXP @ archive.org sessions, NPR Tiny Desk feed."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  deezer:
+    file: tools/deezer.py
+    group: entertainment
+    subgroup: streaming_music
+    title: "Deezer — Public Catalogue Search"
+    description: "Free public catalogue search: tracks, albums, artists, related artists, charts, 30-second preview MP3s. Lossless FLAC streaming requires paid Deezer HiFi (not exposed by the public API)."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  songlink:
+    file: tools/songlink.py
+    group: entertainment
+    subgroup: music_metadata
+    title: "Songlink / Odesli — Universal Song Resolver"
+    description: "Take any song URL or ISRC and get matching links on every other service via Odesli. Highlights free / lossless sources (Bandcamp, YouTube, Tidal, Deezer, Qobuz)."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  yt_dlp_tool:
+    file: tools/yt_dlp_tool.py
+    group: entertainment
+    subgroup: curation
+    title: "yt-dlp — Universal Audio/Video Downloader"
+    description: "Wrap the yt-dlp CLI to inspect and download from 1000+ sites — YouTube, SoundCloud, Bandcamp, Vimeo, Internet Archive, Twitch, Mixcloud, NicoNico, BBC, NPR. Picks the best lossless audio codec (FLAC/WAV/ALAC > Opus > AAC > MP3) the source actually offers. Downloads gated behind WRITE_ENABLED."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  free_films_tv:
+    file: tools/free_films_tv.py
+    group: entertainment
+    subgroup: movies_tv
+    title: "Free Films & TV — IA, Tubi, Pluto, Crackle, PBS, Kanopy"
+    description: "Search legally-free TV and film catalogues. Internet Archive movies (full MP4/MKV downloads, public domain) is the strongest free legal source. Tubi / Pluto / Crackle / PBS surface free ad-supported streams; Kanopy is library-card free."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  justwatch:
+    file: tools/justwatch.py
+    group: entertainment
+    subgroup: movies_tv
+    title: "JustWatch — Where Can I Watch / Stream / Rent / Buy"
+    description: "Look up where a film or TV show is currently streaming, free with ads, rentable, or buyable in a chosen country, via JustWatch's public Apollo GraphQL endpoint. Includes a free-only filter."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  tvmaze:
+    file: tools/tvmaze.py
+    group: entertainment
+    subgroup: movies_tv
+    title: "TVMaze — Free TV Schedule & Episode Metadata"
+    description: "Free no-key TV database — shows, networks, schedules, episode-by-number lookup, current/upcoming schedule, cast. Better than TMDB for next-episode air dates."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  anilist:
+    file: tools/anilist.py
+    group: entertainment
+    subgroup: movies_tv
+    title: "AniList — Anime & Manga Metadata"
+    description: "Search AniList for anime and manga via free public GraphQL. Detailed metadata, currently-airing schedule, free streaming-episode links, recommendations."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
+  arr_stack:
+    file: tools/arr_stack.py
+    group: entertainment
+    subgroup: curation
+    title: "*arr Stack — Sonarr/Radarr/Lidarr/Bazarr/Prowlarr Control"
+    description: "Talk to the standard self-hosted *arr media-automation stack. Search and add series/movies/artists, inspect download queues, run a pooled Prowlarr search across every configured indexer, list missing subtitles in Bazarr."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+
   soulseek:
     file: tools/soulseek.py
     group: entertainment
