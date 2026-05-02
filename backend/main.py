@@ -1099,6 +1099,29 @@ async def _single_agent_sse(
     else:
         tool_schemas = req.tools
 
+    # Honor OpenAI's tool_choice. Belt-and-suspenders: filter the tools
+    # list client-side AND pass tool_choice to llama-server (which
+    # supports it natively in chat completions). The client-side filter
+    # is the strong guarantee — even a model that ignores tool_choice
+    # can't call a function we didn't send. Closes umbrella #154.
+    tool_choice_extra: dict[str, Any] | None = None
+    if req.tool_choice is not None and tool_schemas:
+        if req.tool_choice == "none":
+            # Suppress tools entirely. Model can't call what it can't see.
+            tool_schemas = None
+        elif isinstance(req.tool_choice, dict):
+            # OpenAI shape: {"type":"function","function":{"name":"X"}}
+            wanted = (req.tool_choice.get("function") or {}).get("name")
+            if wanted:
+                tool_schemas = [
+                    s for s in tool_schemas
+                    if (s.get("function") or {}).get("name") == wanted
+                ]
+            tool_choice_extra = {"tool_choice": req.tool_choice}
+        elif req.tool_choice in ("auto", "required"):
+            # Forward verbatim — llama-server interprets these.
+            tool_choice_extra = {"tool_choice": req.tool_choice}
+
     max_tool_turns = 5
     try:
         for turn in range(max_tool_turns + 1):
@@ -1112,8 +1135,8 @@ async def _single_agent_sse(
                 yield sse
             accumulator = ToolCallAccumulator()
             # Build the chat_stream extra_options merge: response_format
-            # constraint + logprobs flags. Both can be set on the same
-            # request and llama-server combines them cleanly.
+            # constraint + logprobs flags + tool_choice. All three can be
+            # set on the same request and llama-server combines them.
             extra_options: dict = {}
             rf_extra = _response_format_to_extra_options(req.response_format)
             if rf_extra:
@@ -1122,6 +1145,8 @@ async def _single_agent_sse(
                 extra_options["logprobs"] = True
                 if req.top_logprobs is not None:
                     extra_options["top_logprobs"] = int(req.top_logprobs)
+            if tool_choice_extra:
+                extra_options.update(tool_choice_extra)
             try:
                 async for chunk in client.chat_stream(
                     tier, msg_payload, think=decision.think,
