@@ -148,6 +148,29 @@ class Tools:
             h.update({k: str(v) for k, v in extra.items()})
         return h
 
+    @staticmethod
+    def _detect_blockers(html: str, headers: dict) -> str:
+        """Surface obvious anti-bot signatures so the user knows when to give
+        up on a regex fix and reach for a headless browser instead."""
+        hits: list[str] = []
+        h = (html or "")[:5000].lower()
+        srv = (headers.get("server") or "").lower()
+        if "cloudflare" in srv or "cf-ray" in {k.lower() for k in headers}:
+            hits.append("Cloudflare (likely JS challenge / Turnstile)")
+        if "just a moment" in h or "checking your browser" in h:
+            hits.append("Cloudflare interstitial detected in body")
+        if "captcha" in h or "g-recaptcha" in h or "h-captcha" in h:
+            hits.append("CAPTCHA challenge")
+        if "ddos-guard" in srv or "ddos-guard" in h:
+            hits.append("DDoS-Guard")
+        if "incapsula" in h or "imperva" in srv:
+            hits.append("Imperva / Incapsula")
+        if "<script" in h and ("__nuxt__" in h or "__next_data__" in h or "ng-version" in h or "react-root" in h):
+            hits.append("JS-rendered SPA — server returned shell HTML, real content loads via JS")
+        if not h.strip():
+            hits.append("empty response body")
+        return "; ".join(hits)
+
     # ── GamerPower (cross-platform free-game aggregator) ─────────────────
 
     async def gamerpower(
@@ -839,6 +862,236 @@ class Tools:
             )
         return "\n".join(out)
 
+    # ── Diagnostic helpers ───────────────────────────────────────────────
+    #
+    # The honest answer to "will this work on any site you point it at?"
+    # is no — generic web scraping is brittle. These methods exist so the
+    # user can verify a marketplace config in one round-trip instead of
+    # guessing why nothing came back.
+
+    async def probe_marketplace(
+        self,
+        name: str,
+        query: str = "test",
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Diagnostic version of `search_marketplace`. Runs the search exactly
+        as `search_marketplace` would, but instead of returning hits, dumps
+        every signal needed to debug a config: HTTP status, response
+        headers, byte count, content-type, anti-bot signatures, regex
+        match count, the first three matches with their positions, and a
+        sample of the response body. Use this whenever a marketplace
+        returns "no matches" so you can see why.
+        :param name: Marketplace name from the MARKETPLACES valve.
+        :param query: Test query (defaults to "test"; pass something likely
+                      to have results).
+        :return: Markdown diagnostic report.
+        """
+        try:
+            mps = self._marketplaces()
+        except ValueError as e:
+            return f"MARKETPLACES configuration error: {e}"
+        match = next((m for m in mps if m["name"].lower() == name.lower()), None)
+        if not match:
+            names = ", ".join(m["name"] for m in mps) or "(none)"
+            return f"No marketplace named '{name}'. Configured: {names}"
+        return await self._probe_config(match, query)
+
+    async def test_marketplace_config(
+        self,
+        config_json: str,
+        query: str = "test",
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Try a marketplace config WITHOUT saving it to the MARKETPLACES
+        valve. Pass the same JSON object you'd add to MARKETPLACES; this
+        runs a probe with `query` and reports what worked and what didn't.
+        Iterate on the regex here, then commit the working config to the
+        valve.
+        :param config_json: JSON object string with name, search_url,
+                            result_pattern, optional download_pattern.
+        :param query: Test query.
+        :return: Markdown diagnostic report.
+        """
+        try:
+            cfg = json.loads(config_json)
+        except json.JSONDecodeError as e:
+            return f"config_json is not valid JSON: {e}"
+        if not isinstance(cfg, dict):
+            return "config_json must be a JSON object."
+        for k in ("name", "search_url", "result_pattern"):
+            if not cfg.get(k):
+                return f"config missing required field '{k}'."
+        return await self._probe_config(cfg, query)
+
+    async def _probe_config(self, cfg: dict, query: str) -> str:
+        """Shared probe logic for probe_marketplace + test_marketplace_config."""
+        name = cfg.get("name", "<unnamed>")
+        try:
+            search_url = cfg["search_url"].format(query=quote(query, safe=""))
+        except (KeyError, IndexError):
+            return f"search_url for '{name}' must contain {{query}} placeholder."
+        try:
+            pat = re.compile(cfg["result_pattern"], flags=re.IGNORECASE | re.DOTALL)
+        except re.error as e:
+            return f"result_pattern for '{name}' is not a valid regex: {e}"
+        dl_pat: Optional[re.Pattern] = None
+        if cfg.get("download_pattern"):
+            try:
+                dl_pat = re.compile(cfg["download_pattern"], flags=re.IGNORECASE | re.DOTALL)
+            except re.error as e:
+                return f"download_pattern for '{name}' is not a valid regex: {e}"
+
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=self.valves.FOLLOW_REDIRECTS) as c:
+            try:
+                r = await c.get(search_url, headers=self._extra_headers())
+            except Exception as e:
+                return f"PROBE — request failed: {e}"
+            html = r.text
+            hops = " → ".join(str(h.url) for h in r.history) + (" → " if r.history else "")
+            ctype = r.headers.get("content-type", "—")
+            blockers = self._detect_blockers(html, dict(r.headers))
+
+            hits = list(pat.finditer(html))
+            sample_matches: list[str] = []
+            for h in hits[:3]:
+                groups = h.groups()
+                pos = f"@{h.start()}"
+                if len(groups) >= 2:
+                    sample_matches.append(f"  - {pos}  url=`{groups[0][:120]}`  title=`{groups[1][:120]}`")
+                elif groups:
+                    sample_matches.append(f"  - {pos}  group(1)=`{groups[0][:200]}`")
+                else:
+                    sample_matches.append(f"  - {pos}  full match=`{h.group(0)[:200]}`")
+
+            # Generic-DL probe on the first hit's page (if any), to also
+            # validate download extraction works.
+            dl_diag = "  (skipped — no result_pattern hits)"
+            if hits:
+                first = hits[0]
+                first_url = first.group(1) if first.groups() else first.group(0)
+                if first_url:
+                    base = f"{urlparse(search_url).scheme}://{urlparse(search_url).netloc}"
+                    full = first_url if first_url.startswith("http") else urljoin(base + "/", first_url)
+                    try:
+                        rr = await c.get(full, headers=self._extra_headers())
+                        dlhtml = rr.text
+                        use_pat = dl_pat or _GENERIC_DL_REGEX
+                        dl_hits = list(use_pat.finditer(dlhtml))
+                        dl_blockers = self._detect_blockers(dlhtml, dict(rr.headers))
+                        sample_dl: list[str] = []
+                        for m in dl_hits[:5]:
+                            try:
+                                u = m.group(1)
+                            except IndexError:
+                                u = m.group(0)
+                            sample_dl.append(f"      - {u[:200]}")
+                        dl_diag = (
+                            f"  fetched first result page: {full}\n"
+                            f"    status: {rr.status_code}  ·  bytes: {len(dlhtml):,}  ·  ctype: {rr.headers.get('content-type','—')}\n"
+                            f"    blocker hints: {dl_blockers or 'none'}\n"
+                            f"    download_pattern: {'custom' if dl_pat else 'generic'}\n"
+                            f"    download links matched: {len(dl_hits)}\n"
+                            + ("    sample download URLs:\n" + "\n".join(sample_dl) if sample_dl else "    (no download links — see body sample below)\n"
+                               + f"      body sample: {_strip_html(dlhtml, 600)}")
+                        )
+                    except Exception as e:
+                        dl_diag = f"  download-page fetch failed: {e}"
+
+        verdict = (
+            "✅ search_pattern works" if hits else
+            ("⚠️  blocker detected — generic regex probably won't help" if blockers else "❌ search_pattern matched 0 times")
+        )
+        return (
+            f"# Probe: {name}  (query='{query}')\n"
+            f"## Search\n"
+            f"  url:        {search_url}\n"
+            f"  redirects:  {hops}{r.url}\n"
+            f"  status:     {r.status_code}\n"
+            f"  ctype:      {ctype}\n"
+            f"  bytes:      {len(html):,}\n"
+            f"  blocker hints: {blockers or 'none'}\n"
+            f"  result_pattern matches: {len(hits)}  →  {verdict}\n"
+            + (("  sample matches:\n" + "\n".join(sample_matches)) if sample_matches else "")
+            + f"\n\n## Download extraction (first hit)\n{dl_diag}\n"
+            f"\n## Body sample (first 1500 chars, HTML-stripped)\n  {_strip_html(html, 1500)}"
+        )
+
+    async def probe_download(
+        self,
+        url: str,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        HEAD a download URL (with a ranged-GET fallback for servers that
+        don't support HEAD) and report what would be downloaded — final
+        URL after redirects, content-type, content-length, server,
+        last-modified. Use to validate an extracted download link before
+        committing to a real download.
+        :param url: Direct download URL.
+        :return: Markdown report.
+        """
+        return await self.download(url, dry_run=True)
+
+    def recipe_templates(self, __user__: Optional[dict] = None) -> str:
+        """
+        Return ready-to-paste regex starter templates for common CMS / site
+        layouts. Copy the closest one into a MARKETPLACES entry and adapt.
+        :return: Markdown with named templates and JSON snippets.
+        """
+        templates = [
+            ("WordPress (entry-title pattern — most blogs / news / many download sites)", {
+                "name": "Example WordPress",
+                "search_url": "https://example.com/?s={query}",
+                "result_pattern": r'<h2[^>]*class="[^"]*entry-title[^"]*"[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>',
+                "download_pattern": r'href="(https?://[^"]+\.(?:zip|7z|rar|iso|exe|dmg|tar(?:\.[gx]z)?|tgz))"',
+            }),
+            ("Generic article cards (h2/h3 → a)", {
+                "name": "Example",
+                "search_url": "https://example.com/search?q={query}",
+                "result_pattern": r'<(?:h2|h3)[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>',
+            }),
+            ("Game-style listing — figure/card with title under it", {
+                "name": "Example",
+                "search_url": "https://example.com/?s={query}",
+                "result_pattern": r'<a[^>]+href="(/games?/[^"]+)"[^>]*>\s*(?:<img[^>]*>)?\s*<(?:span|div|h\d)[^>]*>([^<]+)</',
+            }),
+            ("Discourse forum (topic listing)", {
+                "name": "Example Discourse",
+                "search_url": "https://forum.example.com/search?q={query}",
+                "result_pattern": r'<a[^>]+class="[^"]*search-link[^"]*"[^>]+href="([^"]+)"[^>]*>([^<]+)</a>',
+            }),
+            ("MediaWiki (use the API instead — more reliable than scraping)", {
+                "name": "Example MediaWiki",
+                "search_url": "https://wiki.example.com/api.php?action=query&list=search&srsearch={query}&format=json&srlimit=10",
+                "result_pattern": r'"title":"([^"]+)".*?"snippet":"([^"]*)"',
+            }),
+            ("Direct-download magnet pages (TPB-style)", {
+                "name": "Example tracker",
+                "search_url": "https://example.com/search?q={query}",
+                "result_pattern": r'<a[^>]+href="(/torrent/\d+/[^"]+)"[^>]*>([^<]+)</a>',
+                "download_pattern": r'(magnet:\?xt=urn:btih:[a-fA-F0-9]+[^"\']*)',
+            }),
+        ]
+        out = ["## Marketplace recipe templates\n",
+               "Copy the closest template into a MARKETPLACES entry, adapt the URL/regex.",
+               "After editing, run `test_marketplace_config(json_str, query='something')` to verify.",
+               "When the probe returns ✅, commit the config to the MARKETPLACES valve.\n"]
+        for label, cfg in templates:
+            out.append(f"### {label}")
+            out.append("```json")
+            out.append(json.dumps(cfg, indent=2))
+            out.append("```\n")
+        out.append("## Limits to be honest about")
+        out.append("- **JS-rendered SPAs** (Next.js, Nuxt, React, Angular) won't work — the server returns an empty shell. Use the headless_browser tool to render first, then feed HTML to extract_downloads.")
+        out.append("- **Cloudflare / DDoS-Guard / CAPTCHA** challenges will return interstitials. probe_marketplace flags these in `blocker hints`.")
+        out.append("- **Auth-walled sites** need cookies in the REQUEST_HEADERS valve.")
+        out.append("- **POST search forms** aren't supported here — use a site that has a GET endpoint.")
+        out.append("- **Pagination** isn't automatic — bake the page number into search_url if needed.")
+        return "\n".join(out)
+
     async def search_marketplace(
         self,
         name: str,
@@ -881,7 +1134,21 @@ class Tools:
 
         hits = pat.findall(html)
         if not hits:
-            return f"{name}: no result_pattern matches for '{query}' at {search_url}"
+            # Make the failure diagnosable instead of silent: dump enough of
+            # the response that the user can see what their regex needs to
+            # match, plus surface obvious anti-bot signatures.
+            blockers = self._detect_blockers(html, dict(r.headers))
+            sample = _strip_html(html, 1200) if html else "(empty body)"
+            return (
+                f"{name}: no result_pattern matches for '{query}'.\n"
+                f"  search_url: {search_url}\n"
+                f"  status: {r.status_code}  ·  bytes: {len(html):,}  ·  ctype: {r.headers.get('content-type','—')}\n"
+                f"  blocker hints: {blockers or 'none detected'}\n\n"
+                f"  --- response sample (HTML stripped, first 1200 chars) ---\n  {sample}\n"
+                f"  --- raw HTML head (first 600 chars) ---\n  {html[:600]}\n\n"
+                f"  Try `probe_marketplace('{name}', '{query}')` for a richer diagnostic, "
+                f"or `recipe_templates()` for known-good regex starting points."
+            )
 
         base = f"{urlparse(search_url).scheme}://{urlparse(search_url).netloc}"
         out = [f"## {name}: {query}\n"]
@@ -973,7 +1240,15 @@ class Tools:
             if u not in urls:
                 urls.append(u)
         if not urls:
-            return f"No download links matched on {page_url} (pattern: {'custom' if custom_pat else 'generic'})"
+            blockers = self._detect_blockers(html, dict(r.headers))
+            return (
+                f"No download links matched on {page_url} (pattern: {'custom' if custom_pat else 'generic'}).\n"
+                f"  status: {r.status_code}  ·  bytes: {len(html):,}  ·  ctype: {r.headers.get('content-type','—')}\n"
+                f"  blocker hints: {blockers or 'none detected'}\n"
+                f"  Tip: many sites hide the download URL behind a JS click-handler or a "
+                f"second redirect page. If so, point download_pattern at the JS-bridge URL "
+                f"or open the link with the headless_browser tool first."
+            )
         out = [f"## Download links extracted from {page_url}\n"]
         for u in urls[:30]:
             out.append(f"- {u}")
@@ -983,22 +1258,58 @@ class Tools:
         self,
         url: str,
         filename: str = "",
+        dry_run: bool = False,
         __user__: Optional[dict] = None,
     ) -> str:
         """
         Stream-download a single URL into DOWNLOAD_DIR. Gated behind
         WRITE_ENABLED. Magnet links are not downloaded here — copy them to
-        the qBittorrent tool instead.
+        the qBittorrent tool instead. When `dry_run=True`, runs a HEAD
+        request and reports what *would* be downloaded (final URL after
+        redirects, content-type, content-length, server) without writing.
         :param url: Direct download URL (http(s)://).
         :param filename: Optional override; defaults to the URL's basename.
+        :param dry_run: When True, HEAD only — no file written.
         :return: Final path on disk + bytes written.
         """
-        if not self.valves.WRITE_ENABLED:
-            return "Download blocked: flip WRITE_ENABLED in this tool's Valves first."
         if url.startswith("magnet:"):
             return "Magnet links are not downloaded by this tool — pass to the qBittorrent tool's add_torrent."
         if not url.startswith("http"):
             return f"Refusing non-http(s) URL: {url}"
+
+        # Dry-run: HEAD only, no write, no WRITE_ENABLED check.
+        if dry_run:
+            async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=self.valves.FOLLOW_REDIRECTS) as c:
+                try:
+                    h = await c.head(url, headers=self._extra_headers())
+                except Exception as e:
+                    return f"dry-run HEAD failed: {e}"
+                # Some servers return 405 for HEAD; fall back to a 1-byte ranged GET.
+                if h.status_code in (405, 501):
+                    headers = dict(self._extra_headers())
+                    headers["Range"] = "bytes=0-0"
+                    try:
+                        h = await c.get(url, headers=headers)
+                    except Exception as e:
+                        return f"dry-run ranged-GET failed: {e}"
+                ctype = h.headers.get("content-type", "—")
+                clen = h.headers.get("content-length")
+                final_url = str(h.url)
+                hops = " → ".join(str(rh.url) for rh in h.history) + (" → " if h.history else "")
+                warn = ""
+                if clen and int(clen) < 4096 and "html" in ctype.lower():
+                    warn = "\n  ⚠️  small payload + HTML content-type — likely an interstitial / login wall, not the actual file."
+                return (
+                    f"DRY RUN — would download:\n"
+                    f"  url:        {url}\n"
+                    f"  redirects:  {hops}{final_url}\n"
+                    f"  status:     {h.status_code}\n"
+                    f"  ctype:      {ctype}\n"
+                    f"  size:       {int(clen):,} bytes" if clen else f"  size:       (server didn't send Content-Length)"
+                ) + (f"\n  server:     {h.headers.get('server', '—')}\n  modified:   {h.headers.get('last-modified', '—')}{warn}")
+
+        if not self.valves.WRITE_ENABLED:
+            return "Download blocked: flip WRITE_ENABLED in this tool's Valves first (or call with dry_run=True to preview)."
         out_dir = Path(self.valves.DOWNLOAD_DIR).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1016,6 +1327,13 @@ class Tools:
                 async with c.stream("GET", url, headers=self._extra_headers()) as resp:
                     if resp.status_code >= 400:
                         return f"HTTP {resp.status_code} from {url}"
+                    ctype = resp.headers.get("content-type", "")
+                    if "text/html" in ctype.lower() and resp.headers.get("content-length") and int(resp.headers["content-length"]) < 8192:
+                        return (
+                            f"Refused: server returned tiny HTML ({resp.headers.get('content-length')} bytes, ctype={ctype}) "
+                            f"— that's almost certainly an interstitial, not the file. "
+                            f"Try `download(url, dry_run=True)` to inspect, or use the headless_browser tool."
+                        )
                     with dest.open("wb") as fh:
                         async for chunk in resp.aiter_bytes(chunk_size=128 * 1024):
                             fh.write(chunk)
