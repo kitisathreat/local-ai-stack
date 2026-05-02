@@ -2,6 +2,13 @@
 ; Build with: ISCC.exe installer\LocalAIStack.iss
 ; Or: .\LocalAIStack.ps1 -BuildInstaller
 ;
+; Ship model: ONE installer EXE (LocalAIStackInstaller-<ver>.exe). After
+; install, the only EXE on disk is the runtime LocalAIStack.exe — the
+; installer is not redistributed alongside the app. To reconfigure or
+; repair, the user re-runs the installer (Apps & Features → Modify, or
+; double-clicks the same EXE again); the installer detects the existing
+; install via {#AppId} and edits it in place.
+;
 ; Layout after install:
 ;   %PROGRAMFILES%\LocalAIStack\   — code + binaries (read-only, per-machine)
 ;   %LOCALAPPDATA%\LocalAIStack\   — .env, database, logs, models (per-user, preserved on uninstall)
@@ -12,6 +19,12 @@
 #define AppURL       "https://github.com/kitisathreat/local-ai-stack"
 #define AppId        "{E7B3A1D2-4F8C-4E9A-B012-3C7D5E6F1A2B}"
 #define ExeName      "LocalAIStack.exe"
+; AppUserModelID — opaque, version-stable taskbar identity. Stamped on
+; every shortcut and set at runtime by the launcher and the Qt GUI so
+; (a) the pinned shortcut, (b) the launcher process, and (c) the Qt
+; window all share one taskbar slot. Don't bump on minor upgrades or
+; users lose their pinned shortcut.
+#define AppAUMID     "LocalAIStack.App"
 
 [Setup]
 AppId={#AppId}
@@ -33,10 +46,47 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Registry flag so the launcher knows it is running in installed mode
 ChangesEnvironment=yes
+; Repair-in-place: when the same AppId is detected, reuse the prior
+; install dir and shut the running app down before overwriting files.
+UsePreviousAppDir=yes
+UsePreviousGroup=yes
+UsePreviousTasks=yes
+CloseApplications=force
+RestartApplications=no
+; Same-version upgrades: prevent two side-by-side installs by routing
+; everything through the standard upgrade flow keyed off {#AppId}.
+DisableDirPage=auto
+DisableProgramGroupPage=auto
 
 [Registry]
 Root: HKLM; Subkey: "SOFTWARE\LocalAIStack"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\LocalAIStack"; ValueType: string; ValueName: "Installed"; ValueData: "1"
+
+; ── Proper-app registration (Windows "Apps" recognition + taskbar pin) ──
+; HKCR\Applications\LocalAIStack.exe gives the EXE a friendly name and
+; binds the AUMID. Without this, "Pin to taskbar" / "Open with" treat
+; the EXE as anonymous and the taskbar icon doesn't group with the
+; pinned shortcut.
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}"; \
+    ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}"; \
+    ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#AppAUMID}"
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}\DefaultIcon"; \
+    ValueType: string; ValueData: "{app}\{#ExeName},0"
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\{#ExeName}\shell\open\command"; \
+    ValueType: string; ValueData: """{app}\{#ExeName}"" ""%1"""
+
+; "Registered Applications" entry — surfaces the app in
+; Settings → Apps → Default apps, and in the modern taskbar pin UX.
+Root: HKLM; Subkey: "SOFTWARE\RegisteredApplications"; \
+    ValueType: string; ValueName: "{#AppName}"; ValueData: "SOFTWARE\LocalAIStack\Capabilities"; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "SOFTWARE\LocalAIStack\Capabilities"; \
+    ValueType: string; ValueName: "ApplicationName"; ValueData: "{#AppName}"
+Root: HKLM; Subkey: "SOFTWARE\LocalAIStack\Capabilities"; \
+    ValueType: string; ValueName: "ApplicationDescription"; \
+    ValueData: "Local AI assistant: chat, admin console, model resolver, Cloudflare tunnel."
+Root: HKLM; Subkey: "SOFTWARE\LocalAIStack\Capabilities"; \
+    ValueType: string; ValueName: "ApplicationIcon"; ValueData: "{app}\{#ExeName},0"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -50,14 +100,11 @@ Name: "desktopicon";   Description: "Create a &desktop shortcut";   GroupDescrip
 Name: "startmenuicon"; Description: "Create &Start menu entries";   GroupDescription: "Additional shortcuts:"
 
 [Files]
-; Compiled launcher (day-to-day runtime — what the desktop / Start
-; menu shortcuts target).
+; Compiled launcher — the ONLY EXE installed on disk. Handles every
+; mode the app needs (start, stop, setup, reconfigure, test) via
+; switches. The installer EXE itself is not bundled into {app}; users
+; who want to reconfigure re-run the installer from Apps & Features.
 Source: "..\LocalAIStack.exe";         DestDir: "{app}";                    Flags: ignoreversion
-
-; Compiled installer (first-time setup + reconfiguration). Reachable
-; from the "Reconfigure Local AI Stack" Start menu entry and from
-; Apps & Features → Modify; not given a desktop shortcut.
-Source: "..\LocalAIStackInstaller.exe"; DestDir: "{app}";                   Flags: ignoreversion skipifsourcedoesntexist
 
 ; Frozen GUI (PyInstaller one-folder)
 Source: "..\dist\gui\*";               DestDir: "{app}\gui";                Flags: ignoreversion recursesubdirs createallsubdirs
@@ -81,32 +128,40 @@ Source: "..\vendor\inno-setup\*";      DestDir: "{app}\vendor\inno-setup";  Flag
 Source: "..\assets\*";                 DestDir: "{app}\assets";             Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
-; Start Menu — runtime shortcuts (LocalAIStack.exe). The installer EXE
-; only appears as a "Reconfigure" entry, never as the primary launch.
-Name: "{group}\{#AppName}";        Filename: "{app}\{#ExeName}";  Tasks: startmenuicon
-Name: "{group}\Admin Console";     Filename: "{app}\{#ExeName}";  Parameters: "-Admin"; Tasks: startmenuicon
-Name: "{group}\Health Check";      Filename: "{app}\{#ExeName}";  Parameters: "-Test"; Tasks: startmenuicon
-Name: "{group}\Reconfigure {#AppName}"; Filename: "{app}\LocalAIStackInstaller.exe"; Parameters: "-Reconfigure"; Tasks: startmenuicon
+; Start Menu — every entry targets LocalAIStack.exe (the only EXE on
+; disk). Reconfigure / Repair are switches, not separate binaries.
+; AppUserModelID stamps the shortcut so its taskbar slot matches the
+; runtime EXE — that's what makes "Pin to taskbar" work cleanly and
+; keeps the running app in the same slot as the pinned shortcut.
+Name: "{group}\{#AppName}";             Filename: "{app}\{#ExeName}"; \
+    AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
+Name: "{group}\Admin Console";          Filename: "{app}\{#ExeName}"; \
+    Parameters: "-Admin"; AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
+Name: "{group}\Health Check";           Filename: "{app}\{#ExeName}"; \
+    Parameters: "-Test"; AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
+Name: "{group}\Reconfigure {#AppName}"; Filename: "{app}\{#ExeName}"; \
+    Parameters: "-SetupGui"; AppUserModelID: "{#AppAUMID}"; Tasks: startmenuicon
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 
-; Desktop (single shortcut for the runtime EXE — no installer on
-; the desktop).
-Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#ExeName}";  Tasks: desktopicon
+; Desktop (single shortcut for the runtime EXE).
+Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#ExeName}"; \
+    AppUserModelID: "{#AppAUMID}"; Tasks: desktopicon
 
 [Run]
 ; Phase 1 (silent, hidden, always runs): create the Python venvs and
 ; download non-model vendor binaries. Models are skipped here and
-; pulled later in phase 2 via the wizard.
-Filename: "{app}\LocalAIStackInstaller.exe"; Parameters: "-RepairOnly"; \
+; pulled later in phase 2 via the wizard. Runs through the runtime
+; EXE so we don't ship a second binary.
+Filename: "{app}\{#ExeName}"; Parameters: "-Setup -SkipModels"; \
     Description: "Create Python environments"; \
     Flags: runhidden waituntilterminated; \
     StatusMsg: "Creating Python environments and downloading binaries…"
 
-; Phase 2 (post-install, optional): launch the setup wizard. The
-; installer EXE runs the wizard, kicks off the model pull in the
-; background, and exits. The user can deselect this checkbox if they
+; Phase 2 (post-install, optional): launch the setup wizard via the
+; runtime EXE's -SetupGui mode. Kicks off the model pull in the
+; background and exits. The user can deselect this checkbox if they
 ; prefer to run setup later from the Start menu.
-Filename: "{app}\LocalAIStackInstaller.exe"; \
+Filename: "{app}\{#ExeName}"; Parameters: "-SetupGui"; \
     Description: "Run the setup wizard now (admin user, Cloudflare, model download)"; \
     Flags: nowait postinstall skipifsilent
 
@@ -135,16 +190,27 @@ Type: filesandordirs; Name: "{app}\tools\__pycache__"
 ; The user must delete it manually if they want a clean slate.
 
 [Code]
-// Detect a previous installation and offer upgrade path.
+// Detect a previous installation. We never run side-by-side — the same
+// {#AppId} ensures Inno reuses the prior install dir and overwrites in
+// place. Show a single confirmation so the user knows they're editing
+// an existing installation rather than creating a new one.
 function InitializeSetup(): Boolean;
 var
-  PrevVersion: String;
+  PrevVersion, PrevDir: String;
+  Msg: String;
 begin
   Result := True;
-  if RegQueryStringValue(HKLM, 'SOFTWARE\LocalAIStack', 'AppVersion', PrevVersion) then begin
-    if PrevVersion = '{#AppVersion}' then begin
-      MsgBox('Version {#AppVersion} is already installed. Reinstalling will overwrite the application files.' + #13#10 +
-             'Your data in %LOCALAPPDATA%\LocalAIStack will not be affected.', mbInformation, MB_OK);
+  if RegQueryStringValue(HKLM, 'SOFTWARE\LocalAIStack', 'InstallDir', PrevDir) then begin
+    RegQueryStringValue(HKLM, 'SOFTWARE\LocalAIStack', 'AppVersion', PrevVersion);
+    if PrevVersion = '' then PrevVersion := '(unknown)';
+    Msg := 'An existing Local AI Stack installation was detected:' + #13#10 + #13#10 +
+           '    Location: ' + PrevDir + #13#10 +
+           '    Version:  ' + PrevVersion + #13#10 + #13#10 +
+           'Setup will repair / upgrade this installation in place.' + #13#10 +
+           'Your data in %LOCALAPPDATA%\LocalAIStack (database, models, .env)' + #13#10 +
+           'will be preserved. Continue?';
+    if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then begin
+      Result := False;
     end;
   end;
 end;

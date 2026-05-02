@@ -89,6 +89,22 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     exit $LASTEXITCODE
 }
 
+# ── Taskbar identity ─────────────────────────────────────────────────────────
+# Stamp this process with the AppUserModelID so Windows groups the
+# launcher under the same taskbar slot as the pinned shortcut and the
+# Qt GUI it spawns. Must match installer/LocalAIStack.iss AppAUMID and
+# gui/main.py _APP_AUMID. SetCurrentProcessExplicitAppUserModelID is a
+# no-op on non-Windows / pre-7 hosts and harmless if already set.
+try {
+    $sig = '[DllImport("shell32.dll")] public static extern int SetCurrentProcessExplicitAppUserModelID([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id);'
+    if (-not ('Win32.AumidApi' -as [type])) {
+        Add-Type -Namespace Win32 -Name AumidApi -MemberDefinition $sig -ErrorAction Stop
+    }
+    [Win32.AumidApi]::SetCurrentProcessExplicitAppUserModelID('LocalAIStack.App') | Out-Null
+} catch {
+    # Non-fatal: taskbar grouping degrades gracefully without it.
+}
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 $Script:RepoRoot  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Script:StepsDir  = Join-Path $RepoRoot 'scripts\steps'
@@ -252,9 +268,12 @@ Daily use
 
 Cloudflared
 -----------
-Native mode never starts cloudflared. Point your existing native cloudflared
-tunnel at the backend. Chat is host-gated, so the subdomain in your ingress
-MUST match the CHAT_HOSTNAME env var (default: chat.mylensandi.com).
+-Start launches the tunnel right after the diagnostic preflight. If the
+setup wizard installed cloudflared as a Windows service, -Start ensures
+the service is running; otherwise it spawns `cloudflared tunnel run`
+inline using ~/.cloudflared/config.yml. Chat is host-gated, so the
+subdomain in your ingress MUST match the CHAT_HOSTNAME env var
+(default: chat.mylensandi.com).
 
 IMPORTANT: list the chat hostname BEFORE any wildcard catch-all or
 `http_status:404` fallback — cloudflared evaluates rules top-to-bottom.
@@ -349,7 +368,45 @@ troubleshooting). Re-run .\LocalAIStack.ps1 -Help for this summary.
 }
 
 # ── Setup ────────────────────────────────────────────────────────────────────
+function Test-IsElevated {
+    try {
+        $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $p = New-Object System.Security.Principal.WindowsPrincipal($id)
+        return $p.IsInRole([System.Security.Principal.WindowsBuiltinRole]::Administrator)
+    } catch { return $false }
+}
+
 function Invoke-Setup {
+    # Self-elevate when -Setup needs to write under %ProgramFiles%.
+    # The runtime EXE ships with an asInvoker manifest so daily-use
+    # modes don't UAC-prompt; only -Setup re-launches itself elevated.
+    # Skip elevation when the install dir is already writable (dev
+    # checkout or per-user install) or when running under a CI shell.
+    if (-not (Test-IsElevated) -and -not $Env:LAI_NO_ELEVATE) {
+        $needsAdmin = $false
+        try {
+            $probe = Join-Path $RepoRoot ('.lai-write-probe-' + [Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType File -Path $probe -Force -ErrorAction Stop | Out-Null
+            Remove-Item $probe -Force -ErrorAction SilentlyContinue
+        } catch {
+            $needsAdmin = $true
+        }
+        if ($needsAdmin) {
+            Write-Step "Re-launching elevated for -Setup (writing to $RepoRoot needs admin)"
+            $self = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+            $argList = @('-Setup')
+            if ($SkipModels)  { $argList += '-SkipModels' }
+            if ($SkipPrereqs) { $argList += '-SkipPrereqs' }
+            if ($self -match '\.exe$') {
+                Start-Process -FilePath $self -ArgumentList $argList -Verb RunAs -Wait
+            } else {
+                $psArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$self) + $argList
+                Start-Process -FilePath 'powershell.exe' -ArgumentList $psArgs -Verb RunAs -Wait
+            }
+            return
+        }
+    }
+
     # Consolidated prerequisite check (Windows build, NVIDIA driver,
     # winget-installed tools). Idempotent — safe to call on every -Setup.
     if ($SkipPrereqs) {
@@ -434,20 +491,21 @@ function Invoke-Start {
     Ensure-Dir $AppData
     Ensure-Dir $LogsDir
 
-    # Diagnostic preflight: aggregate every "missing component" check
-    # so the user gets ONE actionable message rather than bouncing off
-    # the first failure. Skip the dialog when running with -NoGui (CI)
-    # since CI parses stdout, not Win32 message boxes.
+    # ── Step 1: diagnostic suite ─────────────────────────────────────
+    # Aggregate every "missing component" check so the user gets ONE
+    # actionable message rather than bouncing off the first failure.
+    # The dialog is suppressed for -NoGui (CI parses stdout).
     #
     # Skip preflight entirely in CI's smoke-test pattern
-    # (-NoGui -Offline -NoUpdateCheck): that combination means "spin
-    # the stack up briefly to prove it starts" — there's no admin
-    # user, no GGUFs, and no network access by design. Real users
-    # never pass that triple.
+    # (-NoGui -Offline -NoUpdateCheck): that triple means "spin the
+    # stack up briefly to prove it starts" — there's no admin user,
+    # no GGUFs, and no network access by design. Real users never
+    # pass that combination.
     $isCiSmoke = $NoGui -and $Offline -and $NoUpdateCheck
     if ($isCiSmoke) {
-        Write-Warn2 'Preflight skipped (-NoGui -Offline -NoUpdateCheck = CI smoke-test).'
+        Write-Warn2 'Diagnostic preflight skipped (-NoGui -Offline -NoUpdateCheck = CI smoke-test).'
     } elseif (Get-Command Invoke-Preflight -ErrorAction SilentlyContinue) {
+        Write-Step 'Running diagnostic preflight'
         $pre = Invoke-Preflight -RepoRoot $RepoRoot -VendorDir $VendorDir `
                                 -DataDir $DataDir -EnvFile $EnvFile
         foreach ($e in $pre.errors)   { Write-Err  $e }
@@ -458,6 +516,7 @@ function Invoke-Start {
             }
             throw "Startup blocked by preflight. " + $pre.suggestion
         }
+        Write-Ok 'Diagnostics passed.'
     }
 
     if (-not (Test-Path $EnvFile)) {
@@ -465,6 +524,69 @@ function Invoke-Start {
         Invoke-InitEnv
     }
     Apply-Env (Read-EnvFile)
+
+    # ── Step 2: cloudflared tunnel ───────────────────────────────────
+    # Brings the chat hostname online before any backend service starts
+    # accepting requests. Three modes, in priority order:
+    #   1. cloudflared installed as a Windows service → ensure it's
+    #      running (Start-Service idempotent).
+    #   2. ~/.cloudflared/config.yml present (tunnel ID configured by
+    #      the wizard) → spawn `cloudflared tunnel run <id>` as a
+    #      tracked subprocess.
+    #   3. Neither configured → warn and skip; chat will be loopback-
+    #      only until the user finishes the wizard.
+    # CI / -Offline / -NoGui smoke runs always skip — they don't need
+    # outbound DNS to prove the stack boots.
+    $tunnelStarted = $false
+    if ($isCiSmoke -or $Offline -or $Env:OFFLINE -eq '1') {
+        Write-Warn2 'Skipping cloudflared tunnel (offline / smoke-test mode).'
+    } else {
+        $cfBin = Join-Path $VendorDir 'cloudflared\cloudflared.exe'
+        if (-not (Test-Path $cfBin)) {
+            $sysCf = Get-Command cloudflared -ErrorAction SilentlyContinue
+            if ($sysCf) { $cfBin = $sysCf.Source }
+        }
+        if (-not (Test-Path $cfBin)) {
+            Write-Warn2 'cloudflared binary not found — chat hostname will be unreachable until -Setup runs.'
+        } else {
+            Write-Step 'Starting cloudflared tunnel'
+            $svc = Get-Service -Name 'cloudflared' -ErrorAction SilentlyContinue
+            if ($svc) {
+                if ($svc.Status -ne 'Running') {
+                    try {
+                        Start-Service -Name 'cloudflared' -ErrorAction Stop
+                        Write-Ok 'cloudflared service started'
+                    } catch {
+                        Write-Warn2 "could not start cloudflared service: $($_.Exception.Message)"
+                    }
+                } else {
+                    Write-Ok 'cloudflared service already running'
+                }
+                $tunnelStarted = $true
+            } else {
+                $cfgPath = Join-Path $env:USERPROFILE '.cloudflared\config.yml'
+                if (Test-Path $cfgPath) {
+                    $tunnelId = $null
+                    foreach ($ln in Get-Content $cfgPath) {
+                        if ($ln -match '^\s*tunnel:\s*([0-9a-f-]{36})') {
+                            $tunnelId = $Matches[1]; break
+                        }
+                    }
+                    if ($tunnelId) {
+                        $pids_cf = Start-TrackedProcess -Name 'cloudflared' -FilePath $cfBin `
+                            -Args @('tunnel','--config',$cfgPath,'run',$tunnelId) -LogDir $LogsDir
+                        $Script:_PendingTunnelPid = Record-PidEntry $pids_cf
+                        Write-Ok "cloudflared tunnel run $tunnelId"
+                        $tunnelStarted = $true
+                    } else {
+                        Write-Warn2 "cloudflared config.yml has no tunnel id at $cfgPath — re-run setup wizard."
+                    }
+                } else {
+                    Write-Warn2 'cloudflared not configured (no service, no config.yml) — chat will be loopback-only.'
+                }
+            }
+        }
+    }
 
     # ── Resolve + auto-pull missing GGUFs ─────────────────────────────
     # On first -Start (or any time a tier's GGUF is missing on disk),
@@ -505,6 +627,15 @@ function Invoke-Start {
     $start = (Get-Command Start-TrackedProcess -ErrorAction SilentlyContinue)
     if (-not $start) {
         throw "scripts\steps\process.ps1 missing — re-clone or run -Setup."
+    }
+
+    # Carry the cloudflared pid (if started inline above) into the
+    # tracked-pids file so -Stop terminates the tunnel alongside the
+    # other services. Service-managed cloudflared has no pid here —
+    # uninstall via the wizard or `cloudflared service uninstall`.
+    if ($Script:_PendingTunnelPid) {
+        $pids['cloudflared'] = $Script:_PendingTunnelPid
+        $Script:_PendingTunnelPid = $null
     }
 
     Write-Step 'Starting qdrant'
@@ -707,7 +838,7 @@ function Invoke-Test {
 
 # ── BuildInstaller (Inno Setup) ──────────────────────────────────────────────
 function Invoke-BuildInstaller {
-    Write-Step 'Building LocalAIStack.exe + LocalAIStackInstaller.exe (ps2exe)…'
+    Write-Step 'Building LocalAIStack.exe (ps2exe)…'
     Invoke-Build
 
     Write-Step 'Freezing GUI with PyInstaller…'
@@ -732,13 +863,10 @@ function Invoke-BuildInstaller {
 
 # ── Build (ps2exe) ───────────────────────────────────────────────────────────
 function Invoke-Build {
-    # Compiles BOTH binaries in one pass:
-    #   LocalAIStack.exe          ← runtime (this file)
-    #   LocalAIStackInstaller.exe ← installer/Installer.ps1
-    # The two are bundled together by Inno Setup but only LocalAIStack.exe
-    # gets the user-visible Start-menu / desktop shortcuts. The installer
-    # is reachable via Apps & Features → Modify and a "Reconfigure"
-    # Start-menu entry.
+    # Compiles the single runtime EXE — LocalAIStack.exe — that handles
+    # every mode (start, stop, setup, reconfigure, test) via switches.
+    # The Inno Setup installer is the only other EXE that ships, and it
+    # is not bundled into the install dir: see installer\LocalAIStack.iss.
     if (-not (Get-Module -ListAvailable -Name ps2exe)) {
         Write-Warn2 'ps2exe module missing — installing…'
         Install-Module -Name ps2exe -Scope CurrentUser -Force -AllowClobber
@@ -746,7 +874,6 @@ function Invoke-Build {
     Import-Module ps2exe
     $icon = Join-Path $AssetsDir 'icon.ico'
 
-    # Runtime EXE
     $runtimeOut = Join-Path $RepoRoot 'LocalAIStack.exe'
     $runtimeSplat = @{
         InputFile  = $MyInvocation.MyCommand.Path
@@ -754,29 +881,15 @@ function Invoke-Build {
         NoConsole  = $true
         Title      = 'Local AI Stack'
         Company    = 'Local AI Stack'
+        # asInvoker manifest — the daily-use modes (-Start, -Stop, -Admin,
+        # -Test, -SetupGui) work without elevation. -Setup self-elevates
+        # via Start-Process -Verb RunAs when it needs to write under
+        # %ProgramFiles%; Inno's post-install [Run] hand-off already runs
+        # elevated so it doesn't need a second UAC prompt.
     }
     if (Test-Path $icon) { $runtimeSplat['IconFile'] = $icon }
     Invoke-ps2exe @runtimeSplat
     Write-Ok "Built $runtimeOut"
-
-    # Installer EXE
-    $installerSrc = Join-Path $RepoRoot 'installer\Installer.ps1'
-    if (Test-Path $installerSrc) {
-        $installerOut = Join-Path $RepoRoot 'LocalAIStackInstaller.exe'
-        $installerSplat = @{
-            InputFile  = $installerSrc
-            OutputFile = $installerOut
-            NoConsole  = $true
-            Title      = 'Local AI Stack Installer'
-            Company    = 'Local AI Stack'
-            requireAdmin = $true   # prereqs / vendor downloads need admin
-        }
-        if (Test-Path $icon) { $installerSplat['IconFile'] = $icon }
-        Invoke-ps2exe @installerSplat
-        Write-Ok "Built $installerOut"
-    } else {
-        Write-Warn2 "installer\Installer.ps1 missing — skipped LocalAIStackInstaller.exe build"
-    }
 }
 
 # ── SetupGui ─────────────────────────────────────────────────────────────────

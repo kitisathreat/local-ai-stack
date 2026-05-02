@@ -139,7 +139,13 @@ function Invoke-Preflight {
 
     $suggestion = ""
     if ($errors.Count -gt 0) {
-        $suggestion = "Run LocalAIStackInstaller.exe to repair the installation."
+        # The installer EXE is not bundled into the install dir anymore;
+        # the user re-runs the original LocalAIStackInstaller-<ver>.exe
+        # to repair. From inside the install we can also self-repair via
+        # `LocalAIStack.exe -SetupGui` (no admin) for .env edits, or
+        # `-Setup` (self-elevates) for full vendor re-fetch.
+        $suggestion = "Re-run the Local AI Stack installer to repair, " +
+                      "or run 'LocalAIStack.exe -Setup' from an elevated prompt."
     }
 
     return @{
