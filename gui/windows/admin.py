@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -94,7 +95,40 @@ class AdminWindow(QMainWindow):
         QVBoxLayout(container).addWidget(tabs)
         self.setCentralWidget(container)
 
+        self._build_menu_bar()
+
         asyncio.ensure_future(self._refresh_all())
+
+    # ── Menu bar ──────────────────────────────────────────────────────────
+    def _build_menu_bar(self) -> None:
+        bar = self.menuBar()
+        view = bar.addMenu("&View")
+
+        chat_act = QAction("Open &Desktop Chat", self)
+        chat_act.setShortcut("Ctrl+Shift+C")
+        chat_act.setStatusTip(
+            "Open the chat UI in a native desktop window (same look as the browser)."
+        )
+        chat_act.triggered.connect(self._open_desktop_chat)
+        view.addAction(chat_act)
+
+    def _open_desktop_chat(self) -> None:
+        try:
+            from gui.windows.desktop_chat import DesktopChatWindow
+        except ImportError as exc:
+            QMessageBox.critical(self, "Desktop chat unavailable", str(exc))
+            return
+        api_base = getattr(self._client, "_base", "http://127.0.0.1:18000")
+        try:
+            win = DesktopChatWindow(api_base=api_base)
+        except RuntimeError as exc:
+            QMessageBox.critical(self, "Desktop chat unavailable", str(exc))
+            return
+        win.show()
+        win.raise_()
+        win.activateWindow()
+        # Hold a strong ref so Qt doesn't garbage-collect the window.
+        self._desktop_chat = win  # type: ignore[attr-defined]
 
     # ── Users tab ──────────────────────────────────────────────────────────
 

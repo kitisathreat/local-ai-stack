@@ -31,6 +31,7 @@ param(
     [Parameter(ParameterSetName = 'InitEnv')]         [switch]$InitEnv,
     [Parameter(ParameterSetName = 'CheckUpdates')]    [switch]$CheckUpdates,
     [Parameter(ParameterSetName = 'Admin')]           [switch]$Admin,
+    [Parameter(ParameterSetName = 'DesktopChat')]     [switch]$DesktopChat,
     [Parameter(ParameterSetName = 'Test')]            [switch]$Test,
     [Parameter(ParameterSetName = 'Help')]            [switch]$Help,
 
@@ -206,6 +207,8 @@ Daily use
 ---------
   .\LocalAIStack.ps1                    = -Start
   .\LocalAIStack.ps1 -Admin             Open the admin Qt window (login prompt).
+  .\LocalAIStack.ps1 -DesktopChat       Open the chat UI in a native desktop window
+                                        (same look as the browser at chat.<your-domain>).
   .\LocalAIStack.ps1 -Start -NoUpdateCheck
                                         Skip HF polling.
   .\LocalAIStack.ps1 -CheckUpdates      Re-poll, list pending updates.
@@ -728,6 +731,20 @@ function Invoke-Admin {
     & $guiPy (Join-Path $RepoRoot 'gui\main.py') '--mode' 'admin' '--api' 'http://127.0.0.1:18000'
 }
 
+# ── DesktopChat ──────────────────────────────────────────────────────────────
+function Invoke-DesktopChat {
+    # Open the embedded-browser desktop chat window. Same UI as the
+    # cloudflared subdomain, hosted in a native QtWebEngine frame.
+    # Requires the backend to already be running on loopback.
+    Apply-Env (Read-EnvFile)
+    $guiPy = Join-Path $VendorDir 'venv-gui\Scripts\pythonw.exe'
+    if (-not (Test-Path $guiPy)) {
+        throw "GUI venv missing at $guiPy — run -Setup first."
+    }
+    Write-Step 'Launching desktop chat window'
+    & $guiPy (Join-Path $RepoRoot 'gui\main.py') '--mode' 'desktop-chat' '--api' 'http://127.0.0.1:18000'
+}
+
 
 # ── CheckUpdates ─────────────────────────────────────────────────────────────
 function Invoke-CheckUpdates {
@@ -756,6 +773,7 @@ if ($Build)            { Invoke-Build;             return }
 if ($BuildInstaller)   { Invoke-BuildInstaller;    return }
 if ($CheckUpdates)     { Invoke-CheckUpdates;      return }
 if ($Admin)            { Invoke-Admin;             return }
+if ($DesktopChat)      { Invoke-DesktopChat;       return }
 if ($Test)             { Invoke-Test;              return }
 
 # Default is -Start

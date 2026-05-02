@@ -56,6 +56,26 @@ def build_tray(app: QApplication, chat_window, client: BackendClient) -> QSystem
         except Exception:
             pass
 
+    def _open_desktop_chat():
+        # In-process: same Qt app, just spawn a DesktopChatWindow and
+        # hold a ref so it survives. Avoids a second Python process for
+        # what is fundamentally a viewer onto the local backend.
+        try:
+            from gui.windows.desktop_chat import DesktopChatWindow
+            win = DesktopChatWindow(
+                api_base=client._base if hasattr(client, "_base") else "http://127.0.0.1:18000",
+            )
+        except (ImportError, RuntimeError):
+            DesktopChatWindow = None  # type: ignore[assignment]
+            win = None
+        if win is None:
+            return
+        win.show()
+        win.raise_()
+        win.activateWindow()
+        # Strong ref on the QApplication so Qt doesn't GC the window.
+        app._desktop_chat = win  # type: ignore[attr-defined]
+
     def _open_metrics():
         from gui.windows.metrics import MetricsWindow
         w = MetricsWindow(client)
@@ -76,6 +96,7 @@ def build_tray(app: QApplication, chat_window, client: BackendClient) -> QSystem
 
     for label, handler in [
         ("Open Chat", _open_chat),
+        ("Open Desktop Chat", _open_desktop_chat),
         ("Open Admin", _open_admin),
         ("Open Metrics", _open_metrics),
         ("View Logs", _open_logs),
