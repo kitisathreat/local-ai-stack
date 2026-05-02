@@ -21,6 +21,7 @@ groups:
       physical_sciences:   { title: "Physical Sciences",  order: 40 }
       earth_climate:       { title: "Earth & Climate",    order: 50 }
       reference:           { title: "Reference",          order: 60 }
+      authoring:           { title: "Authoring",          order: 70 }
 
   finance:
     title: "Finance & Economics"
@@ -30,6 +31,7 @@ groups:
       analysis:            { title: "Analysis & Modeling",     order: 20 }
       disclosures:         { title: "Disclosures",             order: 30 }
       macro_public_data:   { title: "Macro & Public Data",     order: 40 }
+      authoring:           { title: "Authoring",               order: 50 }
 
   news_public_affairs:
     title: "News & Public Affairs"
@@ -39,6 +41,8 @@ groups:
       conflict_compliance: { title: "Conflict & Compliance",   order: 20 }
       legal_ip:            { title: "Legal & IP",              order: 30 }
       security:            { title: "Security",                order: 40 }
+      authoring:           { title: "Authoring",               order: 50 }
+      paywall:             { title: "Paywall Bypass",          order: 60 }
 
   entertainment:
     title: "Entertainment & Personal Media"
@@ -52,6 +56,7 @@ groups:
       books:               { title: "Books",                   order: 60 }
       torrents:            { title: "Torrents",                order: 70 }
       games:               { title: "Games",                   order: 80 }
+      curation:            { title: "Curation & Enrichment",   order: 90 }
 
   culture:
     title: "Culture & Heritage"
@@ -59,6 +64,7 @@ groups:
     subgroups:
       museums:             { title: "Museums",                 order: 10 }
       libraries_archives:  { title: "Libraries & Archives",    order: 20 }
+      authoring:           { title: "Authoring",               order: 30 }
 
   web_geo:
     title: "Web & Geo"
@@ -67,6 +73,8 @@ groups:
       web_search:          { title: "Web Search",              order: 10 }
       maps_places:         { title: "Maps & Places",           order: 20 }
       weather:             { title: "Weather",                 order: 30 }
+      headless:            { title: "Headless Browser",        order: 40 }
+      routing:             { title: "Routing",                 order: 50 }
 
   code_data_compute:
     title: "Code, Data & Compute"
@@ -77,6 +85,7 @@ groups:
       dev_utilities:       { title: "Dev Utilities",           order: 30 }
       workflows:           { title: "Workflows",               order: 40 }
       memory_interaction:  { title: "Memory & Interaction",    order: 50 }
+      authoring:           { title: "Authoring",               order: 60 }
 
   desktop:
     title: "Desktop Integration"

@@ -398,6 +398,260 @@ tools:
     default_enabled: false
     api_key_required: false
 
+  # ── Phase 9d: Capability upgrades across every group ────────────────────────
+
+  paywall_bypass:
+    file: tools/paywall_bypass.py
+    group: news_public_affairs
+    subgroup: paywall
+    title: "Paywall Bypass — Multi-Strategy Article Reader"
+    description: "Try 12ft.io / archive.ph / Wayback / Googlebot UA / AMP / print URL in sequence to extract readable text from sites that block direct fetches. News, blog, and magazine paywalls."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  paper_full_text:
+    file: tools/paper_full_text.py
+    group: research
+    subgroup: authoring
+    title: "Paper Full-Text — Resolve DOI/arXiv → PDF → Extract"
+    description: "Pipeline DOI/arXiv → Unpaywall lookup → PDF download → pypdf text extraction with [page N ¶M] anchors. Caches per-paper for instant re-reads."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  literature_review_author:
+    file: tools/literature_review_author.py
+    group: research
+    subgroup: authoring
+    title: "Literature Review Author — Topic → Markdown Review"
+    description: "Topic + outline → fan out OpenAlex / Semantic Scholar searches → fetch full PDFs for top-N → emit per-section bibliographies + extracts."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  citation_graph:
+    file: tools/citation_graph.py
+    group: research
+    subgroup: authoring
+    title: "Citation Graph — References & Cited-By"
+    description: "Walk the OpenAlex citation graph: lookup, references, cited-by, multi-level lineage tracing."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  portfolio_author:
+    file: tools/portfolio_author.py
+    group: finance
+    subgroup: authoring
+    title: "Portfolio Author — Backtest a Strategy"
+    description: "Vectorised pandas backtest of static-weight portfolios with rebalance schedules, transaction costs, Sharpe / Sortino / Calmar / max-DD / alpha vs benchmark."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  dd_report_author:
+    file: tools/dd_report_author.py
+    group: finance
+    subgroup: authoring
+    title: "DD Report Author — Equity Due-Diligence Markdown"
+    description: "Parallel-fetches yahoo / sec_edgar / finnhub / gdelt / technical_analysis to assemble a structured DD markdown for a ticker."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  news_correlator:
+    file: tools/news_correlator.py
+    group: finance
+    subgroup: authoring
+    title: "News Correlator — Match News to Price Moves"
+    description: "For each big-move trading day in the trailing window, surface headlines that ran that day so the model can hypothesise causation."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  news_digest_author:
+    file: tools/news_digest_author.py
+    group: news_public_affairs
+    subgroup: authoring
+    title: "News Digest Author — Daily / Weekly Markdown"
+    description: "Build a topic-organised digest by parallel-querying gdelt / guardian / nytimes / hackernews / rss_reader, deduplicated and grouped by source."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  vuln_advisory_author:
+    file: tools/vuln_advisory_author.py
+    group: news_public_affairs
+    subgroup: authoring
+    title: "Vulnerability Advisory Author — Manifest → CVE Triage"
+    description: "Parse requirements.txt / package.json / Cargo.toml / go.mod / Gemfile.lock / composer.json / pyproject.toml, query OSV, emit a triage markdown with CVE / fixed-version per dependency."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  metadata_enricher:
+    file: tools/metadata_enricher.py
+    group: entertainment
+    subgroup: curation
+    title: "Metadata Enricher — MusicBrainz Tag Write-Back"
+    description: "Walk an audio dir, look up each file on MusicBrainz, write back canonical artist / album / title / track / date / MBID tags via mutagen."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  library_dedupe:
+    file: tools/library_dedupe.py
+    group: entertainment
+    subgroup: curation
+    title: "Library Dedupe — Find Duplicate Music Files"
+    description: "Walk a music library, cluster by (artist, album, title) or chromaprint fingerprint, keep the highest-quality copy, move losers to a trash subfolder."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  auto_subtitle:
+    file: tools/auto_subtitle.py
+    group: entertainment
+    subgroup: curation
+    title: "Auto Subtitle — Fetch .srt for Videos"
+    description: "OpenSubtitles lookup by file hash + filename for every video in a directory; download best .srt and place beside each video."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://www.opensubtitles.com/en/consumers"
+
+  cross_source_playlist:
+    file: tools/cross_source_playlist.py
+    group: entertainment
+    subgroup: curation
+    title: "Cross-Source Playlist — Spotify → Local → Free Music Fallback"
+    description: "Author a playlist that gracefully degrades per track: Spotify, then local MusicBee library, then free_music CC sources. Returns per-track resolution log."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  art_collection_author:
+    file: tools/art_collection_author.py
+    group: culture
+    subgroup: authoring
+    title: "Art Collection Author — Cross-Museum Galleries"
+    description: "Theme → parallel-search Met / Smithsonian / Rijksmuseum / Europeana / LoC → markdown gallery sorted by license openness (CC0 first)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  headless_browser:
+    file: tools/headless_browser.py
+    group: web_geo
+    subgroup: headless
+    title: "Headless Browser — Playwright Page Fetcher"
+    description: "Render JS-heavy pages via headless Chromium. Extract text + optional screenshot. Supports click chains for cookie banners and 'load more' interactions."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  route_planner:
+    file: tools/route_planner.py
+    group: web_geo
+    subgroup: routing
+    title: "Route Planner — OSRM Driving / Walking / Cycling"
+    description: "Multi-stop route optimization via OSRM. A→B with turn-by-turn directions, or N-stop TSP tour optimization."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  code_review_author:
+    file: tools/code_review_author.py
+    group: code_data_compute
+    subgroup: authoring
+    title: "Code Review Author — Diff-Aware Markdown"
+    description: "Fetch a GitHub PR diff (or accept raw diff text), run heuristic static checks, emit a per-file line-anchored review markdown."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  notebook_author:
+    file: tools/notebook_author.py
+    group: code_data_compute
+    subgroup: authoring
+    title: "Notebook Author — Build .ipynb Cell-by-Cell"
+    description: "Accumulate markdown + code cells in memory keyed by output path, commit by writing JSON in the official nbformat schema. Optional execute-end-to-end via jupyter_tool."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  repo_scaffolder:
+    file: tools/repo_scaffolder.py
+    group: code_data_compute
+    subgroup: authoring
+    title: "Repo Scaffolder — Bootstrap a Project Skeleton"
+    description: "Templates for python_cli, fastapi, python_library, rust_bin, go_service. Lays out source, tests, CI workflow, README, .gitignore, dependency manifest."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  kicad_autoroute:
+    file: tools/kicad_autoroute.py
+    group: desktop
+    subgroup: eda_authoring
+    title: "KiCad Autoroute — Run Freerouting on a PCB"
+    description: "Export PCB to DSN, run the freerouting JAR autorouter, import the resulting SES back into a new .kicad_pcb."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  kicad_part_substitution:
+    file: tools/kicad_part_substitution.py
+    group: desktop
+    subgroup: eda_authoring
+    title: "KiCad Part Substitution — Find Equivalent Parts"
+    description: "Query Octopart (Nexar) and Mouser APIs for stock and pin-compatible alternates. Single MPN or full BOM."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://nexar.com"
+
+  blender_mesh_import:
+    file: tools/blender_mesh_import.py
+    group: desktop
+    subgroup: cad_3d_authoring
+    title: "Blender Mesh Import — Read GLB/STL/OBJ Into a Spec"
+    description: "Parse an existing 3D file via trimesh (or a pure-Python STL/OBJ parser) and append it as a mesh entry on the blender_author scene spec."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  fusion360_live_bridge:
+    file: tools/fusion360_live_bridge.py
+    group: desktop
+    subgroup: cad_3d_authoring
+    title: "Fusion 360 Live Bridge — Live IPC With a Running Session"
+    description: "Talk to a running Fusion 360 over a JSON-RPC TCP socket exposed by an installed add-in. Read components / sketches / parameters and execute adsk.* snippets without restarting Fusion."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  project_workspace:
+    file: tools/project_workspace.py
+    group: code_data_compute
+    subgroup: memory_interaction
+    title: "Project Workspace — Per-Project Durable Memory"
+    description: "Tagged notes scoped by project slug (e.g. 'stm32-clock', 'tower-render'). SQLite-backed; survives restarts. Search, list, export to markdown."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  plan_tracker:
+    file: tools/plan_tracker.py
+    group: code_data_compute
+    subgroup: memory_interaction
+    title: "Plan Tracker — Durable Cross-Session Todos"
+    description: "SQLite-backed task list keyed by project. add / update_status / list / briefing for resuming long-running work cleanly."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
 # Middleware (formerly Open WebUI pipelines) now lives in backend/middleware/.
 # It's invoked directly by the FastAPI chat endpoint — no separate service
 # required. Listed here for documentation only.
