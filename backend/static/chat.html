@@ -410,9 +410,37 @@
         left: 0; right: 0; min-width: 0; max-height: 50vh;
       }
     }
+    /* Refresh banner — shown when /healthz fails (typical cause: backend
+       restart triggered by post-merge hook after a `git pull`). Polls
+       /healthz on a tight schedule and reveals what's happening + ETA so
+       users don't think the chat is dead. */
+    #refresh-banner {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+      background: #b85c00; color: #fff;
+      padding: 10px 14px; font-size: 13px; line-height: 1.4;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+      display: none;
+    }
+    #refresh-banner.visible { display: block; }
+    #refresh-banner strong { font-weight: 600; }
+    #refresh-banner .dots::after {
+      content: ''; display: inline-block; width: 0;
+      animation: refresh-dots 1.2s steps(4,end) infinite;
+    }
+    @keyframes refresh-dots {
+      0%   { content: ''; }
+      25%  { content: '.'; }
+      50%  { content: '..'; }
+      75%  { content: '...'; }
+      100% { content: ''; }
+    }
   </style>
 </head>
 <body>
+  <div id="refresh-banner" role="status" aria-live="polite">
+    <strong>Backend unreachable</strong>
+    <span id="refresh-banner-msg">— checking<span class="dots"></span></span>
+  </div>
   <div id="signin">
     <h1>Local AI Stack</h1>
     <form id="signin-form">
@@ -915,6 +943,102 @@
     // Poll VRAM every 15 s. Cheap; just reads scheduler.status() in-memory.
     setInterval(() => { if (!app.classList.contains('hidden')) pollVram(); }, 15000);
 
+    // ── Refresh-aware health monitor ─────────────────────────────────
+    // /healthz fails when the backend is restarting (post-merge hook
+    // bouncing the stack after a `git pull`). Surface a banner with an
+    // ETA so users don't think the chat is dead. Restarts typically take
+    // 15–30s; if it's still down past 60s we soften the message rather
+    // than promising recovery that may not come.
+    const RefreshMonitor = (() => {
+      const banner = document.getElementById('refresh-banner');
+      const msgEl = document.getElementById('refresh-banner-msg');
+      const HEARTBEAT_MS = 30000;     // baseline ping when we think we're up
+      const OUTAGE_POLL_MS = 2000;    // tight poll while we believe we're down
+      let outageStartMs = null;
+      let outageHandle = null;
+      let heartbeatHandle = null;
+
+      function setMessage(html) { msgEl.innerHTML = html; }
+
+      function show(html) {
+        setMessage(html);
+        banner.classList.add('visible');
+      }
+
+      function hide() {
+        banner.classList.remove('visible');
+      }
+
+      async function probe() {
+        try {
+          const r = await fetch('/healthz', {
+            method: 'GET', cache: 'no-store',
+            // AbortSignal.timeout isn't on every browser yet; fall back
+            // to no timeout when missing (the fetch will resolve fast or
+            // reject on its own).
+            signal: typeof AbortSignal?.timeout === 'function'
+              ? AbortSignal.timeout(2500) : undefined,
+          });
+          return r.ok;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function elapsedSec() {
+        return outageStartMs ? Math.round((Date.now() - outageStartMs) / 1000) : 0;
+      }
+
+      function renderOutageMessage() {
+        const e = elapsedSec();
+        if (e < 5) {
+          return '— checking<span class="dots"></span>';
+        }
+        if (e < 35) {
+          const eta = Math.max(0, 30 - e);
+          return `is refreshing (typical: 15–30s). Resuming in ~${eta}s<span class="dots"></span>`;
+        }
+        if (e < 90) {
+          return `has been unreachable for ${e}s. Still trying<span class="dots"></span>`;
+        }
+        return `has been down for ${e}s — may need operator attention. Still polling<span class="dots"></span>`;
+      }
+
+      async function outageTick() {
+        const ok = await probe();
+        if (ok) {
+          outageStartMs = null;
+          if (outageHandle) { clearInterval(outageHandle); outageHandle = null; }
+          hide();
+          startHeartbeat();
+          return;
+        }
+        show(renderOutageMessage());
+      }
+
+      async function heartbeatTick() {
+        const ok = await probe();
+        if (!ok) reportOutage();
+      }
+
+      function startHeartbeat() {
+        if (heartbeatHandle) clearInterval(heartbeatHandle);
+        heartbeatHandle = setInterval(heartbeatTick, HEARTBEAT_MS);
+      }
+
+      function reportOutage() {
+        if (outageStartMs) return;
+        if (heartbeatHandle) { clearInterval(heartbeatHandle); heartbeatHandle = null; }
+        outageStartMs = Date.now();
+        show('— checking<span class="dots"></span>');
+        outageTick();
+        outageHandle = setInterval(outageTick, OUTAGE_POLL_MS);
+      }
+
+      startHeartbeat();
+      return { reportOutage };
+    })();
+
     // Update the CTX indicator on tier change too — different tier
     // means a different denominator. (mid-chat swap is rare but the
     // bar should reflect reality immediately when it happens.)
@@ -1315,7 +1439,23 @@
         history.push({ role: 'assistant', content: buffered });
         updateCtxIndicator();
       } catch (err) {
-        targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(String(err)) + '</em>';
+        // Connection-style failures (TypeError "Failed to fetch", or
+        // 502/503 from cloudflared while the backend restarts) are the
+        // signature of a refresh-in-progress. Hand off to the
+        // RefreshMonitor so the user sees a banner with an ETA instead
+        // of a confusing "Error: Failed to fetch" inline.
+        const errStr = String(err);
+        const isConnFail = (err instanceof TypeError) ||
+                           /\b50[23]\b/.test(errStr) ||
+                           /NetworkError|Failed to fetch|net::/i.test(errStr);
+        if (isConnFail && typeof RefreshMonitor !== 'undefined') {
+          RefreshMonitor.reportOutage();
+          targetBody.innerHTML =
+            '<em style="color:#b85c00;">Backend appears to be refreshing — ' +
+            'see banner above. Resend your message in a moment.</em>';
+        } else {
+          targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(errStr) + '</em>';
+        }
       } finally {
         streaming = false;
         sendEl.disabled = false;

@@ -270,9 +270,21 @@ def resolve(
     except OSError as exc:
         logger.warning("Could not write model cache: %s", exc)
 
+    # MERGE into the existing manifest (don't wipe non-resolved tiers when
+    # called with --tier X). Same rationale as in pull(); see the comment
+    # above the manifest write at the end of that function.
     resolved_path = _data_dir() / "resolved-models.json"
     try:
-        resolved_path.write_text(json.dumps(result.to_json(), indent=2), encoding="utf-8")
+        existing: dict = {}
+        if resolved_path.exists():
+            try:
+                existing = json.loads(resolved_path.read_text(encoding="utf-8")) or {}
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+        merged_tiers = dict(existing.get("tiers") or {})
+        merged_tiers.update(result.to_json().get("tiers") or {})
+        merged = {**(existing or {}), **result.to_json(), "tiers": merged_tiers}
+        resolved_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     except OSError as exc:
         logger.warning("Could not write resolved-models.json: %s", exc)
 
@@ -434,10 +446,30 @@ def pull_missing_hf_files(
             continue
         pulled.append(tier)
 
-    # Refresh resolved-models.json with the on-disk paths.
+    # Refresh resolved-models.json with the on-disk paths. MERGE into the
+    # existing manifest rather than replacing it: when called with a tier
+    # subset (e.g. `resolve --pull --tier reasoning_max`), the previous
+    # implementation wrote out *only* that tier and wiped every other
+    # cached entry — leaving subsequent chat requests on those tiers to
+    # fail with `tier 'X' has no gguf_path` even though the .gguf was on
+    # disk. Merging preserves entries for tiers we weren't asked about.
     try:
         manifest = _data_dir() / "resolved-models.json"
-        manifest.write_text(json.dumps(result.to_json(), indent=2), encoding="utf-8")
+        existing: dict = {}
+        if manifest.exists():
+            try:
+                existing = json.loads(manifest.read_text(encoding="utf-8")) or {}
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Existing resolved-models.json unreadable, replacing: %s", exc)
+                existing = {}
+        merged_tiers = dict(existing.get("tiers") or {})
+        merged_tiers.update(result.to_json().get("tiers") or {})
+        merged = {
+            **(existing or {}),
+            **result.to_json(),
+            "tiers": merged_tiers,
+        }
+        manifest.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     except OSError as exc:
         logger.warning("Could not update resolved-models.json: %s", exc)
 

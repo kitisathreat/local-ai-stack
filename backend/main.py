@@ -119,11 +119,23 @@ async def _init_redis(cfg: AppConfig):
 
 
 async def _auto_pull_missing_tiers() -> None:
-    """Spawn the resolver as a child process to fetch missing tier GGUFs.
+    """Log which tiers are missing on disk; do NOT spawn the resolver.
 
-    Detached so the FastAPI worker can keep serving requests while
-    multi-GB files stream in. Tiers come online progressively as files
-    land — the LlamaCppClient picks them up on the next chat request.
+    Originally this spawned `model_resolver resolve --pull --tier X` per
+    missing tier so a backend started outside the launcher could self-heal
+    its model files. That had a destructive side effect: the resolver
+    rewrites resolved-models.json with only the tiers it was asked about,
+    wiping the cached entries for every other tier. After PR #149 added
+    `reasoning_max` (an opt-in 120 GB GPT-OSS tier nobody downloads by
+    default), every backend startup auto-pulled it and wiped the manifest
+    — leaving the next chat request to fail with `tier 'X' has no
+    gguf_path` even though the .gguf was on disk.
+
+    The launcher's `-Start` already runs the resolver across every
+    configured tier (LocalAIStack.ps1 line ~499), and refresh-backend.ps1
+    always uses the launcher, so this self-heal path was redundant.
+    Logging the missing list keeps the operator-visible signal without
+    the side effect.
     """
     try:
         models_dir = Path(os.getenv("LAI_DATA_DIR") or
@@ -132,25 +144,15 @@ async def _auto_pull_missing_tiers() -> None:
         missing = [t for t in configured if not (models_dir / f"{t}.gguf").exists()]
         if not missing:
             return
-        logger.info("Auto-pull starting for missing tiers: %s", ", ".join(missing))
-        # Using sys.executable + -m so we don't depend on the venv's
-        # console_scripts entry being on PATH for the FastAPI worker.
-        cmd = [sys.executable, "-m", "backend.model_resolver", "resolve", "--pull"]
-        for t in missing:
-            cmd += ["--tier", t]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            cwd=str(Path(__file__).resolve().parent.parent),
+        logger.warning(
+            "Tier GGUFs missing on disk: %s. Run `pwsh .\\LocalAIStack.ps1 -Start` "
+            "(or `python -m backend.model_resolver resolve --pull` from the repo "
+            "root) to fetch them. Auto-pull is disabled to avoid corrupting the "
+            "resolved-models manifest.",
+            ", ".join(missing),
         )
-        rc = await proc.wait()
-        if rc == 0:
-            logger.info("Auto-pull finished (exit 0). Re-checking tiers on next request.")
-        else:
-            logger.warning("Auto-pull resolver exited %d — some tiers may still be missing", rc)
     except Exception as exc:
-        logger.warning("Auto-pull task failed: %s", exc)
+        logger.warning("Missing-tier check failed: %s", exc)
 
 
 @asynccontextmanager
@@ -734,7 +736,10 @@ async def chat_completions(
         )
 
     return StreamingResponse(
-        _wrap(_single_agent_sse(req, decision, client, tier, user=user)),
+        _wrap(_single_agent_sse(
+            req, decision, client, tier, user=user,
+            user_text_for_planner=user_text_for_planner,
+        )),
         media_type="text/event-stream",
     )
 
@@ -835,6 +840,7 @@ async def _single_agent_sse(
     client,
     tier,
     user: dict | None = None,
+    user_text_for_planner: str = "",
 ) -> AsyncIterator[str]:
     model_id = f"tier.{decision.tier_name}"
     assembled_text = []   # accumulated assistant content for post-stream persist

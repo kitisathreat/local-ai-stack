@@ -153,12 +153,28 @@ def build_argv(tier: TierConfig) -> list[str]:
     # only). Flag spelling matches llama.cpp ≥ b8992 (LocalAIStack.ps1
     # pinned version).
     if tier.draft_gguf_path:
-        argv += [
-            "-md", tier.draft_gguf_path,
-            "-ngld", str(tier.draft_n_gpu_layers),
-            "--draft-max", str(tier.draft_max),
-            "--draft-min", str(tier.draft_min),
-        ]
+        # Defensive: if the draft GGUF file isn't actually on disk
+        # (resolver wrote the manifest entry but the pull failed — common
+        # when HF_TOKEN isn't set and the draft model is gated),
+        # llama-server crashes during startup with a cryptic error. Skip
+        # spec-decode in that case and run target-only — quality is
+        # identical, just no speedup.
+        from pathlib import Path as _P
+        if _P(tier.draft_gguf_path).exists():
+            argv += [
+                "-md", tier.draft_gguf_path,
+                "-ngld", str(tier.draft_n_gpu_layers),
+                "--draft-max", str(tier.draft_max),
+                "--draft-min", str(tier.draft_min),
+            ]
+        else:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Spec-decode draft missing for tier %s (%s) — running "
+                "target-only. To enable spec-decode, set HF_TOKEN in .env "
+                "and run `pwsh .\\LocalAIStack.ps1 -CheckUpdates`.",
+                tier.name, tier.draft_gguf_path,
+            )
     return argv
 
 

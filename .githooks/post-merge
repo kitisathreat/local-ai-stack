@@ -1,17 +1,22 @@
 #!/bin/sh
 #
-# post-merge — runs after `git pull` (and any other merge that updates HEAD).
+# post-merge — runs after every merge that updates HEAD: `git pull`, local
+# branch merges, octopus merges, etc. We only want to refresh the running
+# backend when the merge came from `origin` (typically a `git pull origin`
+# triggered by the auto-pull poller after a PR squash+merge on GitHub).
+# Local branch merges and pulls from other remotes are no-op'd here.
+#
 # Invokes scripts/refresh-backend.ps1 under pwsh 7+ to:
 #   - pip install backend/gui dep changes
 #   - bounce the backend so it picks up new code and re-discovers tools
 #
-# The script is idempotent and exits cleanly when nothing relevant changed.
-# Designed for the native-Windows stack; runs under git-for-windows' bundled
-# busybox sh so we use POSIX syntax + plain `powershell.exe` style discovery.
+# Idempotent and exits cleanly when nothing relevant changed. Runs under
+# git-for-windows' bundled busybox sh, so POSIX syntax only.
 
 set -e
 
-# Squash-merge flag (1 = squash, 0 = normal). We refresh in both cases.
+# Squash-merge flag (1 = squash, 0 = normal). We refresh in both cases when
+# the merge originated from origin.
 squash="$1"
 
 # Repo root, in posix form. git-for-windows hooks run with cwd = repo root.
@@ -20,6 +25,39 @@ script="$repo/scripts/refresh-backend.ps1"
 
 if [ ! -f "$script" ]; then
     # Older clones predate the script — nothing to do.
+    exit 0
+fi
+
+# ── Gate: only fire on pulls from origin ───────────────────────────────────
+# git sets GIT_REFLOG_ACTION to a short description of the operation, e.g.:
+#   pull origin master            → pull from origin (proceed)
+#   pull --ff-only origin master  → pull from origin (proceed)
+#   pull                          → pull from upstream (verify below)
+#   merge feature-branch          → local merge (skip)
+#   pull upstream master          → pull from a non-origin remote (skip)
+case "$GIT_REFLOG_ACTION" in
+    pull|pull\ *)
+        ;;  # could be a pull — fall through to remote check
+    *)
+        # Not a pull at all (local merge, rebase resolution, etc.) — skip.
+        exit 0
+        ;;
+esac
+
+# Confirm origin is actually the remote we just pulled from. After a successful
+# pull from origin/<branch>, HEAD will equal origin/<branch>. If they differ,
+# the pull came from a different remote (and origin/<branch> was already at the
+# old tip), so we shouldn't refresh.
+branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+if [ -z "$branch" ]; then
+    # Detached HEAD or branchless state — refuse to refresh from an ambiguous tip.
+    exit 0
+fi
+origin_tip="$(git rev-parse "origin/$branch" 2>/dev/null || true)"
+head="$(git rev-parse HEAD)"
+if [ -z "$origin_tip" ] || [ "$origin_tip" != "$head" ]; then
+    # origin/$branch doesn't exist or doesn't match HEAD — pull was from a
+    # different remote (e.g. `pull upstream master`). Don't refresh.
     exit 0
 fi
 

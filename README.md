@@ -43,7 +43,28 @@ This wires up [`.githooks/post-merge`](.githooks/post-merge), which calls
 [`scripts/refresh-backend.ps1`](scripts/refresh-backend.ps1) — diffs the
 pull, `pip install`s any `requirements.txt` changes, and bounces the
 backend so the new tool registry + admin endpoints are live without
-manual intervention.
+manual intervention. The hook is gated to fire **only on pulls from
+`origin`** (it ignores local merges, rebases, and pulls from other
+remotes).
+
+To **auto-pull on every PR squash+merge**, register the polling task —
+it checks origin every 2 minutes and ff-pulls when a new commit is up:
+
+```powershell
+pwsh .\scripts\install-auto-pull.ps1                 # default: every 2 min
+pwsh .\scripts\install-auto-pull.ps1 -IntervalMinutes 5
+pwsh .\scripts\install-auto-pull.ps1 -Uninstall      # remove the task
+```
+
+The end-to-end chain is then:
+
+> PR squash+merge on GitHub → `poll-origin.ps1` (≤2 min) → `git pull --ff-only` →
+> `.githooks/post-merge` → `refresh-backend.ps1` → backend restarts on new code
+
+The chat web UI ([`backend/static/chat.html`](backend/static/chat.html))
+detects the brief restart window via a `/healthz` heartbeat and shows a
+banner with an ETA so users see "*backend is refreshing — resuming in
+~Xs*" instead of a confusing "Failed to fetch" error.
 
 All operator instructions — daily commands, cloudflared ingress snippet,
 log locations, model update policy, uninstall — live in:
