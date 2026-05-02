@@ -283,6 +283,80 @@ class Tools:
         })
         return "ok" if r.status_code == 200 else f"HTTP {r.status_code}"
 
+    async def wait_for_torrent(
+        self,
+        infohash: str,
+        timeout_secs: int = 3600,
+        poll_secs: int = 10,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Poll qBittorrent until a torrent reaches 100% progress (or one of
+        the seeding states: uploading, stalledUP, queuedUP, forcedUP). Use
+        this between `add_torrent` and `wait_and_organize` to gate the
+        organize step on completion.
+        :param infohash: Full info hash from `list_torrents`.
+        :param timeout_secs: Cap on the wait. Default 1 hour.
+        :param poll_secs: Polling interval.
+        :return: Final state + progress, or a timeout message.
+        """
+        import asyncio
+        import time
+        deadline = time.monotonic() + timeout_secs
+        terminal = {"uploading", "stalledUP", "queuedUP", "forcedUP", "pausedUP"}
+        while time.monotonic() < deadline:
+            r = await self._request("GET", "/api/v2/torrents/info",
+                                    params={"hashes": infohash})
+            if r.status_code != 200:
+                return f"HTTP {r.status_code}"
+            info = (r.json() or [None])[0]
+            if not info:
+                return f"no torrent matching {infohash}"
+            progress = info.get("progress", 0)
+            state = info.get("state", "?")
+            if progress >= 1.0 or state in terminal:
+                return f"complete: state={state} progress={progress*100:.1f}% save={info.get('save_path')}"
+            await asyncio.sleep(poll_secs)
+        return f"timeout after {timeout_secs}s — torrent not yet complete"
+
+    async def wait_and_organize(
+        self,
+        infohash: str,
+        kind: str = "auto",
+        timeout_secs: int = 3600,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Wait for a torrent to finish, then route its save_path through the
+        media_library organizer. `kind` selects which organizer to run
+        (auto, audio, books, films, tv, audiobooks); 'auto' detects by
+        file extension and dispatches to all matching organizers.
+        :param infohash: Full info hash.
+        :param kind: One of: auto, audio, books, films, tv, audiobooks.
+        :param timeout_secs: Cap on the wait.
+        :return: Combined wait + organize log.
+        """
+        wait = await self.wait_for_torrent(infohash, timeout_secs=timeout_secs)
+        if "complete" not in wait:
+            return wait
+        # Pull save_path out of the wait message.
+        import re as _re
+        m = _re.search(r"save=(.+)$", wait)
+        if not m:
+            return f"complete but couldn't parse save_path: {wait}"
+        save_path = m.group(1).strip()
+
+        import importlib.util
+        from pathlib import Path as _P
+        spec = importlib.util.spec_from_file_location(
+            "_lai_organize_helper", _P(__file__).parent / "_organize_helper.py",
+        )
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        organize = mod.organize
+        organized = organize(save_path, kind=kind)
+        return f"── wait ──\n{wait}\n\n── organize ──\n{organized}"
+
     async def app_version(self, __user__: Optional[dict] = None) -> str:
         """
         Return the qBittorrent application + Web API version (smoke test).

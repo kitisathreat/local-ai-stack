@@ -623,3 +623,38 @@ class Tools:
             lines.append(f"- {label}")
             lines.append(f"   {base}/md5/{md5}")
         return "\n".join(lines)
+
+    async def download_and_organize(
+        self,
+        md5: str,
+        filename: str = "",
+        kind: str = "books",
+        __event_emitter__: Callable[[dict], Any] = None,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Download a record by MD5 and immediately organize the resulting
+        file into the media library
+        (`<LIBRARY_ROOT>/Books/<Author>/<Title>.<ext>` for books, or the
+        audiobooks subdir when `kind="audiobooks"`).
+        :param md5: 32-char hex MD5 of the Anna's Archive record.
+        :param filename: Optional explicit filename for the download.
+        :param kind: "books" (default) or "audiobooks".
+        :return: Combined download + organize log.
+        """
+        import importlib.util
+        from pathlib import Path as _P
+        spec = importlib.util.spec_from_file_location(
+            "_lai_organize_helper", _P(__file__).parent / "_organize_helper.py",
+        )
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        organize = mod.organize
+
+        downloaded = await self.download_file(
+            md5, filename=filename,
+            __event_emitter__=__event_emitter__, __user__=__user__,
+        )
+        target = self.valves.DOWNLOAD_DIR
+        organized = organize(target, kind=kind)
+        return f"── download ──\n{downloaded}\n\n── organize ──\n{organized}"

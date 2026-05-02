@@ -391,3 +391,37 @@ class Tools:
                 "then set QOBUZ_APP_ID."
             )
         return f"Qobuz {label} failed: HTTP {code} — {e.response.text[:200]}"
+
+    async def download_and_organize(
+        self,
+        query: str,
+        download_dir: str,
+        kind: str = "album",
+        __event_emitter__: Callable[[dict], Any] = None,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        End-to-end search → download → organize. Calls `lucky_download(query)`
+        to grab the top Qobuz match, then runs the media_library organizer
+        on the qobuz-dl output directory so files land under
+        `<LIBRARY_ROOT>/Music/<Artist>/<Album>/...`.
+        :param query: Album / artist / track query.
+        :param download_dir: Where qobuz-dl writes finished downloads (qobuz-dl config).
+        :param kind: 'album' (default), 'track', or 'artist'.
+        :return: Combined download + organize log.
+        """
+        import importlib.util
+        from pathlib import Path as _P
+        spec = importlib.util.spec_from_file_location(
+            "_lai_organize_helper", _P(__file__).parent / "_organize_helper.py",
+        )
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        organize = mod.organize
+
+        downloaded = await self.lucky_download(
+            query, kind=kind,
+            __event_emitter__=__event_emitter__, __user__=__user__,
+        )
+        organized = organize(download_dir, kind="audio")
+        return f"── download ──\n{downloaded}\n\n── organize ──\n{organized}"

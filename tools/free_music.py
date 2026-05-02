@@ -244,3 +244,30 @@ class Tools:
                         f.write(chunk)
                         total += len(chunk)
         return f"saved {total} bytes -> {out_path}"
+
+    async def download_and_organize(
+        self,
+        url: str,
+        save_path: str = "",
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Download a free-music URL and immediately organize it into the
+        media library (`<LIBRARY_ROOT>/Music/<Artist>/<Album>/...`).
+        :param url: Direct .flac / .mp3 / .ogg URL.
+        :param save_path: Optional override; default = DEFAULT_DOWNLOAD_DIR.
+        :return: Combined download + organize log.
+        """
+        import importlib.util
+        from pathlib import Path as _P
+        spec = importlib.util.spec_from_file_location(
+            "_lai_organize_helper", _P(__file__).parent / "_organize_helper.py",
+        )
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        organize = mod.organize
+
+        downloaded = await self.download(url, save_path=save_path, __user__=__user__)
+        target = save_path or self.valves.DEFAULT_DOWNLOAD_DIR
+        organized = organize(target, kind="audio")
+        return f"── download ──\n{downloaded}\n\n── organize ──\n{organized}"

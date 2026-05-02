@@ -85,8 +85,12 @@ groups:
     subgroups:
       system:              { title: "System",                  order: 10 }
       eda:                 { title: "Electronics (EDA)",       order: 20 }
+      eda_authoring:       { title: "EDA — Authoring",         order: 25 }
       cad_3d:              { title: "3D & CAD",                order: 30 }
+      cad_3d_authoring:    { title: "3D & CAD — Authoring",    order: 35 }
       audio_production:    { title: "Audio Production",        order: 40 }
+      audio_authoring:     { title: "Audio — Authoring",       order: 45 }
+      media_library:       { title: "Media Library",           order: 50 }
 
   uncategorized:
     title: "Uncategorized"

@@ -316,6 +316,88 @@ tools:
     api_key_required: false
     api_key_url: "https://devportal.jamendo.com"
 
+  # ── Authoring tools (Phase 9c): the model creates content, not just opens apps ─
+  composition:
+    file: tools/composition.py
+    group: code_data_compute
+    subgroup: compute_notebooks
+    title: "Composition — MIDI Authoring"
+    description: "Compose MIDI files programmatically: tracks, notes, chords, scales, drum patterns, transposition, key fitting. Output imports cleanly into FL Studio, SynthV, MuseScore, Logic, Ableton."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  synthv_author:
+    file: tools/synthv_author.py
+    group: desktop
+    subgroup: audio_authoring
+    title: "SynthV Author — Build .svp Projects"
+    description: "Author Synthesizer V Studio Pro project files: tempo / time-sig / key, tracks bound to singer voice DBs, note groups, notes with lyrics + phonemes, parameter automation curves, MIDI import."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  fl_studio_author:
+    file: tools/fl_studio_author.py
+    group: desktop
+    subgroup: audio_authoring
+    title: "FL Studio Author — Compose Tracks from a Prompt"
+    description: "Generate full songs as MIDI (drums, bass, chords, leads) and wrap them in .flp projects (when pyflp is installed) or hand off to FL Studio's MIDI importer."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  blender_author:
+    file: tools/blender_author.py
+    group: desktop
+    subgroup: cad_3d_authoring
+    title: "Blender Author — Build 3D Scenes from Spec"
+    description: "Build 3D scenes: primitives, custom meshes from vertices, PBR materials, lights, cameras, render setup. Generates a single bpy script and runs it headlessly via the existing blender tool."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  fusion360_author:
+    file: tools/fusion360_author.py
+    group: desktop
+    subgroup: cad_3d_authoring
+    title: "Fusion 360 Author — Generate Parametric CAD Scripts"
+    description: "Author Fusion designs: sketches, extrudes, fillets, chamfers, shells, multi-component assemblies, materials, exports (STEP / IGES / STL / F3D). Emits a Fusion script and installs it via fusion360.install_script."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  kicad_author:
+    file: tools/kicad_author.py
+    group: desktop
+    subgroup: eda_authoring
+    title: "KiCad Author — Schematic + PCB with 3rd-party Libraries"
+    description: "End-to-end KiCad authoring: project scaffold, 3rd-party library fetch (SnapEDA / Ultra Librarian / GitHub URLs), library registration, symbol placement, wires + labels + hierarchical sheets, PCB tracks + vias + board outline, ERC + DRC."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://www.snapeda.com/account/api/"
+
+  media_library:
+    file: tools/media_library.py
+    group: desktop
+    subgroup: media_library
+    title: "Media Library — Organize Music / Books / Films / TV"
+    description: "Universal organizer for downloads. Reads ID3/Vorbis/FLAC/MP4 tags via mutagen, EPUB/PDF metadata, and parses 'Show.S01E02' / 'Title.YEAR' filenames. Routes files into Music/<Artist>/<Album>/, Books/<Author>/, Films/<Title> (Year)/, TV/<Show>/Season NN/."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+
+  musicbee_author:
+    file: tools/musicbee_author.py
+    group: desktop
+    subgroup: audio_authoring
+    title: "MusicBee Author — Playlists + Vibe-Based Streaming"
+    description: "Build .m3u8 playlists from explicit track lists or scan-and-filter the music library by tag, then auto-stream the playlist in MusicBee."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
 # Middleware (formerly Open WebUI pipelines) now lives in backend/middleware/.
 # It's invoked directly by the FastAPI chat endpoint — no separate service
 # required. Listed here for documentation only.

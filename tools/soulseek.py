@@ -499,3 +499,44 @@ class Tools:
             for d in u.get("directories") or []:
                 n += len(d.get("files") or [])
         return n
+
+    async def download_and_organize(
+        self,
+        query: str,
+        slskd_download_dir: str,
+        kind: str = "audio",
+        __event_emitter__: Callable[[dict], Any] = None,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        End-to-end search → download → organize pipeline. Calls
+        `download_best(query)` to queue a download from the top-ranked
+        result, then hands the slskd download directory off to the
+        media_library organizer (Music/<Artist>/<Album>/...).
+        Note: slskd downloads are async — this returns once the queue
+        request is accepted. Wait for the transfer to finish (use
+        `list_downloads()` to confirm) before re-running the organize step.
+        :param query: Search string passed to download_best.
+        :param slskd_download_dir: Where slskd writes completed files (Options > Directories).
+        :param kind: Organize as 'audio' (default) or 'audiobooks'.
+        :return: Combined queue + organize log.
+        """
+        import importlib.util
+        from pathlib import Path as _P
+        here = _P(__file__).parent
+        spec = importlib.util.spec_from_file_location(
+            "_lai_organize_helper", here / "_organize_helper.py",
+        )
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        organize = mod.organize
+
+        queued = await self.download_best(
+            query, __event_emitter__=__event_emitter__, __user__=__user__,
+        )
+        organized = organize(slskd_download_dir, kind=kind)
+        return (
+            f"── search & queue ──\n{queued}\n\n"
+            "── organize (run after transfer completes) ──\n"
+            f"{organized}"
+        )
