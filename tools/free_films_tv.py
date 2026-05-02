@@ -1,23 +1,38 @@
 """
-title: Free Films & TV — Internet Archive, Tubi, Pluto, Crackle, PBS, Kanopy
+title: Free Films & TV — IA, Tubi, Pluto, Crackle, PBS, Kanopy + Torrent Crawl
 author: local-ai-stack
-description: Search legally-free TV and film catalogues. Internet Archive movies (`collection:moviesandfilms` / `feature_films` — public-domain Hollywood, silent film, government films, anime, classic TV) returns direct MP4/MKV download URLs and is the strongest free legal source. Tubi / Pluto TV / Crackle / PBS / IMDb Freevee / Kanopy are ad-supported or library-card free streaming — no public download API, but their search + listing endpoints surface what's available so the model can produce a watch link.
+description: Search legally-free TV and film catalogues. Internet Archive movies (`collection:moviesandfilms` / `feature_films` — public-domain Hollywood, silent film, government films, anime, classic TV) returns direct MP4/MKV download URLs and is the strongest free legal source. Tubi / Pluto TV / Crackle / PBS / IMDb Freevee / Kanopy are ad-supported or library-card free streaming. The `find_anywhere` aggregator additionally crawls TV/movie torrent repositories (YTS, EZTV, Nyaa, Pirate Bay, Internet Archive .torrent collection) and meta-aggregators (Knaben, Solid Torrents, 1337x, TorrentGalaxy, BTDigg), returning magnet URIs for the qBittorrent tool to download.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 1.0.0
+version: 1.1.0
 licence: MIT
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import re
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, Field
+
+
+def _load_tool(name: str):
+    """Sibling-tool loader — same pattern as cross_source_playlist.py."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"_lai_{name}", Path(__file__).parent / f"{name}.py",
+        )
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        return mod.Tools()
+    except Exception:
+        return None
 
 
 _UA = "Mozilla/5.0 (X11; Linux x86_64) local-ai-stack/1.0 free-films-tv"
@@ -353,20 +368,89 @@ class Tools:
             out.append(f"**{title}** ({year})\n   {link}\n")
         return "\n".join(out)
 
+    # ── Torrent crawl (delegates to torrent_search + torrent_aggregators) ─
+
+    async def crawl_torrents(
+        self,
+        query: str,
+        kind: str = "all",
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Crawl every TV/movie torrent repository and meta-aggregator the
+        suite has access to: YTS (movies), EZTV (TV), Nyaa (anime), apibay
+        (Pirate Bay), the Internet Archive .torrent collection, Knaben
+        meta-search, Solid Torrents, 1337x, TorrentGalaxy, BTDigg.
+
+        Returns magnet URIs and .torrent links — pair with the qBittorrent
+        tool to actually download.
+        :param query: Title query.
+        :param kind: "all", "movie", "tv", "anime". Routes to the right
+                     specialist sources.
+        :return: Combined Markdown digest of torrent results.
+        """
+        ts = _load_tool("torrent_search")
+        ta = _load_tool("torrent_aggregators")
+        if not ts and not ta:
+            return "Neither torrent_search nor torrent_aggregators is loadable."
+
+        coros: list[Any] = []
+        labels: list[str] = []
+
+        kind_l = (kind or "all").lower()
+        if ts:
+            if kind_l in ("all", "movie"):
+                coros.append(ts.search_movies(query))
+                labels.append("YTS (movies)")
+            if kind_l in ("all", "tv"):
+                coros.append(ts.search_tv(query=query))
+                labels.append("EZTV (TV)")
+            if kind_l in ("all", "anime"):
+                coros.append(ts.search_anime(query))
+                labels.append("Nyaa (anime)")
+            if kind_l == "all":
+                coros.append(ts.search_general(query))
+                labels.append("Pirate Bay (general)")
+                coros.append(ts.search_internet_archive(query, media_type="movies"))
+                labels.append("Internet Archive (.torrent, public domain)")
+
+        if ta:
+            cat_map = {"movie": "movie", "tv": "tv", "anime": "anime"}
+            cat = cat_map.get(kind_l, "")
+            coros.append(ta.search_all(query, category=cat))
+            labels.append("Meta aggregators (Knaben/Solid/1337x/TGx/BTDigg)")
+
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        out = [f"# Torrent crawl: {query}  (kind: {kind_l})"]
+        for label, res in zip(labels, results):
+            if isinstance(res, Exception):
+                out.append(f"\n## {label}\n_(failed: {res})_")
+            else:
+                out.append(f"\n## {label}\n{res}")
+        return "\n".join(out)
+
     # ── Aggregator ────────────────────────────────────────────────────────
 
     async def find_anywhere(
         self,
         query: str,
         include_paid_with_card: bool = True,
+        include_torrents: bool = True,
+        torrent_kind: str = "all",
         __user__: Optional[dict] = None,
     ) -> str:
         """
         Run Internet Archive, Tubi, Pluto, Crackle, PBS in parallel for one
-        title. Internet Archive is canonical for legal free downloads;
-        Tubi/Pluto/Crackle/PBS are free ad-supported streaming.
+        title — and (when `include_torrents`) crawl YTS/EZTV/Nyaa/Pirate
+        Bay/IA/Knaben/Solid Torrents/1337x/TorrentGalaxy/BTDigg in parallel
+        too. Internet Archive (downloads) and Tubi/Pluto/Crackle/PBS
+        (streams) are the legal free path; torrent results are surfaced as
+        a fallback when the title isn't free-to-stream.
         :param query: Title or topic.
         :param include_paid_with_card: Include Kanopy (library-card free).
+        :param include_torrents: Crawl torrent indexers + meta-aggregators.
+        :param torrent_kind: "all", "movie", "tv", "anime" — narrows the
+                             torrent crawl.
         :return: Combined Markdown digest.
         """
         coros = [
@@ -388,6 +472,9 @@ class Tools:
         if include_paid_with_card:
             coros.append(self.kanopy_search(query))
             labels.append("Kanopy (free w/ library card)")
+        if include_torrents:
+            coros.append(self.crawl_torrents(query, kind=torrent_kind))
+            labels.append("Torrent crawl (YTS/EZTV/Nyaa/PB/IA + meta)")
 
         results = await asyncio.gather(*coros, return_exceptions=True)
 

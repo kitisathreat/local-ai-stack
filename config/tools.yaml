@@ -305,6 +305,16 @@ tools:
     default_enabled: false
     api_key_required: false
 
+  torrent_aggregators:
+    file: tools/torrent_aggregators.py
+    group: entertainment
+    subgroup: torrents
+    title: "Torrent Aggregators — Knaben, Solid Torrents, 1337x, TorrentGalaxy, BTDigg"
+    description: "Crawl meta-search aggregators that index dozens of public trackers at once. Knaben + Solid Torrents (JSON), 1337x + TorrentGalaxy (HTML), BTDigg (DHT-discovered). Complements `torrent_search` by covering the long-tail releases YTS/EZTV/Nyaa miss. Returns magnet URIs for the qBittorrent tool."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
   qbittorrent:
     file: tools/qbittorrent.py
     group: entertainment
