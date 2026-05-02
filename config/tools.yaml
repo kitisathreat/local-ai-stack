@@ -163,6 +163,16 @@ tools:
     requires_service: null
     default_enabled: true
 
+  code_troubleshoot:
+    file: tools/code_troubleshoot.py
+    group: code_data_compute
+    subgroup: code_search
+    title: "Code Troubleshoot — SO + GitHub Issues/Discussions/Wikis"
+    description: "Crawl Stack Overflow and GitHub (issues, discussions, wikis) for fixes to a specific error or bug. find_solutions runs SO + closed-issue + discussion searches in parallel; per-source primitives drill into a single issue thread or pull the top N upvoted SO answers in full."
+    requires_service: null
+    default_enabled: true
+    api_key_required: false
+
   # ── Memory & Persistence ──────────────────────────────────────────────────────
   memory_tool:
     file: tools/memory_tool.py
