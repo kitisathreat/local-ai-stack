@@ -1263,6 +1263,148 @@ async def _multi_agent_sse(
 
 # ── OpenAI-compat passthrough endpoints ──────────────────────────────────
 
+@app.post("/v1/completions")
+async def v1_completions(req: dict, request: Request, user: dict | None = Depends(auth.optional_user)):
+    """OpenAI-compatible legacy text completions endpoint.
+
+    Wraps the request as a single user-message chat and reuses the chat
+    pipeline (router, scheduler, RAG injection, middleware), then
+    unwraps the assistant response into a `text_completion` shape. Most
+    modern tools use /v1/chat/completions, but lm-evaluation-harness's
+    `local-completions` backend, plus a long tail of older HF tutorials
+    and notebooks, default to text completions. Closes umbrella #154.
+
+    Required field: `prompt` (str | list[str]).
+    Optional fields forwarded to the chat path: `model`, `temperature`,
+    `top_p`, `max_tokens`, `stream`, `stream_options`, `stop`.
+    """
+    prompt_in = req.get("prompt")
+    if prompt_in is None:
+        raise HTTPException(400, "Missing required field 'prompt'")
+
+    # text-completions accepts either a single string or a list of strings;
+    # we batch internally by sequentially turning each into one chat call.
+    prompts: list[str]
+    if isinstance(prompt_in, str):
+        prompts = [prompt_in]
+    elif isinstance(prompt_in, list) and all(isinstance(p, str) for p in prompt_in):
+        prompts = prompt_in
+    else:
+        raise HTTPException(400, "'prompt' must be a string or list of strings")
+
+    # Streaming legacy completions semantics differ from chat (different
+    # SSE shape: `text` instead of `delta.content`). Until there's a
+    # caller that actually needs that, force non-streaming and surface
+    # a 400 if the client asks for stream — better than silently
+    # returning a chat-shaped stream.
+    if req.get("stream") is True:
+        raise HTTPException(
+            400,
+            "Streaming /v1/completions is not implemented — "
+            "use /v1/chat/completions for streaming responses.",
+        )
+
+    chat_body: dict = {
+        "model": req.get("model") or state.config.models.default,
+        "messages": [],   # filled per-prompt below
+        "stream": False,
+    }
+    for k in ("temperature", "top_p", "max_tokens", "stop"):
+        if k in req and req[k] is not None:
+            chat_body[k] = req[k]
+
+    choices: list[dict] = []
+    completion_tokens_total = 0
+    for idx, p in enumerate(prompts):
+        chat_body["messages"] = [{"role": "user", "content": p}]
+        chat_req = ChatRequest(**chat_body)
+        try:
+            decision, chat_req = route(chat_req, state.config, state.signals)
+        except KeyError as e:
+            raise HTTPException(404, str(e))
+
+        rate_key = str(user["id"]) if user else (
+            request.headers.get("x-forwarded-for")
+            or (request.client.host if request.client else "anon")
+        )
+        await rate_limiter.check(rate_key)
+
+        # Reuse the same middleware pipeline as chat so the legacy endpoint
+        # gets identical context injection / RAG / clarification semantics.
+        inject_system_context(chat_req.messages)
+        inject_clarification_instruction(chat_req.messages)
+        inject_response_mode(chat_req.messages, chat_req.response_mode, chat_req.plan_text)
+        await inject_web_results(chat_req.messages)
+        if user:
+            await _inject_user_context(chat_req, user)
+
+        tier = state.config.models.tiers[decision.tier_name]
+        if decision.variant:
+            tier = tier.resolve_variant(decision.variant)
+
+        producer = _single_agent_sse(
+            chat_req, decision, state.llama_cpp, tier, user=user,
+            user_text_for_planner=last_user_text(chat_req.messages)[:4096],
+        )
+        # Drain to a single text — same accumulator as the chat path's
+        # non-streaming branch, just emitting `text` instead of `message`.
+        text_chunks: list[str] = []
+        finish_reason = "stop"
+        last_event: str | None = None
+        err_message: str | None = None
+        async for raw in producer:
+            if raw.startswith("event:"):
+                last_event = raw[len("event:"):].strip()
+                continue
+            if not raw.startswith("data:"):
+                if raw == "" or raw == "\n":
+                    last_event = None
+                continue
+            body = raw[len("data:"):].strip()
+            if body == "[DONE]":
+                continue
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                continue
+            if last_event == "agent" and isinstance(payload.get("type"), str):
+                if payload["type"] == "error":
+                    err_message = (payload.get("data") or {}).get("message") or "stream error"
+                continue
+            for ch in payload.get("choices") or []:
+                t = (ch.get("delta") or {}).get("content")
+                if isinstance(t, str):
+                    text_chunks.append(t)
+                fr = ch.get("finish_reason")
+                if isinstance(fr, str):
+                    finish_reason = fr
+
+        if err_message:
+            raise HTTPException(502, err_message)
+        text = "".join(text_chunks)
+        ct = max(1, len(text.split())) if text else 0
+        completion_tokens_total += ct
+        choices.append({
+            "index": idx,
+            "text": text,
+            "finish_reason": finish_reason,
+            "logprobs": None,
+        })
+
+    return JSONResponse({
+        "id": f"cmpl-{uuid.uuid4().hex[:16]}",
+        "object": "text_completion",
+        "created": int(time.time()),
+        "model": chat_body["model"],
+        "choices": choices,
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": completion_tokens_total,
+            "total_tokens": completion_tokens_total,
+        },
+    })
+
+
 @app.post("/v1/embeddings")
 async def v1_embeddings(req: dict, request: Request):
     """OpenAI-compatible embeddings proxy. Forwards to the always-on
