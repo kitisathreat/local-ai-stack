@@ -480,19 +480,58 @@ async def list_tools():
     out. They remain in the list so users understand *why* an option
     is unavailable."""
     ag = airgap.is_enabled()
+    reg = state.tools
     return {
         "airgap": ag,
+        "groups": _serialize_taxonomy(reg),
         "data": [
             {
                 "name": t.name,
                 "description": t.schema.get("function", {}).get("description", ""),
                 "default_enabled": t.default_enabled,
                 "requires_service": t.requires_service,
-                "airgap_blocked": ag and not state.tools.is_airgap_safe(t.name),
+                "airgap_blocked": ag and not reg.is_airgap_safe(t.name),
+                "tier": t.tier,
+                "tier_title": reg.tier_title(t.tier),
+                "group": t.group,
+                "group_title": reg.group_title(t.group),
+                "subgroup": t.subgroup,
+                "subgroup_title": reg.group_title(t.group, t.subgroup),
             }
-            for t in state.tools.tools.values()
+            for t in reg.tools.values()
         ],
     }
+
+
+def _serialize_taxonomy(reg) -> list[dict]:
+    """Materialise the tool taxonomy in display order so the frontend
+    doesn't have to re-sort. Empty subgroups are dropped."""
+    # Build {tier: {group: {subgroup: [tool_name, ...]}}}
+    tree: dict[str, dict[str, dict[str, list[str]]]] = {}
+    for t in reg.tools.values():
+        tree.setdefault(t.tier, {}).setdefault(t.group, {}).setdefault(t.subgroup, []).append(t.name)
+    out: list[dict] = []
+    for tier in sorted(tree, key=reg.tier_order):
+        tier_node = {
+            "tier": tier,
+            "title": reg.tier_title(tier),
+            "groups": [],
+        }
+        for group in sorted(tree[tier], key=lambda g: reg.group_order(g)):
+            group_node = {
+                "group": group,
+                "title": reg.group_title(group),
+                "subgroups": [],
+            }
+            for sub in sorted(tree[tier][group], key=lambda s: reg.group_order(group, s)):
+                group_node["subgroups"].append({
+                    "subgroup": sub,
+                    "title": reg.group_title(group, sub),
+                    "tools": tree[tier][group][sub],
+                })
+            tier_node["groups"].append(group_node)
+        out.append(tier_node)
+    return out
 
 
 @app.get("/airgap")

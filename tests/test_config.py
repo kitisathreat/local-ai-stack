@@ -269,7 +269,16 @@ def test_tools_yaml_service_refs_are_valid():
     # Native mode never starts searxng / n8n containers, but the declarations
     # stay in tools.yaml so the tool registry can gate them at runtime. Keep
     # them in the allowlist so the validator doesn't fail.
-    known_services = {None, "qdrant", "jupyter", "backend", "n8n", "searxng"}
+    #
+    # `host_*` are pseudo-services declared by tools that reach the host
+    # machine (filesystem, OS processes). They are deliberately not part of
+    # the local stack — the tool registry uses them as a flag to suppress
+    # the tool when airgap mode is on.
+    known_services = {
+        None,
+        "qdrant", "jupyter", "backend", "n8n", "searxng",
+        "host_filesystem", "host_processes",
+    }
     all_tool_entries = {}
     for section_val in data.values():
         if isinstance(section_val, dict):

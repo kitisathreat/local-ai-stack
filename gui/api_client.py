@@ -196,16 +196,36 @@ class BackendClient:
             r = await c.delete(f"/admin/users/{user_id}")
             r.raise_for_status()
 
-    async def admin_tools(self) -> list[dict]:
+    async def admin_tools(self) -> dict:
+        """Returns {"data": [...tools...], "groups": [...taxonomy tree...]}."""
         async with self._client() as c:
             r = await c.get("/admin/tools")
             r.raise_for_status()
-            return (r.json() or {}).get("data", [])
+            payload = r.json() or {}
+            return {"data": payload.get("data", []), "groups": payload.get("groups", [])}
 
     async def admin_set_tool_enabled(self, name: str, enabled: bool) -> None:
         async with self._client() as c:
             r = await c.patch(f"/admin/tools/{name}", json={"enabled": enabled})
             r.raise_for_status()
+
+    async def admin_bulk_set_tools(
+        self, enabled: bool, *,
+        tier: str | None = None, group: str | None = None,
+        subgroup: str | None = None, names: list[str] | None = None,
+    ) -> dict:
+        """Flip many tools at once. Pass `names` for an explicit list, or
+        any combination of tier/group/subgroup to use the taxonomy filter.
+        Returns the server response with the changed-name list and count."""
+        body: dict = {"enabled": enabled}
+        if names is not None: body["names"] = list(names)
+        if tier is not None:     body["tier"] = tier
+        if group is not None:    body["group"] = group
+        if subgroup is not None: body["subgroup"] = subgroup
+        async with self._client() as c:
+            r = await c.patch("/admin/tools", json=body)
+            r.raise_for_status()
+            return r.json() or {}
 
     async def admin_set_airgap(self, enabled: bool) -> dict:
         async with self._client() as c:
@@ -234,6 +254,68 @@ class BackendClient:
     async def admin_reload(self) -> dict:
         async with self._client() as c:
             r = await c.post("/admin/reload")
+            r.raise_for_status()
+            return r.json()
+
+    # ── free_games marketplace workflow ────────────────────────────────
+
+    async def admin_marketplaces(self) -> dict:
+        async with self._client() as c:
+            r = await c.get("/admin/marketplaces")
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_recipes(self) -> dict:
+        async with self._client() as c:
+            r = await c.get("/admin/marketplaces/recipes")
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_test(self, config: dict, query: str = "test") -> dict:
+        async with self._client() as c:
+            r = await c.post(
+                "/admin/marketplaces/test",
+                json={"config": config, "query": query},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_probe(self, name: str, query: str = "test") -> dict:
+        async with self._client() as c:
+            r = await c.post(
+                "/admin/marketplaces/probe",
+                json={"name": name, "query": query},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_probe_download(self, url: str) -> dict:
+        async with self._client() as c:
+            r = await c.post(
+                "/admin/marketplaces/probe-download",
+                json={"url": url},
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_save(self, config: dict) -> dict:
+        async with self._client() as c:
+            r = await c.post("/admin/marketplaces", json=config)
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_delete(self, name: str) -> dict:
+        async with self._client() as c:
+            r = await c.delete(f"/admin/marketplaces/{name}")
+            r.raise_for_status()
+            return r.json()
+
+    async def admin_marketplace_patch_valves(self, **fields) -> dict:
+        async with self._client() as c:
+            r = await c.patch("/admin/marketplaces/valves", json=fields)
             r.raise_for_status()
             return r.json()
 

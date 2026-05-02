@@ -22,7 +22,10 @@ TOOLS_DIR = ROOT / "tools"
 # Phase 6: pipelines/ migrated to backend/middleware/.
 MIDDLEWARE_DIR = ROOT / "backend" / "middleware"
 
-TOOL_FILES = sorted(TOOLS_DIR.glob("*.py"))
+TOOL_FILES = sorted(
+    p for p in TOOLS_DIR.glob("*.py")
+    if not p.name.startswith("_")
+)
 MIDDLEWARE_FILES = sorted(
     p for p in MIDDLEWARE_DIR.glob("*.py") if p.name != "__init__.py"
 )

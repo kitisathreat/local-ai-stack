@@ -139,12 +139,13 @@
     #tools-popover {
       position: absolute; bottom: 100%; left: 0; margin-bottom: 6px;
       background: var(--panel); border: 1px solid var(--border);
-      border-radius: 6px; padding: 8px; min-width: 280px; max-height: 320px;
+      border-radius: 6px; padding: 8px; min-width: 360px; max-width: 480px;
+      max-height: 480px;
       overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 10;
     }
     #tools-popover.hidden { display: none; }
     #tools-popover .tool-row {
-      display: flex; align-items: center; gap: 8px; padding: 4px 2px;
+      display: flex; align-items: center; gap: 8px; padding: 3px 2px;
       font-size: 12.5px;
     }
     #tools-popover .tool-row label {
@@ -155,6 +156,42 @@
       border: 1px solid var(--border); border-radius: 4px;
       padding: 4px 6px; margin-bottom: 6px; font: inherit; font-size: 12px;
     }
+    /* Tree groupings */
+    #tools-popover .tier-block { margin-bottom: 8px; }
+    #tools-popover .tier-header,
+    #tools-popover .group-header,
+    #tools-popover .subgroup-header {
+      display: flex; align-items: center; gap: 6px;
+      cursor: pointer; user-select: none;
+      color: var(--fg);
+    }
+    #tools-popover .tier-header {
+      font-size: 12px; font-weight: 600; color: #cfd2d8;
+      padding: 4px 2px; background: #1f222a; border-radius: 4px;
+      margin-bottom: 2px;
+    }
+    #tools-popover .group-header {
+      font-size: 12.5px; font-weight: 500;
+      padding: 3px 4px 3px 14px; color: #c0c3c9;
+    }
+    #tools-popover .subgroup-header {
+      font-size: 12px; padding: 2px 4px 2px 26px; color: var(--muted);
+    }
+    #tools-popover .tier-header .caret,
+    #tools-popover .group-header .caret,
+    #tools-popover .subgroup-header .caret {
+      width: 10px; text-align: center; font-size: 9px;
+      transition: transform 0.15s;
+    }
+    #tools-popover .collapsed > .caret { transform: rotate(-90deg); }
+    #tools-popover .header-title { flex: 1; }
+    #tools-popover .header-count { color: var(--muted); font-size: 11px; }
+    #tools-popover .tool-row { padding-left: 38px; }
+    #tools-popover .group-body.hidden,
+    #tools-popover .subgroup-body.hidden,
+    #tools-popover .tier-body.hidden { display: none; }
+    /* Master toggle (per tier/group/subgroup) — same look as the per-tool one */
+    #tools-popover .header-toggle { flex-shrink: 0; }
     /* iOS-style toggle switch */
     .toggle {
       position: relative; width: 30px; height: 16px; flex-shrink: 0;
@@ -796,6 +833,7 @@
     const toolsCount = $('tools-count');
     const toolSearch = $('tool-search');
     const toolState = new Map();   // name → enabled (boolean)
+    let toolsTaxonomy = [];        // [{tier, title, groups: [{group, title, subgroups: [{subgroup, title, tools}]}]}]
 
     async function loadTools() {
       // Default every tool to OFF. Auto-enabling default-enabled tools
@@ -811,33 +849,124 @@
         (j.data || []).forEach(t => {
           toolState.set(t.name, false);
         });
+        toolsTaxonomy = j.groups || [];
         renderTools();
       } catch (_) {}
     }
 
+    // True if any descendant tool name passes the current search filter.
+    function nodeMatches(toolNames, query) {
+      if (!query) return true;
+      return toolNames.some(n => n.toLowerCase().includes(query));
+    }
+
+    // Three-state aggregation: 'all' | 'some' | 'none'.
+    function aggState(toolNames) {
+      let on = 0;
+      toolNames.forEach(n => { if (toolState.get(n)) on++; });
+      if (on === 0) return 'none';
+      if (on === toolNames.length) return 'all';
+      return 'some';
+    }
+
+    function setMany(names, enabled) {
+      names.forEach(n => toolState.set(n, enabled));
+      updateToolsCount();
+      renderTools();   // Re-render so master toggles update.
+    }
+
+    function makeHeader(cls, title, toolNames, level) {
+      const wrap = document.createElement('div');
+      wrap.className = cls;
+      const state = aggState(toolNames);
+      wrap.innerHTML = `
+        <span class="caret">▾</span>
+        <span class="header-title">${escapeHtml(title)}</span>
+        <span class="header-count">${toolNames.length}</span>
+        <span class="toggle header-toggle"><input type="checkbox"><span class="slider"></span></span>
+      `;
+      const cb = wrap.querySelector('input');
+      cb.checked = state === 'all';
+      cb.indeterminate = state === 'some';
+      cb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setMany(toolNames, cb.checked);
+      });
+      return wrap;
+    }
+
     function renderTools() {
       const q = (toolSearch.value || '').toLowerCase();
-      const rows = [];
-      toolState.forEach((enabled, name) => {
-        if (q && !name.toLowerCase().includes(q)) return;
-        rows.push({ name, enabled });
-      });
-      rows.sort((a, b) => a.name.localeCompare(b.name));
       toolsList.innerHTML = '';
-      rows.forEach(({ name, enabled }) => {
-        const row = document.createElement('div');
-        row.className = 'tool-row';
-        row.innerHTML = `
-          <label for="tool-${cssId(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</label>
-          <span class="toggle"><input type="checkbox" id="tool-${cssId(name)}" ${enabled ? 'checked' : ''}><span class="slider"></span></span>
-        `;
-        const cb = row.querySelector('input');
-        cb.addEventListener('change', () => {
-          toolState.set(name, cb.checked);
-          updateToolsCount();
+
+      if (toolsTaxonomy.length === 0) {
+        toolsList.innerHTML = '<div class="tool-row" style="padding-left:2px;color:var(--muted);">No tools registered.</div>';
+        return;
+      }
+
+      toolsTaxonomy.forEach(tier => {
+        const tierTools = tier.groups.flatMap(g => g.subgroups.flatMap(s => s.tools));
+        if (!nodeMatches(tierTools, q)) return;
+
+        const tierBlock = document.createElement('div');
+        tierBlock.className = 'tier-block';
+        const tierHeader = makeHeader('tier-header', tier.title, tierTools, 0);
+        const tierBody = document.createElement('div');
+        tierBody.className = 'tier-body';
+        tierHeader.addEventListener('click', () => {
+          tierBody.classList.toggle('hidden');
+          tierHeader.classList.toggle('collapsed');
         });
-        toolsList.appendChild(row);
+        tierBlock.appendChild(tierHeader);
+        tierBlock.appendChild(tierBody);
+
+        tier.groups.forEach(group => {
+          const groupTools = group.subgroups.flatMap(s => s.tools);
+          if (!nodeMatches(groupTools, q)) return;
+
+          const groupHeader = makeHeader('group-header', group.title, groupTools, 1);
+          const groupBody = document.createElement('div');
+          groupBody.className = 'group-body';
+          groupHeader.addEventListener('click', () => {
+            groupBody.classList.toggle('hidden');
+            groupHeader.classList.toggle('collapsed');
+          });
+          tierBody.appendChild(groupHeader);
+          tierBody.appendChild(groupBody);
+
+          group.subgroups.forEach(sub => {
+            if (!nodeMatches(sub.tools, q)) return;
+
+            const subHeader = makeHeader('subgroup-header', sub.title, sub.tools, 2);
+            const subBody = document.createElement('div');
+            subBody.className = 'subgroup-body';
+            subHeader.addEventListener('click', () => {
+              subBody.classList.toggle('hidden');
+              subHeader.classList.toggle('collapsed');
+            });
+            groupBody.appendChild(subHeader);
+            groupBody.appendChild(subBody);
+
+            sub.tools.forEach(name => {
+              if (q && !name.toLowerCase().includes(q)) return;
+              const row = document.createElement('div');
+              row.className = 'tool-row';
+              const enabled = !!toolState.get(name);
+              row.innerHTML = `
+                <label for="tool-${cssId(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</label>
+                <span class="toggle"><input type="checkbox" id="tool-${cssId(name)}" ${enabled ? 'checked' : ''}><span class="slider"></span></span>
+              `;
+              const cb = row.querySelector('input');
+              cb.addEventListener('change', () => {
+                toolState.set(name, cb.checked);
+                renderTools();
+              });
+              subBody.appendChild(row);
+            });
+          });
+        });
       });
+
       updateToolsCount();
     }
     function cssId(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }

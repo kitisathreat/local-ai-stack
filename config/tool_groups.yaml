@@ -1,0 +1,108 @@
+# Tool group taxonomy
+#
+# Two-level hierarchy: each tool in tools.yaml carries `group:` and
+# `subgroup:` slugs (snake_case). This file maps those slugs to
+# display names, ordering, and descriptions. The /tools and
+# /admin/tools endpoints surface the resolved labels so the chat
+# popover and admin dashboard can render a collapsible tree.
+#
+# A tool that doesn't declare a group falls back to ("uncategorized",
+# "general") and lands in the "Uncategorized" bucket. Subgroups never
+# referenced here still render with the slug as the title.
+
+groups:
+  research:
+    title: "Research & Academia"
+    order: 10
+    subgroups:
+      cross_disciplinary:  { title: "Cross-disciplinary", order: 10 }
+      computer_science:    { title: "Computer Science",   order: 20 }
+      life_sciences:       { title: "Life Sciences",      order: 30 }
+      physical_sciences:   { title: "Physical Sciences",  order: 40 }
+      earth_climate:       { title: "Earth & Climate",    order: 50 }
+      reference:           { title: "Reference",          order: 60 }
+      authoring:           { title: "Authoring",          order: 70 }
+
+  finance:
+    title: "Finance & Economics"
+    order: 20
+    subgroups:
+      markets:             { title: "Markets",                 order: 10 }
+      analysis:            { title: "Analysis & Modeling",     order: 20 }
+      disclosures:         { title: "Disclosures",             order: 30 }
+      macro_public_data:   { title: "Macro & Public Data",     order: 40 }
+      authoring:           { title: "Authoring",               order: 50 }
+
+  news_public_affairs:
+    title: "News & Public Affairs"
+    order: 30
+    subgroups:
+      news_media:          { title: "News & Media",            order: 10 }
+      conflict_compliance: { title: "Conflict & Compliance",   order: 20 }
+      legal_ip:            { title: "Legal & IP",              order: 30 }
+      security:            { title: "Security",                order: 40 }
+      authoring:           { title: "Authoring",               order: 50 }
+      paywall:             { title: "Paywall Bypass",          order: 60 }
+
+  entertainment:
+    title: "Entertainment & Personal Media"
+    order: 40
+    subgroups:
+      streaming_music:     { title: "Streaming Music",         order: 10 }
+      p2p_music:           { title: "P2P / Direct Music",      order: 20 }
+      music_metadata:      { title: "Music Metadata",          order: 30 }
+      local_player:        { title: "Local Player",            order: 40 }
+      movies_tv:           { title: "Movies & TV",             order: 50 }
+      books:               { title: "Books",                   order: 60 }
+      torrents:            { title: "Torrents",                order: 70 }
+      games:               { title: "Games",                   order: 80 }
+      curation:            { title: "Curation & Enrichment",   order: 90 }
+
+  culture:
+    title: "Culture & Heritage"
+    order: 50
+    subgroups:
+      museums:             { title: "Museums",                 order: 10 }
+      libraries_archives:  { title: "Libraries & Archives",    order: 20 }
+      authoring:           { title: "Authoring",               order: 30 }
+
+  web_geo:
+    title: "Web & Geo"
+    order: 60
+    subgroups:
+      web_search:          { title: "Web Search",              order: 10 }
+      maps_places:         { title: "Maps & Places",           order: 20 }
+      weather:             { title: "Weather",                 order: 30 }
+      headless:            { title: "Headless Browser",        order: 40 }
+      routing:             { title: "Routing",                 order: 50 }
+
+  code_data_compute:
+    title: "Code, Data & Compute"
+    order: 70
+    subgroups:
+      code_search:         { title: "Code Search",             order: 10 }
+      compute_notebooks:   { title: "Compute & Notebooks",     order: 20 }
+      dev_utilities:       { title: "Dev Utilities",           order: 30 }
+      workflows:           { title: "Workflows",               order: 40 }
+      memory_interaction:  { title: "Memory & Interaction",    order: 50 }
+      authoring:           { title: "Authoring",               order: 60 }
+
+  desktop:
+    title: "Desktop Integration"
+    order: 80
+    description: "Host-touching tools — opt-in, blocked when airgap is on."
+    subgroups:
+      system:              { title: "System",                  order: 10 }
+      eda:                 { title: "Electronics (EDA)",       order: 20 }
+      eda_authoring:       { title: "EDA — Authoring",         order: 25 }
+      cad_3d:              { title: "3D & CAD",                order: 30 }
+      cad_3d_authoring:    { title: "3D & CAD — Authoring",    order: 35 }
+      audio_production:    { title: "Audio Production",        order: 40 }
+      audio_authoring:     { title: "Audio — Authoring",       order: 45 }
+      media_library:       { title: "Media Library",           order: 50 }
+
+  uncategorized:
+    title: "Uncategorized"
+    order: 999
+    subgroups:
+      general:             { title: "General",                 order: 10 }
