@@ -488,6 +488,38 @@ worrying about the model trying to spawn `kicad.exe` over a tunnel.
 3. The settings persist across restarts via the same `config/tools.yaml`
    surface as the rest of the registry. No code changes needed.
 
+### Entertainment & media tools (Phase 9b)
+
+A second cluster of opt-in tools for the model to control gaming and
+music software, search torrent indexers, drive a torrent client, and
+pull legitimately-free music. Same posture as the design tools:
+`default_enabled: false` and (for host-touching ones) declared with a
+`host_*` service so airgap mode strips them.
+
+| Tool file | What the model can do |
+|---|---|
+| [`tools/steam.py`](tools/steam.py) | Launch installed games via `steam://run/<appid>`, list installed games by parsing `libraryfolders.vdf` + `appmanifest_*.acf`, search the Steam Store, and (with a free Web API key) read a public profile's owned-games / recently-played / summary. |
+| [`tools/musicbee.py`](tools/musicbee.py) | Drive MusicBee via its CLI: launch, play/pause/next/previous, mute, set volume, open or queue a file, list playlists, locate the library DB. |
+| [`tools/spotify.py`](tools/spotify.py) | Spotify Web API. Two modes: client-credentials (public catalogue search, album/track lookup) and user OAuth (now-playing, play/pause, next/prev, queue, volume, my-playlists, add-to-playlist). Refresh tokens are rotated transparently and never logged. |
+| [`tools/torrent_search.py`](tools/torrent_search.py) | Unified torrent discovery across YTS (movies, official JSON), EZTV (TV, JSON), Nyaa.si (anime, RSS), apibay.org (general / The Pirate Bay JSON), and the Internet Archive's public-domain torrent collection. Optional Jackett/Prowlarr meta-search hits 100+ trackers at once. Returns magnet URIs / `.torrent` URLs. |
+| [`tools/qbittorrent.py`](tools/qbittorrent.py) | qBittorrent Web API client: add (magnet, URL, or local `.torrent` file), list+filter the queue, pause/resume/delete (optionally with file removal), set per-torrent download limits, fetch global stats. Cookie auth is refreshed automatically. |
+| [`tools/free_music.py`](tools/free_music.py) | Search and download legitimately-free music: Free Music Archive (CC indie), Internet Archive Audio (public-domain + CC concerts, broadcasts, 78rpm — often FLAC), Jamendo (CC, 600k+ artists, FLAC with a free key). Streams audio straight to disk. |
+
+Existing music-related tools `tools/qobuz_dl.py` (Qobuz Hi-Res via the
+`qobuz-dl` CLI) and `tools/soulseek.py` (Soulseek P2P via `slskd`) are
+still in place; the Phase 9b tools sit alongside them.
+
+#### Where to find films / TV
+
+`torrent_search.search_movies(query=…)` calls YTS's open JSON API and
+returns top-seed releases per quality tier. `torrent_search.search_tv(imdb_id=…)`
+calls EZTV's JSON. For anime, `search_anime` hits Nyaa's RSS. For
+public-domain or CC-licensed films that you can grab without a
+torrent-legality concern at all, use
+`torrent_search.search_internet_archive(media_type="movies", …)` —
+the result is a real `_archive.torrent` URL pointing at content the
+Internet Archive distributes legally.
+
 ### Safety posture
 
 - **Allow-list, not deny-list.** The filesystem tool refuses any path

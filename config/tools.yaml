@@ -200,6 +200,62 @@ tools:
     default_enabled: false
     api_key_required: false
 
+  # ── Entertainment & Media (Phase 9b) ────────────────────────────────────────
+  # Game-library, music-player, streaming, and torrent integrations. Off by
+  # default. Steam, MusicBee, qBittorrent, and the torrent search/download
+  # paths reach the host (require_service: host_*); Spotify and Free Music
+  # are online-API-only.
+  steam:
+    file: tools/steam.py
+    title: "Steam — Launch Games + Library Inspection"
+    description: "Launch installed Steam games via the steam:// URL protocol, list installed games by parsing libraryfolders.vdf, and (with a free Steam Web API key) fetch a public profile's owned-games list, recently played, and player summary."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+    api_key_url: "https://steamcommunity.com/dev/apikey"
+
+  musicbee:
+    file: tools/musicbee.py
+    title: "MusicBee — Local Music Player Control"
+    description: "Drive a local MusicBee install via its command-line switches: launch, play / pause / next / previous, set volume, mute, queue and play files, open library/playlists."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  spotify:
+    file: tools/spotify.py
+    title: "Spotify — Web API Search + Playback Control"
+    description: "Spotify Web API for catalogue search, playlist browsing, and playback control. Public-catalogue endpoints work with a client_id+secret; playback control needs a long-lived user refresh_token."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://developer.spotify.com/dashboard"
+
+  torrent_search:
+    file: tools/torrent_search.py
+    title: "Torrent Search — YTS, EZTV, Nyaa, Pirate Bay, Internet Archive, Jackett"
+    description: "Search public torrent indexers for movies (YTS), TV (EZTV), anime (Nyaa), the long-tail (apibay.org), and Internet Archive's public-domain collection. Optional Jackett/Prowlarr meta-search routes one query through every configured tracker. Returns magnet URIs / .torrent links — pair with the qBittorrent client to actually download."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  qbittorrent:
+    file: tools/qbittorrent.py
+    title: "qBittorrent — Web API Client"
+    description: "Drive a local or remote qBittorrent instance via its Web API. Add torrents from a magnet URI or .torrent URL, list and filter the queue, pause / resume / delete (with optional file removal), set per-torrent download limits, and fetch global transfer stats."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  free_music:
+    file: tools/free_music.py
+    title: "Free Music — FMA, Internet Archive Audio, Jamendo"
+    description: "Search and download legitimately-free music from Free Music Archive (CC-licensed indie), Internet Archive Audio (public-domain & CC concerts/broadcasts/78rpm rips, often FLAC), and Jamendo (CC-licensed releases from 600k+ artists, FLAC with a free API key)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+    api_key_url: "https://devportal.jamendo.com"
+
 # Middleware (formerly Open WebUI pipelines) now lives in backend/middleware/.
 # It's invoked directly by the FastAPI chat endpoint — no separate service
 # required. Listed here for documentation only.
