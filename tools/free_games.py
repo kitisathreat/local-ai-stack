@@ -1,10 +1,10 @@
 """
-title: Free & Archived Games — GamerPower, Epic, Steam, GOG, itch.io, IA Software, MyAbandonware, libregamewiki
+title: Free & Archived Games — GamerPower, Epic, Steam, GOG, itch.io, IA Software, MyAbandonware, libregamewiki, configurable marketplaces
 author: local-ai-stack
-description: Find games that are legitimately free or legally archived. Three layers — (1) currently-free promotions across every storefront via GamerPower's aggregator + per-store endpoints (Epic weekly free, Steam free-to-play, GOG free-game promo, itch.io free indies); (2) game-preservation archives — Internet Archive's software library (DOS, Apple II, NES, browser-playable emulator), MyAbandonware, OldGamesDownload — for titles whose rightsholders have ceased commercial activity; (3) FOSS / open-source games via libregamewiki. Returns store / download URLs for each result. The aggregator runs every layer in parallel for one query.
+description: Find games that are legitimately free or legally archived. Three layers — (1) currently-free promotions across every storefront via GamerPower's aggregator + per-store endpoints (Epic weekly free, Steam free-to-play, GOG free-game promo, itch.io free indies); (2) game-preservation archives — Internet Archive's software library (DOS, Apple II, NES, browser-playable emulator), MyAbandonware, OldGamesDownload — for titles whose rightsholders have ceased commercial activity; (3) FOSS / open-source games via libregamewiki. Plus a configurable marketplace layer — drop URL templates + regex selectors for arbitrary game sites into MARKETPLACES and the tool will search them, extract download links, and (with WRITE_ENABLED) stream them to DOWNLOAD_DIR. The aggregator runs every layer in parallel for one query. Configured marketplaces are the user's responsibility — they should reflect sources the user has the right to access.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 1.0.0
+version: 1.1.0
 licence: MIT
 """
 
@@ -13,9 +13,11 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
 from pydantic import BaseModel, Field
@@ -43,10 +45,33 @@ def _strip_html(s: str, n: int = 600) -> str:
     return s[:n]
 
 
+def _safe_filename(name: str, default_ext: str = "bin") -> str:
+    """Sanitise a string into a safe single-segment filename."""
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
+    name = re.sub(r"\s+", " ", name)[:200]
+    if not name:
+        name = f"download.{default_ext}"
+    return name
+
+
+# Generic regex patterns for "find downloadable artifacts on a page" — used as
+# the fallback when a marketplace config doesn't supply its own download_pattern.
+_GENERIC_DL_REGEX = re.compile(
+    r"""(?ix)
+    (?:href|src)\s*=\s*["']
+    (
+       magnet:\?[^"']+
+     | https?://[^"']+\.(?:zip|7z|rar|iso|bin|cue|torrent|exe|dmg|pkg|tar(?:\.[gx]z)?|tgz)(?:\?[^"']*)?
+    )
+    ["']
+    """
+)
+
+
 class Tools:
     class Valves(BaseModel):
         MAX_RESULTS: int = Field(default=10, description="Max items per source.")
-        TIMEOUT: int = Field(default=20, description="HTTP timeout per request, seconds.")
+        TIMEOUT: int = Field(default=30, description="HTTP timeout per request, seconds.")
         STEAM_REGION: str = Field(default="us", description="Country code for Steam endpoints.")
         STEAM_LANGUAGE: str = Field(default="english", description="Language for Steam endpoints.")
         GOG_LOCALE: str = Field(default="en-US", description="GOG locale.")
@@ -55,8 +80,70 @@ class Tools:
             description="Prefer Internet Archive items that are browser-playable via emulator.",
         )
 
+        # ── Configurable marketplace layer ───────────────────────────────
+        MARKETPLACES: str = Field(
+            default="[]",
+            description=(
+                "JSON list of marketplace configs. Each entry is a dict with: "
+                "name (str), search_url (str with {query} placeholder, url-encoded), "
+                "result_pattern (regex with two capture groups: 1=item URL, 2=item title), "
+                "download_pattern (optional regex with one capture group for direct download URLs / magnets — "
+                "if omitted, a generic .zip/.iso/.7z/.torrent/magnet link extractor is used). "
+                "You are responsible for the legality of sources you configure here."
+            ),
+        )
+        DOWNLOAD_DIR: str = Field(
+            default=str(Path.home() / "Games" / "Downloads"),
+            description="Destination directory for marketplace downloads.",
+        )
+        WRITE_ENABLED: bool = Field(
+            default=False,
+            description="Master switch — file writes only happen when this is on.",
+        )
+        REQUEST_HEADERS: str = Field(
+            default="{}",
+            description='Extra HTTP headers (JSON object) sent with marketplace requests, e.g. {"Cookie":"...","Referer":"https://..."}',
+        )
+        USER_AGENT: str = Field(
+            default="Mozilla/5.0 (X11; Linux x86_64) local-ai-stack/1.0 free-games",
+            description="User-Agent for marketplace and download requests.",
+        )
+        FOLLOW_REDIRECTS: bool = Field(
+            default=True,
+            description="Follow HTTP redirects on marketplace requests.",
+        )
+
     def __init__(self):
         self.valves = self.Valves()
+
+    # ── Marketplace plumbing ──────────────────────────────────────────────
+
+    def _marketplaces(self) -> list[dict]:
+        try:
+            entries = json.loads(self.valves.MARKETPLACES or "[]")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"MARKETPLACES is not valid JSON: {e}") from None
+        if not isinstance(entries, list):
+            raise ValueError("MARKETPLACES must be a JSON array.")
+        out = []
+        for i, e in enumerate(entries):
+            if not isinstance(e, dict):
+                raise ValueError(f"MARKETPLACES[{i}] must be an object.")
+            for k in ("name", "search_url", "result_pattern"):
+                if not e.get(k):
+                    raise ValueError(f"MARKETPLACES[{i}] missing required field '{k}'.")
+            out.append(e)
+        return out
+
+    def _extra_headers(self) -> dict:
+        try:
+            extra = json.loads(self.valves.REQUEST_HEADERS or "{}")
+        except json.JSONDecodeError:
+            extra = {}
+        h = {"User-Agent": self.valves.USER_AGENT, "Accept": "*/*"}
+        if isinstance(extra, dict):
+            h.update({k: str(v) for k, v in extra.items()})
+        return h
 
     # ── GamerPower (cross-platform free-game aggregator) ─────────────────
 
@@ -550,6 +637,281 @@ class Tools:
             )
         return "\n".join(out)
 
+    # ── Configurable marketplace layer ───────────────────────────────────
+
+    async def list_marketplaces(self, __user__: Optional[dict] = None) -> str:
+        """
+        Show every marketplace currently configured in the MARKETPLACES
+        valve. Reading this is the fastest way to confirm the JSON parsed
+        and to see which `name` values the search/extract methods will
+        accept.
+        :return: Markdown table of name + search URL template.
+        """
+        try:
+            mps = self._marketplaces()
+        except ValueError as e:
+            return f"MARKETPLACES configuration error: {e}"
+        if not mps:
+            return (
+                "No marketplaces configured. Set the MARKETPLACES valve to a JSON list, e.g.:\n\n"
+                '  [{"name":"Example","search_url":"https://example.com/?s={query}",'
+                '"result_pattern":"<h2 class=\\"entry-title\\"><a[^>]+href=\\"([^\\"]+)\\"[^>]*>([^<]+)</a>",'
+                '"download_pattern":"href=\\"(https?://[^\\"]+\\\\.(?:zip|iso|7z))\\""}]'
+            )
+        out = ["## Configured marketplaces\n"]
+        for m in mps:
+            out.append(
+                f"- **{m['name']}**\n"
+                f"   search: `{m['search_url']}`\n"
+                f"   result_pattern set: yes  ·  custom download_pattern: {'yes' if m.get('download_pattern') else 'no (using generic)'}"
+            )
+        return "\n".join(out)
+
+    async def search_marketplace(
+        self,
+        name: str,
+        query: str,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Search a single configured marketplace by `name`. Pulls
+        search_url.format(query=...), runs result_pattern across the response,
+        returns matched (URL, title) pairs.
+        :param name: The `name` of one entry in the MARKETPLACES valve.
+        :param query: Title to search for.
+        :return: Markdown list of result pages.
+        """
+        try:
+            mps = self._marketplaces()
+        except ValueError as e:
+            return f"MARKETPLACES configuration error: {e}"
+        match = next((m for m in mps if m["name"].lower() == name.lower()), None)
+        if not match:
+            names = ", ".join(m["name"] for m in mps) or "(none)"
+            return f"No marketplace named '{name}'. Configured: {names}"
+        try:
+            search_url = match["search_url"].format(query=quote(query, safe=""))
+        except (KeyError, IndexError):
+            return f"search_url for '{name}' must contain {{query}} placeholder."
+        try:
+            pat = re.compile(match["result_pattern"], flags=re.IGNORECASE | re.DOTALL)
+        except re.error as e:
+            return f"result_pattern for '{name}' is not a valid regex: {e}"
+
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=self.valves.FOLLOW_REDIRECTS) as c:
+            try:
+                r = await c.get(search_url, headers=self._extra_headers())
+            except Exception as e:
+                return f"{name}: request failed: {e}"
+            if r.status_code >= 400:
+                return f"{name}: HTTP {r.status_code} from {search_url}"
+            html = r.text
+
+        hits = pat.findall(html)
+        if not hits:
+            return f"{name}: no result_pattern matches for '{query}' at {search_url}"
+
+        base = f"{urlparse(search_url).scheme}://{urlparse(search_url).netloc}"
+        out = [f"## {name}: {query}\n"]
+        for h in hits[: self.valves.MAX_RESULTS]:
+            url, title = (h[0], h[1]) if isinstance(h, tuple) else (h, "")
+            full = url if url.startswith("http") else urljoin(base + "/", url)
+            out.append(f"- **{html_mod.unescape(title or full)}**\n   {full}")
+        return "\n".join(out)
+
+    async def search_all_marketplaces(
+        self,
+        query: str,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Run `search_marketplace` against every configured marketplace in
+        parallel and return one combined digest.
+        :param query: Title to search for.
+        :return: Combined Markdown.
+        """
+        try:
+            mps = self._marketplaces()
+        except ValueError as e:
+            return f"MARKETPLACES configuration error: {e}"
+        if not mps:
+            return "No marketplaces configured (see list_marketplaces)."
+        results = await asyncio.gather(
+            *(self.search_marketplace(m["name"], query) for m in mps),
+            return_exceptions=True,
+        )
+        out = [f"# Configured-marketplace search: {query}"]
+        for m, res in zip(mps, results):
+            if isinstance(res, Exception):
+                out.append(f"\n## {m['name']}\n_(failed: {res})_")
+            else:
+                out.append("\n" + str(res))
+        return "\n".join(out)
+
+    async def extract_downloads(
+        self,
+        page_url: str,
+        marketplace_name: str = "",
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Fetch a marketplace item page and extract direct-download links from
+        it. If `marketplace_name` is set and the marketplace has a custom
+        `download_pattern` regex, that's used; otherwise a generic regex
+        matches `<a href="…">` URLs ending in zip/7z/rar/iso/torrent and
+        magnet: links.
+        :param page_url: Item / detail page URL.
+        :param marketplace_name: Optional — use this marketplace's custom
+                                 download_pattern if set.
+        :return: Markdown list of extracted download URLs.
+        """
+        custom_pat: Optional[re.Pattern] = None
+        if marketplace_name:
+            try:
+                mps = self._marketplaces()
+            except ValueError as e:
+                return f"MARKETPLACES configuration error: {e}"
+            mp = next((m for m in mps if m["name"].lower() == marketplace_name.lower()), None)
+            if mp and mp.get("download_pattern"):
+                try:
+                    custom_pat = re.compile(mp["download_pattern"], flags=re.IGNORECASE | re.DOTALL)
+                except re.error as e:
+                    return f"download_pattern for '{marketplace_name}' is not a valid regex: {e}"
+
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=self.valves.FOLLOW_REDIRECTS) as c:
+            try:
+                r = await c.get(page_url, headers=self._extra_headers())
+            except Exception as e:
+                return f"page fetch failed: {e}"
+            if r.status_code >= 400:
+                return f"HTTP {r.status_code} from {page_url}"
+            html = r.text
+
+        pat = custom_pat or _GENERIC_DL_REGEX
+        urls = []
+        for m in pat.finditer(html):
+            try:
+                u = m.group(1)
+            except IndexError:
+                u = m.group(0)
+            if not u:
+                continue
+            if not u.startswith(("http", "magnet:")):
+                u = urljoin(page_url, u)
+            if u not in urls:
+                urls.append(u)
+        if not urls:
+            return f"No download links matched on {page_url} (pattern: {'custom' if custom_pat else 'generic'})"
+        out = [f"## Download links extracted from {page_url}\n"]
+        for u in urls[:30]:
+            out.append(f"- {u}")
+        return "\n".join(out)
+
+    async def download(
+        self,
+        url: str,
+        filename: str = "",
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Stream-download a single URL into DOWNLOAD_DIR. Gated behind
+        WRITE_ENABLED. Magnet links are not downloaded here — copy them to
+        the qBittorrent tool instead.
+        :param url: Direct download URL (http(s)://).
+        :param filename: Optional override; defaults to the URL's basename.
+        :return: Final path on disk + bytes written.
+        """
+        if not self.valves.WRITE_ENABLED:
+            return "Download blocked: flip WRITE_ENABLED in this tool's Valves first."
+        if url.startswith("magnet:"):
+            return "Magnet links are not downloaded by this tool — pass to the qBittorrent tool's add_torrent."
+        if not url.startswith("http"):
+            return f"Refusing non-http(s) URL: {url}"
+        out_dir = Path(self.valves.DOWNLOAD_DIR).expanduser()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if not filename:
+            base = os.path.basename(urlparse(url).path) or "download"
+            ext = (base.rsplit(".", 1) + ["bin"])[-1] if "." in base else "bin"
+            filename = _safe_filename(base, default_ext=ext)
+        else:
+            filename = _safe_filename(filename)
+        dest = out_dir / filename
+
+        bytes_written = 0
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=self.valves.FOLLOW_REDIRECTS) as c:
+            try:
+                async with c.stream("GET", url, headers=self._extra_headers()) as resp:
+                    if resp.status_code >= 400:
+                        return f"HTTP {resp.status_code} from {url}"
+                    with dest.open("wb") as fh:
+                        async for chunk in resp.aiter_bytes(chunk_size=128 * 1024):
+                            fh.write(chunk)
+                            bytes_written += len(chunk)
+            except Exception as e:
+                return f"download failed after {bytes_written:,} bytes: {e}"
+
+        return f"Wrote {bytes_written:,} bytes → {dest}"
+
+    async def search_and_extract(
+        self,
+        name: str,
+        query: str,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """
+        Convenience: search a marketplace, then for each result page also
+        run extract_downloads. Returns one digest with item titles plus
+        every download URL discovered on each item's page.
+        :param name: Marketplace name (must exist in MARKETPLACES).
+        :param query: Title to search.
+        :return: Markdown digest.
+        """
+        try:
+            mps = self._marketplaces()
+        except ValueError as e:
+            return f"MARKETPLACES configuration error: {e}"
+        match = next((m for m in mps if m["name"].lower() == name.lower()), None)
+        if not match:
+            names = ", ".join(m["name"] for m in mps) or "(none)"
+            return f"No marketplace named '{name}'. Configured: {names}"
+        try:
+            search_url = match["search_url"].format(query=quote(query, safe=""))
+        except (KeyError, IndexError):
+            return f"search_url for '{name}' must contain {{query}} placeholder."
+        try:
+            pat = re.compile(match["result_pattern"], flags=re.IGNORECASE | re.DOTALL)
+        except re.error as e:
+            return f"result_pattern for '{name}' is not a valid regex: {e}"
+
+        async with httpx.AsyncClient(timeout=self.valves.TIMEOUT, follow_redirects=self.valves.FOLLOW_REDIRECTS) as c:
+            r = await c.get(search_url, headers=self._extra_headers())
+            if r.status_code >= 400:
+                return f"{name}: HTTP {r.status_code} from {search_url}"
+            html = r.text
+            hits = pat.findall(html)
+        if not hits:
+            return f"{name}: no result_pattern matches for '{query}'"
+
+        base = f"{urlparse(search_url).scheme}://{urlparse(search_url).netloc}"
+        items: list[tuple[str, str]] = []
+        for h in hits[: self.valves.MAX_RESULTS]:
+            url, title = (h[0], h[1]) if isinstance(h, tuple) else (h, "")
+            full = url if url.startswith("http") else urljoin(base + "/", url)
+            items.append((html_mod.unescape(title or full), full))
+
+        # Walk each item page in parallel, extracting downloads.
+        coros = [self.extract_downloads(u, marketplace_name=name) for _, u in items]
+        extracts = await asyncio.gather(*coros, return_exceptions=True)
+        out = [f"# {name}: {query}"]
+        for (title, page), ex in zip(items, extracts):
+            out.append(f"\n## {title}\n   page: {page}")
+            if isinstance(ex, Exception):
+                out.append(f"   _(extract failed: {ex})_")
+            else:
+                out.append(str(ex))
+        return "\n".join(out)
+
     # ── Aggregator ────────────────────────────────────────────────────────
 
     async def find_free(
@@ -557,6 +919,7 @@ class Tools:
         query: str = "",
         include_archives: bool = True,
         include_foss: bool = True,
+        include_marketplaces: bool = True,
         __user__: Optional[dict] = None,
     ) -> str:
         """
@@ -564,12 +927,14 @@ class Tools:
         GOG + itch.io) plus, when `include_archives`, preservation archives
         (Internet Archive software library + MyAbandonware +
         OldGamesDownload), plus FOSS games (libregamewiki) when
-        `include_foss`.
+        `include_foss`, plus every entry in the MARKETPLACES valve when
+        `include_marketplaces` and one or more marketplaces are configured.
         :param query: Title or keyword. When empty, returns only the
                       promotional sources (which list whatever's free now).
         :param include_archives: Include preservation archives (only useful
                                  when `query` is set).
         :param include_foss: Include libregamewiki FOSS-games search.
+        :param include_marketplaces: Include every configured marketplace.
         :return: Combined Markdown digest.
         """
         coros: list[Any] = [
@@ -599,6 +964,14 @@ class Tools:
         if query and include_foss:
             coros.append(self.libregamewiki(query))
             labels.append("libregamewiki (FOSS games)")
+        if query and include_marketplaces:
+            try:
+                mps = self._marketplaces()
+            except ValueError:
+                mps = []
+            for m in mps:
+                coros.append(self.search_marketplace(m["name"], query))
+                labels.append(f"Marketplace: {m['name']} (user-configured)")
 
         results = await asyncio.gather(*coros, return_exceptions=True)
         out = [f"# Free / archived games digest" + (f": {query}" if query else "")]

@@ -319,8 +319,8 @@ tools:
     file: tools/free_games.py
     group: entertainment
     subgroup: games
-    title: "Free & Archived Games — GamerPower + Epic + Steam + GOG + IA + FOSS"
-    description: "Currently-free game promotions (GamerPower aggregator, Epic weekly free, Steam free-to-play, GOG $0 catalogue, itch.io free indies) plus game-preservation archives (Internet Archive Software Library — often browser-playable; MyAbandonware; OldGamesDownload) plus FOSS / open-source games (libregamewiki). Aggregator runs every layer in parallel for one query."
+    title: "Free & Archived Games — GamerPower + Epic + Steam + GOG + IA + FOSS + configurable marketplaces"
+    description: "Currently-free game promotions (GamerPower aggregator, Epic weekly free, Steam free-to-play, GOG $0 catalogue, itch.io free indies) plus game-preservation archives (Internet Archive Software Library — often browser-playable; MyAbandonware; OldGamesDownload) plus FOSS / open-source games (libregamewiki). Plus a configurable marketplace layer — drop URL templates + regex selectors for arbitrary game sites into the MARKETPLACES valve and the tool will search them, extract download links, and (with WRITE_ENABLED) stream them to DOWNLOAD_DIR. Aggregator runs every layer in parallel for one query."
     requires_service: null
     default_enabled: true
     api_key_required: false
