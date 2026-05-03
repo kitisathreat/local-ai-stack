@@ -681,9 +681,8 @@ tests/
   health_areas/       One file per area (backend, vram, cloudflared, …)
   test_*.py           Pytest suite (no GPU required, runs in Linux CI)
 docs/
-  overview.md         Architecture + tier table
+  overview.md         2-minute architectural tour (links back here for specifics)
   manual-setup.md     Manual install (when you don't trust the wizard)
-  backend-startup.md  What happens between launcher and ready-state
   images/             SVG mockups (referenced by this README)
 .github/workflows/    ci.yml · install-and-startup.yml · update-project-fields.yml
 ```
