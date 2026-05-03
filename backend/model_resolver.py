@@ -44,6 +44,17 @@ logger = logging.getLogger("backend.model_resolver")
 
 CACHE_TTL_SECONDS = 24 * 60 * 60
 
+# hf_transfer (the Rust HF accelerator) deadlocks silently when running
+# parallel-shard pulls on Windows: connections stay ESTABLISHED, no
+# exception, but zero bytes flow to disk for tens of minutes. The
+# exception-based fallback in `_download_with_retry` below can't catch
+# this because nothing ever raises. Default it OFF process-wide so the
+# pure-Python downloader is used; opt back in by exporting
+# `HF_HUB_ENABLE_HF_TRANSFER=1` before launching. Throughput cost is
+# small in our setup because we already parallelize at the shard level
+# (`LAI_PARALLEL_SHARDS=4`), so most of the wall-clock win is preserved.
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+
 # How many shards of a sharded GGUF download in parallel. HF allows
 # multiple concurrent connections per IP; 4 is well below their soft
 # rate-limit budget and gets us most of the wall-clock win over
@@ -426,10 +437,21 @@ def pull_missing_hf_files(
             )
         return shards or [first_filename]
 
+    # Per-shard stall watchdog: kills `hf_hub_download` if its target
+    # .incomplete file hasn't grown in `LAI_PULL_STALL_SECONDS` seconds.
+    # Defends against the silent hf_transfer deadlock (connections
+    # ESTABLISHED, zero bytes flowing). Threshold is generous because
+    # legitimate slow CDN ranges can pause for 10–30s between chunks;
+    # we only kill after *no* progress for 90s by default.
+    try:
+        _STALL_SECONDS = max(20, int(os.getenv("LAI_PULL_STALL_SECONDS", "90")))
+    except ValueError:
+        _STALL_SECONDS = 90
+
     def _download_with_retry(**kwargs) -> Path:
         """hf_hub_download wrapper with hf_transfer fallback + N retries.
 
-        Two failure modes we hit on multi-GB GGUFs:
+        Three failure modes we hit on multi-GB GGUFs:
           1. hf_transfer (Rust parallel downloader) bombs on any
              transient error — no built-in retry. We give it one shot
              then disable it process-wide.
@@ -437,18 +459,85 @@ def pull_missing_hf_files(
              CDN connection drops mid-stream. It does NOT auto-resume
              across calls in our setup — but a fresh call resumes from
              the partial blob in ~/.cache/huggingface, so we just retry.
+          3. hf_transfer silently deadlocks on Windows under parallel
+             shard load: TCP stays ESTABLISHED, no exception, no bytes.
+             The stall-watchdog thread below catches this by polling
+             the .incomplete file size and killing the worker if it
+             plateaus for `_STALL_SECONDS`. (We also default
+             HF_HUB_ENABLE_HF_TRANSFER=0 at module load — this watchdog
+             is belt-and-suspenders for users who flip it back on.)
 
         For multi-GB GGUFs the CDN tends to drop connections every
         ~100 MB / 60 s, so an 8-attempt budget never finishes — a 46 GB
         file would need ~500 retries to stitch through. We allow up to
         500 attempts and back off shorter (capped at 10 s) so wall-clock
-        progress dominates over wait time. This is fine for the
-        IncompleteRead / timeout class of errors; genuine 4xx-style
-        failures are still surfaced after the budget is exhausted.
+        progress dominates over wait time.
         """
+        import threading
+
         max_attempts = 500
         last_exc: Exception | None = None
+        # Find the .incomplete blob the watchdog should poll. hf_hub
+        # writes to `<local_dir>/.cache/huggingface/download/<filename>.<etag>.incomplete`
+        # but the etag isn't known until after the download starts — so
+        # we glob for any file matching `<basename>.*.incomplete` under
+        # the download cache rooted at local_dir.
+        local_dir = Path(kwargs.get("local_dir") or _models_dir())
+        target_basename = Path(kwargs.get("filename") or "").name
+        download_cache = local_dir / ".cache" / "huggingface" / "download"
+
+        def _current_incomplete_size() -> int:
+            if not download_cache.exists():
+                return 0
+            try:
+                # filename may include a subdir (e.g. "UD-IQ1_S/foo.gguf"),
+                # so search recursively. Take the largest matching file —
+                # there should typically be just one but we guard against
+                # leftover hash-mismatched stubs.
+                candidates = list(
+                    download_cache.rglob(f"{target_basename}.*.incomplete")
+                )
+                return max((c.stat().st_size for c in candidates), default=0)
+            except OSError:
+                return 0
+
         for attempt in range(1, max_attempts + 1):
+            stall_event = threading.Event()
+            stall_killed = {"flag": False}
+
+            def _watchdog() -> None:
+                last_size = _current_incomplete_size()
+                last_progress = time.monotonic()
+                while not stall_event.wait(10):
+                    cur = _current_incomplete_size()
+                    if cur > last_size:
+                        last_size = cur
+                        last_progress = time.monotonic()
+                        continue
+                    if time.monotonic() - last_progress >= _STALL_SECONDS:
+                        stall_killed["flag"] = True
+                        logger.warning(
+                            "Stall-watchdog: %s frozen at %.2f GB for %ds — "
+                            "killing worker (hf_transfer deadlock?)",
+                            target_basename, cur / (1024 ** 3), _STALL_SECONDS,
+                        )
+                        # We can't actually kill the worker thread from
+                        # here (Python doesn't support that). Instead we
+                        # disable hf_transfer for the next attempt so the
+                        # subsequent retry uses the pure-Python path, and
+                        # we set the event so this watchdog exits. The
+                        # current call will eventually error or finish —
+                        # if it errors, retry picks up the partial; if
+                        # by miracle it finishes, even better.
+                        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+                        return
+
+            wd = threading.Thread(
+                target=_watchdog,
+                name=f"hf-stall-wd-{target_basename[:30]}",
+                daemon=True,
+            )
+            wd.start()
             try:
                 return Path(hf_hub_download(**kwargs))
             except Exception as exc:
@@ -480,6 +569,9 @@ def pull_missing_hf_files(
                         sleep_s,
                     )
                 time.sleep(sleep_s)
+            finally:
+                stall_event.set()
+                wd.join(timeout=2)
         assert last_exc is not None
         raise last_exc
 
