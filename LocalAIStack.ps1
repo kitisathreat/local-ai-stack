@@ -39,6 +39,13 @@ param(
     [Parameter(ParameterSetName = 'Start')] [switch]$NoUpdateCheck,
     [Parameter(ParameterSetName = 'Start')] [switch]$Offline,
     [Parameter(ParameterSetName = 'Start')] [switch]$NoGui,
+    # Pre-spawn the embedding + reranker llama-servers so RAG/memory
+    # have zero cold-start latency. Costs ~3 GB of permanent VRAM tax.
+    # Off by default — first /rag or /memory call lazily spawns
+    # embedding via the scheduler (~3-5 s cold). Set this when RAG
+    # fires constantly (heavy doc-indexing, persistent memory loops).
+    # Equivalent env var: LAI_EAGER_RAG_SERVICES=1.
+    [Parameter(ParameterSetName = 'Start')] [switch]$EagerRagServices,
 
     # Modifier flag for -Setup
     [Parameter(ParameterSetName = 'Setup')]  [switch]$SkipModels,
@@ -678,6 +685,18 @@ function Invoke-Start {
         Write-Host '   vision tier will cold-spawn on first image request' -ForegroundColor DarkGray
     }
 
+    # Eager RAG services: pre-spawn embedding + reranker so first-RAG
+    # latency is zero. Off by default (since 2026-05-03) — saves ~3 GB
+    # VRAM on machines where RAG/memory don't fire constantly. The
+    # backend's scheduler will lazy-spawn embedding on the first
+    # /rag or /memory call (cold load ~3-5 s on warm OS cache);
+    # reranker degrades to embedding-only ranking when absent
+    # (cosine top-k from Qdrant, no quality gate from cross-encoder).
+    $eagerRag = $EagerRagServices.IsPresent -or ($env:LAI_EAGER_RAG_SERVICES -in @('1','true','yes','on'))
+    if (-not $eagerRag) {
+        Write-Step 'Skipping pre-spawn of embedding + reranker (lazy mode — pass -EagerRagServices to pre-spawn)'
+    } else {
+
     Write-Step 'Starting llama-server (embedding tier, port 8090)'
     $embedGguf = Join-Path $DataDir 'models\embedding.gguf'
     if ((Test-Path $llamaBin) -and (Test-Path $embedGguf)) {
@@ -719,6 +738,7 @@ function Invoke-Start {
     } else {
         Write-Warn2 "llama-server or reranker GGUF missing — RAG falls back to embedding-only ranking"
     }
+    }   # end if ($eagerRag)
 
     Write-Step 'Starting jupyter-lab (code interpreter)'
     $jupyter = Join-Path $VendorDir 'venv-jupyter\Scripts\jupyter-lab.exe'
