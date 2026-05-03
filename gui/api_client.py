@@ -319,13 +319,13 @@ class BackendClient:
             r.raise_for_status()
             return r.json()
 
-    async def airgap_state(self) -> dict:
+    async def admin_airgap_state(self) -> dict:
         async with self._client() as c:
             r = await c.get("/admin/airgap")
             r.raise_for_status()
             return r.json()
 
-    async def vram_status(self) -> dict:
+    async def admin_vram_status(self) -> dict:
         async with self._client() as c:
             r = await c.get("/admin/vram")
             r.raise_for_status()

@@ -1161,7 +1161,7 @@ class AdminWindow(QMainWindow):
 
     async def _refresh_airgap(self) -> None:
         try:
-            state = await self._client.airgap_state()
+            state = await self._client.admin_airgap_state()
             self._airgap_enabled = bool(state.get("enabled"))
         except Exception:
             self._airgap_enabled = False
@@ -1179,7 +1179,7 @@ class AdminWindow(QMainWindow):
 
     async def _refresh_vram(self) -> None:
         try:
-            data = await self._client.vram_status()
+            data = await self._client.admin_vram_status()
         except Exception:
             data = {}
         self._vram_table.setRowCount(0)
