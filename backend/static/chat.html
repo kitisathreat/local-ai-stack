@@ -130,6 +130,36 @@
       0%   { transform: translateX(-100%); }
       100% { transform: translateX(285%); }
     }
+    /* Forced-tool prefix UI. When the user types "*/" the textarea
+       grows a hint chip that confirms which registered tool will be
+       pinned (or warns when the partial name doesn't resolve), plus an
+       inline autocomplete list so the user can pick by tab/click
+       instead of typing the full module.method. */
+    #forced-tool-hint {
+      padding: 4px 10px; font-size: 11px; color: #4caf50;
+      border-top: 1px solid var(--border);
+      font-family: 'Cascadia Code', Consolas, monospace;
+    }
+    #forced-tool-hint.unknown { color: var(--danger); }
+    #forced-tool-hint.hidden { display: none; }
+    #tool-autocomplete {
+      max-height: 160px; overflow-y: auto;
+      border-top: 1px solid var(--border);
+      font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px;
+    }
+    #tool-autocomplete.hidden { display: none; }
+    #tool-autocomplete .ac-row {
+      padding: 4px 10px; cursor: pointer; color: var(--fg);
+      border-bottom: 1px solid var(--border);
+    }
+    #tool-autocomplete .ac-row:last-child { border-bottom: none; }
+    #tool-autocomplete .ac-row:hover,
+    #tool-autocomplete .ac-row.active {
+      background: #2a2d36; color: var(--accent);
+    }
+    #tool-autocomplete .ac-row .ac-hint {
+      color: var(--muted); font-size: 11px; margin-left: 8px;
+    }
     /* Per-message edit affordance. The pencil shows on hover for user
        turns and lets the user rewrite a previous prompt — committing the
        edit truncates the conversation back to that point and re-sends
@@ -655,7 +685,9 @@
     </div>
     <footer>
       <div id="composer-wrap">
-        <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
+        <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline. Prefix with */tool_name to force a specific tool." rows="1"></textarea>
+        <div id="forced-tool-hint" class="hidden"></div>
+        <div id="tool-autocomplete" class="hidden"></div>
         <div id="attached-list"></div>
         <div class="composer-tools">
           <button class="icon-btn" id="tools-btn" title="Enable tools">🔧 Tools <span id="tools-count" style="color:var(--muted);"></span></button>
@@ -1950,6 +1982,36 @@
     }
 
     composerEl.addEventListener('keydown', (e) => {
+      // Forced-tool autocomplete intercepts arrow / tab / enter while
+      // the suggestion list is open. Only "send" once the list is
+      // closed so the user can pick a tool with Enter without firing
+      // the message.
+      const acOpen = !acEl.classList.contains('hidden') && acItems.length > 0;
+      if (acOpen) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          acIndex = (acIndex + 1) % acItems.length;
+          refreshForcedToolUI();
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          acIndex = (acIndex - 1 + acItems.length) % acItems.length;
+          refreshForcedToolUI();
+          return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+          e.preventDefault();
+          acceptAutocomplete();
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          acEl.classList.add('hidden');
+          acItems = []; acIndex = -1;
+          return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
@@ -1958,11 +2020,140 @@
     sendEl.addEventListener('click', sendMessage);
 
     let streaming = false;
+    // Parse a "*/<tool_name> <prompt>" prefix into a forced-tool
+    // invocation. Returns {toolName, prompt} when the prefix is
+    // recognised against the loaded registry, else null. The tool name
+    // can be `<module>` (single-method modules) or `<module>.<method>`,
+    // matching what /tools surfaces in toolState.
+    //
+    // Example: "*/web.search latest CUDA release notes"
+    //   → { toolName: "web.search", prompt: "latest CUDA release notes" }
+    function parseForcedToolPrefix(text) {
+      if (!text || !text.startsWith('*/')) return null;
+      const rest = text.slice(2);
+      // Split on the first whitespace; everything before is the tool
+      // identifier. Allow letters, digits, underscore, dot, hyphen so
+      // both `module` and `module.method` parse cleanly.
+      const m = rest.match(/^([A-Za-z0-9_.\-]+)(?:\s+([\s\S]*))?$/);
+      if (!m) return null;
+      const toolName = m[1];
+      const prompt = (m[2] || '').trim();
+      // Resolve against the registry — only force when the name is
+      // actually registered. Unknown names fall through to a normal
+      // prompt so a stray "*/foo" typed in chat doesn't silently break.
+      if (!toolState.has(toolName)) return null;
+      return { toolName, prompt };
+    }
+
+    // ── Forced-tool composer hint + autocomplete ─────────────────────
+    // While the textarea begins with "*/", surface a hint chip and an
+    // autocomplete list of matching tool names from the loaded
+    // registry. Arrow-up/down moves the highlight, Tab/Enter accepts.
+    const forcedHintEl = $('forced-tool-hint');
+    const acEl = $('tool-autocomplete');
+    let acItems = [];
+    let acIndex = -1;
+
+    function currentForcedQuery() {
+      const v = composerEl.value;
+      if (!v.startsWith('*/')) return null;
+      const rest = v.slice(2);
+      // Whatever's typed before the first whitespace is the partial
+      // tool name. Once the user types whitespace, autocomplete closes
+      // and we just show the resolved-tool hint chip.
+      const wsIdx = rest.search(/\s/);
+      if (wsIdx === -1) return { partial: rest, locked: false };
+      return { partial: rest.slice(0, wsIdx), locked: true };
+    }
+
+    function refreshForcedToolUI() {
+      const q = currentForcedQuery();
+      if (!q) {
+        forcedHintEl.classList.add('hidden');
+        acEl.classList.add('hidden');
+        acItems = []; acIndex = -1;
+        return;
+      }
+      // Resolve hint: exact match → green chip; partial match → muted.
+      if (toolState.has(q.partial)) {
+        forcedHintEl.classList.remove('hidden', 'unknown');
+        forcedHintEl.textContent = `↳ Forcing tool: ${q.partial}`;
+      } else if (q.locked) {
+        forcedHintEl.classList.remove('hidden');
+        forcedHintEl.classList.add('unknown');
+        forcedHintEl.textContent = `↳ Unknown tool "${q.partial}" — message will be sent as a normal prompt.`;
+      } else {
+        forcedHintEl.classList.add('hidden');
+      }
+      // Autocomplete is shown only while the user is still typing the
+      // tool identifier (no whitespace yet) and there's a partial.
+      if (!q.locked && q.partial.length > 0) {
+        const ql = q.partial.toLowerCase();
+        const matches = [];
+        toolState.forEach((_v, name) => {
+          if (name.toLowerCase().includes(ql)) matches.push(name);
+        });
+        // Prefer prefix matches over substring matches; cap at 8.
+        matches.sort((a, b) => {
+          const ap = a.toLowerCase().startsWith(ql) ? 0 : 1;
+          const bp = b.toLowerCase().startsWith(ql) ? 0 : 1;
+          return ap - bp || a.localeCompare(b);
+        });
+        acItems = matches.slice(0, 8);
+        if (acIndex >= acItems.length) acIndex = acItems.length - 1;
+        if (acIndex < 0 && acItems.length > 0) acIndex = 0;
+        if (acItems.length === 0) {
+          acEl.classList.add('hidden');
+        } else {
+          acEl.classList.remove('hidden');
+          acEl.innerHTML = acItems.map((name, i) =>
+            `<div class="ac-row${i === acIndex ? ' active' : ''}" data-i="${i}">`
+            + escapeHtml(name) + '</div>'
+          ).join('');
+        }
+      } else {
+        acEl.classList.add('hidden');
+        acItems = []; acIndex = -1;
+      }
+    }
+
+    function acceptAutocomplete(i) {
+      if (i == null) i = acIndex;
+      if (i < 0 || i >= acItems.length) return;
+      const name = acItems[i];
+      // Replace the partial with the full name + a trailing space so
+      // the user can immediately type the prompt.
+      composerEl.value = '*/' + name + ' ';
+      acEl.classList.add('hidden');
+      acItems = []; acIndex = -1;
+      composerEl.focus();
+      refreshForcedToolUI();
+    }
+
+    composerEl.addEventListener('input', refreshForcedToolUI);
+    acEl.addEventListener('mousedown', (e) => {
+      // mousedown (not click) so we beat the textarea's blur and don't
+      // lose focus before accepting.
+      const row = e.target.closest('.ac-row');
+      if (!row) return;
+      e.preventDefault();
+      acceptAutocomplete(parseInt(row.dataset.i, 10));
+    });
+
     async function sendMessage() {
       if (streaming) return;
-      const text = composerEl.value.trim();
-      if (!text && attached.length === 0) return;
+      const rawText = composerEl.value.trim();
+      if (!rawText && attached.length === 0) return;
+      // Detect & strip the "*/<tool_name>" manual-invocation prefix.
+      // When present, we force enabled_tools to just that one tool +
+      // tool_choice={function:{name}} so the model is required to call
+      // it on this turn. The user-visible bubble keeps the original
+      // text (so the conversation is self-documenting) but the message
+      // sent to the model has the prefix stripped.
+      const forced = parseForcedToolPrefix(rawText);
+      const text = forced ? forced.prompt : rawText;
       composerEl.value = '';
+      refreshForcedToolUI();   // hide the prefix hint chip + autocomplete
 
       // Upload any attached files first. Each call returns an
       // attachment_id we hand to /v1/chat/completions; the backend
@@ -1985,10 +2176,15 @@
       }
 
       // Surface attachments inline in the user message bubble so the
-      // chat history is self-explanatory.
-      const visibleText = text + (uploadList.length
+      // chat history is self-explanatory. For forced-tool turns we
+      // keep the original "*/tool_name …" rendering visible so the
+      // user can see at a glance which tool was pinned.
+      const visibleText = rawText + (uploadList.length
         ? '\n\n_attached: ' + uploadList.map(a => a.name).join(', ') + '_'
         : '');
+      // For the message *sent to the model*, drop the "*/tool_name"
+      // prefix — the model only needs the underlying request, with
+      // tool_choice doing the actual pinning.
       history.push({ role: 'user', content: text || '(attachment only)' });
       updateCtxIndicator();
       appendMsg('user', visibleText);
@@ -2037,6 +2233,18 @@
         // preserves backwards compat with handlers that don't know
         // about it yet.
         if (toolState.size > 0) body.enabled_tools = toolNames;
+        // "*/tool_name" manual invocation overrides the toggle list:
+        // we narrow enabled_tools to just that one tool AND set
+        // tool_choice to OpenAI's "force this function" shape so the
+        // model is required to call it (rather than describing it).
+        // Backend already honors tool_choice (see main.py:1127).
+        if (forced) {
+          body.enabled_tools = [forced.toolName];
+          body.tool_choice = {
+            type: 'function',
+            function: { name: forced.toolName },
+          };
+        }
         if (attachmentIds.length) body.attachment_ids = attachmentIds;
         // Variant sub-selector: only forward when a non-default value
         // is picked AND the variant select is visible for the current
