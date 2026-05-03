@@ -625,10 +625,26 @@ class VRAMScheduler:
 
         if not _fits(_current_projected()):
             remaining = _current_projected()
-            raise VRAMExhausted(
-                f"Cannot fit tier needing {need:.1f}GB "
-                f"(pinned/in-use={remaining:.1f}GB, total={total}GB)"
-            )
+            actual_free_now = self.probe.free_gb(total)
+            actual_used_now = max(0.0, total - actual_free_now) if actual_free_now <= total else 0.0
+            untracked = max(0.0, actual_used_now - remaining)
+            # Surface the NVML reading + the untracked-VRAM gap so the
+            # message is actionable. The "pinned/in-use=0.0GB" reading
+            # was misleading by itself — when it's near zero but the
+            # spawn still fails, the cause is *untracked* VRAM (orphan
+            # llama-server, another process holding the GPU, etc.) and
+            # /admin/vram/probe will show the same drift.
+            from .error_codes import format_error, VRAM_EXHAUSTED
+            raise VRAMExhausted(format_error(
+                VRAM_EXHAUSTED,
+                f"need {need:.1f} GB + {headroom:.1f} GB headroom; "
+                f"scheduler-tracked in-use {remaining:.1f} GB; "
+                f"NVML actual free {actual_free_now:.1f} GB / total {total} GB; "
+                f"untracked VRAM (orphan or external consumer) "
+                f"{untracked:.1f} GB. "
+                "Check GET /admin/vram/probe for orphans; "
+                "POST /admin/vram/kill-orphans to reap them."
+            ))
 
     async def _unload(self, model: LoadedModel) -> None:
         """Must be called with `self._lock` held."""

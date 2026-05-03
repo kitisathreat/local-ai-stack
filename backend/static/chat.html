@@ -711,23 +711,33 @@
         }),
       });
       if (!r.ok) {
-        // Distinguish "wrong password" (401) from server-side problems
-        // (5xx) so a misconfigured backend doesn't silently look like
-        // the user's credentials got revoked. Try to surface the
-        // server's detail message when it's 5xx — it usually tells the
-        // user / admin exactly what to fix.
+        // Pull the LAI-* error code from the response (header or body)
+        // so the user gets actionable text + a tag they can quote in
+        // a bug report. The X-LAI-Error-Code header is set by
+        // backend/error_codes.py::raise_with_code; the body's `detail`
+        // is either a string (plain HTTPException) or an object with
+        // {code, detail} (raise_with_code path).
+        let code = r.headers.get('X-LAI-Error-Code') || '';
+        let detail = '';
+        try {
+          const body = await r.json();
+          if (body && body.detail) {
+            if (typeof body.detail === 'string') detail = body.detail;
+            else if (typeof body.detail === 'object') {
+              if (!code && body.detail.code) code = body.detail.code;
+              detail = body.detail.detail || detail;
+            }
+          }
+        } catch (_) { /* non-JSON body */ }
+        let msg;
         if (r.status >= 500) {
-          let detail = 'Server error during sign-in. Contact administrator.';
-          try {
-            const body = await r.json();
-            if (body && body.detail) detail = body.detail;
-          } catch (_) { /* non-JSON body, fall back to generic */ }
-          err.textContent = detail;
+          msg = detail || 'Server error during sign-in. Contact administrator.';
         } else if (r.status === 429) {
-          err.textContent = 'Too many sign-in attempts — please wait a moment and try again.';
+          msg = detail || 'Too many sign-in attempts — please wait a moment and try again.';
         } else {
-          err.textContent = 'Invalid username or password.';
+          msg = detail || 'Invalid username or password.';
         }
+        err.textContent = code ? `${msg} [${code}]` : msg;
         return;
       }
       const info = await r.json();
@@ -1933,8 +1943,15 @@
                   const name = chunk.data && chunk.data.name;
                   label = name ? `Calling tool: ${name}…` : 'Calling tool…';
                 } else if (t === 'error') {
-                  const msg = (chunk.data && chunk.data.message) || 'Unknown error';
-                  targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(msg) + '</em>';
+                  const data = chunk.data || {};
+                  const msg = data.message || 'Unknown error';
+                  // Surface the LAI-* error code so the user can quote
+                  // it in a bug report and so we can branch on common
+                  // recoverable cases (queue full / vram exhausted) in
+                  // the UI without parsing prose.
+                  const code = data.code || '';
+                  const tag = code ? ' <span style="color:#888;font-size:11px;">[' + escapeHtml(code) + ']</span>' : '';
+                  targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(msg) + '</em>' + tag;
                   firstTokenSeen = true;   // suppress further status
                   continue;
                 }
