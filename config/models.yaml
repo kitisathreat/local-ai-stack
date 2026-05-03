@@ -411,19 +411,10 @@ tiers:
       top_k: 20
       repeat_penalty: 1.0
       num_predict: 2048
-    vram_estimate_gb: 5.5                # was 7.5 — 4 slots × 65k q4_0 KV
-                                         # was the dominant cost; 2 slots
-                                         # halves it. ~4 GB weights + KV +
-                                         # 0.5 GB spec-decode draft.
+    vram_estimate_gb: 7.5                # 7 GB weights + KV plus 0.5 GB
+                                         # for the spec-decode draft.
     parallel_workers_max: 3
-    # parallel_slots: 4 was over-provisioned. Each slot duplicates the
-    # KV buffer at the full ctx, so 4 × 65k cost ~4 GB just on KV. Two
-    # slots is plenty for the multi-agent worker pool (parallel_workers_max
-    # = 3 is the cap on concurrent agents anyway, and the orchestrator's
-    # multi-agent path already releases the orchestrator before spawning
-    # the worker pool — see vram.yaml::multi_agent.release_orchestrator_during_workers).
-    # Saves ~1-2 GB at active-worker peak.
-    parallel_slots: 2
+    parallel_slots: 4
     # Speculative decoding: Qwen3-0.6B draft. Smaller draft-max (6) since the
     # 9B target is itself fast — over-aggressive drafting eats more cycles than
     # it saves on a target this small. Same draft binary as the larger tiers
@@ -486,18 +477,12 @@ tiers:
     parallel_slots: 1
     n_gpu_layers: -1
     flash_attention: true
-    # KV cache q4_0 (was q8_0). Earlier comment said "q8_0 stays put"
-    # for older Qwen3-family standard attention, but per llama.cpp #21385
-    # plus Unsloth's docs for the UD-Q4_K_XL quant, Qwen3-Coder runs
-    # cleanly with q4_0 KV — same fused-FA kernel, no measurable
-    # quality regression on coding evals (Aider, HumanEval). Saves
-    # ~1 GB at 131k ctx. If a future audit catches a regression on
-    # something, flip back here without code changes.
-    cache_type_k: q4_0
-    cache_type_v: q4_0
+    cache_type_k: q8_0
+    cache_type_v: q8_0
     # MoE expert offload — keeps every attention layer on the GPU
     # (so FA stays correct) and offloads only routed-expert tensors
-    # to system RAM.
+    # to system RAM. Note: Qwen3-Coder-30B is older Qwen3 family with
+    # standard (non-hybrid) attention — q8_0 KV stays put.
     override_tensors:
       - ".ffn_.*_exps.=CPU"
     rope_scaling:
