@@ -49,8 +49,8 @@ tiers:
   highest_quality:
     category: "Reasoning"
     requires_nvme_spillover: true
-    name: "Highest Quality (Qwen3-Next 80B-A3B Thinking)"
-    description: "MoE with 3B active params, hybrid attention, thinking mode. ~45-55 t/s with expert offload to RAM."
+    name: "Reasoning · 80B · fast (~18 t/s)"
+    description: "Qwen3-Next 80B-A3B Thinking — fastest reasoning tier on this rig. 3 B active MoE w/ hybrid attention + spec-decode + KV-on-CPU. The default reasoning pick when interactive feel matters."
     backend: llama_cpp
     port: 8010
     model_tag: "qwen3-next-80b-a3b-thinking"
@@ -136,8 +136,8 @@ tiers:
   reasoning_max:
     category: "Reasoning"
     requires_nvme_spillover: true
-    name: "Reasoning Max (GPT-OSS-120B)"
-    description: "OpenAI's open-weight 120 B MoE (5.1 B active). Highest peak quality on hard reasoning; ~25-35 t/s with expert offload."
+    name: "Reasoning · 120B · balanced (~10 t/s)"
+    description: "OpenAI GPT-OSS-120B — balanced reasoning. 5.1 B active MoE, no spec-decode (tokenizer mismatch), KV-on-CPU. Higher peak quality than the 80B on math/derivation; ~half the throughput."
     backend: llama_cpp
     port: 8014
     model_tag: "gpt-oss-120b"
@@ -208,8 +208,8 @@ tiers:
   reasoning_xl:
     category: "Reasoning"
     requires_nvme_spillover: true
-    name: "Reasoning XL (Qwen3.5 397B-A17B)"
-    description: "397 B MoE / 17 B active per token. Top open-weight reasoning at IQ2_M; ~110 GB expert RAM spillover. Slower than reasoning_max."
+    name: "Reasoning · 397B · deep (~3 t/s)"
+    description: "Qwen3.5 397B-A17B at IQ2_M — deep reasoning tier. 17 B active per token, 110 GB experts spilled to RAM, KV-on-CPU. Top open-weight reasoning quality; aspirational throughput, not interactive."
     backend: llama_cpp
     port: 8015
     model_tag: "qwen3.5-397b-a17b"
@@ -300,8 +300,8 @@ tiers:
   frontier:
     category: "Reasoning"
     requires_nvme_spillover: true
-    name: "Frontier (DeepSeek V3.2-Speciale)"
-    description: "DeepSeek V3.2 at 1.6 bpw — currently blocked on this hardware. See operator note below."
+    name: "Reasoning · 671B · frontier (hardware-gated)"
+    description: "DeepSeek V3.2-Speciale at 1.6 bpw (UD-IQ1_S sharded ×4). GPT-5-class reasoning quality once it loads. Currently gated on the Windows pagefile size — see config note + README. After the pagefile grows past ~200 GB it'll spawn at ~0.5–2 t/s on this rig."
     # ── BLOCKED on this hardware ─────────────────────────────────────
     # frontier doesn't load on this 24 GB GPU + 125 GB RAM box with
     # llama.cpp b8992. Three configs were tried, all crash during
@@ -531,8 +531,8 @@ tiers:
   # Q4_K_M) which sits comfortably below the VRAM ceiling.
   coding:
     category: "Coding"
-    name: "Coding (Qwen3-Coder 30B-A3B)"
-    description: "Qwen3 coder MoE (3B active params). Native tool calling."
+    name: "Coding · 30B · fast (~26 t/s)"
+    description: "Qwen3-Coder 30B-A3B — default coder. 3 B active MoE w/ spec-decode + native tool calling. Switch to the 80B variant via the chat-UI sub-selector or `/coder big` for harder refactors."
     backend: llama_cpp
     port: 8013
     model_tag: "qwen3-coder-30b-a3b"
@@ -595,12 +595,14 @@ tiers:
       30b:
         # Default. `source` omitted on purpose: this variant inherits
         # gguf_path from the parent coding tier's model_resolver entry.
+        name: "30B · fast (~26 t/s)"
         model_tag: "qwen3-coder-30b-a3b"
         vram_estimate_gb: 6.5
       80b:
         # The big variant — points at the `coding_80b` entry in
         # model-sources.yaml. Re-uses the same -ot pattern (configured
         # on the parent tier; not duplicated here).
+        name: "80B · deep (~20 t/s)"
         source: "coding_80b"
         model_tag: "qwen3-coder-next-80b-a3b"
         vram_estimate_gb: 14.5
