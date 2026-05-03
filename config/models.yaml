@@ -565,16 +565,7 @@ tiers:
     vram_estimate_gb: 2.8                # was 1 — the 4 B Qwen3 embedder is
                                          # ~2.4 GB weights + ~0.4 GB KV at the
                                          # 32 k ctx with 4 parallel slots.
-    # Was `pinned: true` — the launcher pre-spawned embedding +
-    # reranker as always-on services so RAG/memory had zero cold-
-    # start latency. On a 24 GB card that paid ~3 GB of permanent
-    # VRAM tax even on machines where RAG rarely fires. Now routes
-    # through the normal scheduler: first /rag or /memory call
-    # triggers a spawn (~3-5 s cold on warm OS cache);
-    # `idle_evict_after_sec` reaps it after ~10 min of disuse.
-    # Restore old behaviour with `-EagerRagServices` on the launcher
-    # or `LAI_EAGER_RAG_SERVICES=1` in .env.
-    pinned: false
+    pinned: true                        # pre-spawned by the launcher; never evicted
     parallel_slots: 4
     n_gpu_layers: -1
     # Qwen3-Embedding handles -fa fine (Qwen3 attention is well-tested).

@@ -21,15 +21,7 @@ eviction:
   # tier whose `last_used` is older than this, even with no VRAM
   # pressure. Frees the GPU and forces a fresh observed-cost
   # measurement on the next acquire. Set to 0 to disable.
-  #
-  # Was 1800 (30 min) — too lenient on a 24 GB card where every idle
-  # tier blocks the next acquire. 600 (10 min) is the sweet spot:
-  # long enough that an active conversation alternating between two
-  # tiers still hits warm cache, short enough that an abandoned
-  # session frees VRAM for the next request within a coffee break.
-  # The cold re-spawn off OS page cache is ~5-15 s for chat tiers
-  # — the cost we pay for tighter VRAM hygiene.
-  idle_evict_after_sec: 600             # 10 minutes (was 1800)
+  idle_evict_after_sec: 1800            # 30 minutes
 
 # ── Multi-agent coordination ────────────────────────────────────────────────
 multi_agent:
