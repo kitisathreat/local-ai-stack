@@ -48,7 +48,20 @@
 param(
     [string[]]$Tiers = @('reasoning_max', 'reasoning_xl', 'frontier'),
     [int]$PollSeconds = 60,
-    [int]$MaxHours = 12
+    [int]$MaxHours = 12,
+    # How long a tier's bytes-on-disk can stagnate before the watchdog
+    # treats the resolver as "stuck" (TCP frozen, hf_hub_download in
+    # backoff sleep, etc.) and kills it for respawn. 600 s = 10 min,
+    # matches the user's "monitor every 10 min" instruction.
+    [int]$ProgressStallSeconds = 600,
+    # When DNS resolution fails, fall back to public DNS servers
+    # (8.8.8.8 / 1.1.1.1) to confirm the upstream is actually up. If
+    # public DNS works, the broken piece is a local resolver — most
+    # commonly ProtonVPN's loopback proxy at 127.0.2.2/.3 going stale.
+    # Pass -RestartProtonVPN to also try `Restart-Service ProtonVPN*`
+    # in that case (best-effort; service restart needs the user's
+    # implicit consent — bury this behind an opt-in flag).
+    [switch]$RestartProtonVPN
 )
 
 $ErrorActionPreference = 'Stop'
@@ -140,6 +153,104 @@ function Test-XethubDns {
     }
 }
 
+function Test-XethubDnsViaPublic {
+    # When system DNS fails, query 8.8.8.8 / 1.1.1.1 directly. If they
+    # resolve, the upstream is fine and we just have a stuck local
+    # resolver — actionable (e.g. ProtonVPN restart). If they fail too,
+    # it's a real upstream / network outage — wait it out.
+    foreach ($srv in '8.8.8.8','1.1.1.1') {
+        try {
+            $r = Resolve-DnsName -Name 'cas-bridge.xethub.hf.co' `
+                -Server $srv -Type A -ErrorAction Stop -DnsOnly -QuickTimeout
+            if ($r) { return $true }
+        } catch {}
+    }
+    return $false
+}
+
+function Restart-ProtonVPN {
+    # Restart-Service the ProtonVPN-named services. Returns $true if at
+    # least one was restarted. Caller should re-test DNS afterward.
+    $any = $false
+    Get-Service | Where-Object { $_.Name -match 'Proton' } | ForEach-Object {
+        try {
+            Restart-Service -Name $_.Name -Force -ErrorAction Stop
+            Log "    restarted $($_.Name)"
+            $any = $true
+        } catch {
+            Log "    failed to restart $($_.Name): $($_.Exception.Message)"
+        }
+    }
+    if ($any) {
+        Clear-DnsClientCache -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+    }
+    return $any
+}
+
+# Per-tier byte-progress tracker so we can detect TCP stalls (DNS up,
+# resolver alive, but no bytes flowing). Map: tier -> @{ bytes, ts }.
+$progressMarks = @{}
+
+function Get-TierBytesNow([string]$tier) {
+    $cacheRoot = Join-Path $RepoRoot 'data\models\.cache\huggingface\download'
+    if (-not (Test-Path $cacheRoot)) { return 0 }
+    $needle = switch ($tier) {
+        'reasoning_max'  { 'openai_gpt-oss-120b' }
+        'reasoning_xl'   { 'Qwen3.5-397B-A17B' }
+        'frontier'       { 'DeepSeek-V3.2' }
+        'highest_quality' { 'Qwen3-Next-80B' }
+        'coding_80b'     { 'Qwen3-Coder-Next' }
+        default          { $tier }
+    }
+    $sum = 0L
+    Get-ChildItem $cacheRoot -Recurse -Filter '*.incomplete' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match [regex]::Escape($needle) } |
+        ForEach-Object { $sum += $_.Length }
+    return $sum
+}
+
+function Test-TierProgress([string]$tier) {
+    # Compare current incomplete-blob byte total against the last mark.
+    # Returns 'growing' | 'stalled' | 'untracked'.
+    $now = Get-Date
+    $bytes = Get-TierBytesNow $tier
+    $prev = $progressMarks[$tier]
+    if (-not $prev) {
+        $progressMarks[$tier] = @{ bytes = $bytes; ts = $now }
+        return 'untracked'
+    }
+    if ($bytes -gt $prev.bytes) {
+        # Growth — refresh the mark.
+        $progressMarks[$tier] = @{ bytes = $bytes; ts = $now }
+        return 'growing'
+    }
+    # No growth. Has the stall window elapsed?
+    $stalledFor = ($now - $prev.ts).TotalSeconds
+    if ($stalledFor -ge $ProgressStallSeconds) {
+        return 'stalled'
+    }
+    return 'growing'   # not yet at threshold; still hopeful
+}
+
+function Kill-TierResolver([string]$tier) {
+    if (-not $activePids.ContainsKey($tier)) { return $false }
+    $pid = $activePids[$tier]
+    try {
+        Stop-Process -Id $pid -Force -ErrorAction Stop
+        Log "    killed stalled resolver for $tier (PID=$pid)"
+        $activePids.Remove($tier) | Out-Null
+        # Reset the progress mark so the next observation establishes a
+        # fresh baseline (the new resolver may take a few seconds to
+        # start writing).
+        $progressMarks.Remove($tier) | Out-Null
+        return $true
+    } catch {
+        Log "    couldn't kill PID=$pid for $tier : $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Spawn-Resolver([string]$tier) {
     # Re-check we're not already running one for this tier.
     if ($activePids.ContainsKey($tier)) {
@@ -182,9 +293,8 @@ $start = Get-Date
 $deadline = $start.AddHours($MaxHours)
 Log "=== watchdog start: tiers=$($Tiers -join ',') poll=${PollSeconds}s cap=${MaxHours}h ==="
 
+$lastProgressLogAt = Get-Date 0   # forces first iteration to log
 while ((Get-Date) -lt $deadline) {
-    # Wrap the body so one bad iteration doesn't kill the watchdog —
-    # any uncaught error gets logged and we continue polling.
     try {
         $pending = @($Tiers | Where-Object { -not (Has-CompletedTier $_) })
         if ($pending.Count -eq 0) {
@@ -192,16 +302,71 @@ while ((Get-Date) -lt $deadline) {
             exit 0
         }
 
-        if (Test-XethubDns) {
-            Log "xethub.hf.co reachable — checking $($pending.Count) pending tier(s): $($pending -join ', ')"
-            foreach ($t in $pending) { Spawn-Resolver $t }
-        } else {
-            # Don't log every poll while DNS is down — would flood the
-            # log. Only log every 10 minutes.
-            $minutesSinceStart = ((Get-Date) - $start).TotalMinutes
-            if ([int]$minutesSinceStart % 10 -eq 0) {
-                Log "xethub.hf.co STILL unreachable (pending: $($pending -join ', '))"
+        # ── DNS health, with public-DNS fallback diagnosis ────────────────
+        $dnsOk = Test-XethubDns
+        if (-not $dnsOk) {
+            # System DNS failed. Probe public servers to see if it's a
+            # local-resolver issue or a real upstream outage.
+            $upstreamOk = Test-XethubDnsViaPublic
+            if ($upstreamOk) {
+                Log "system DNS broken but cas-bridge.xethub.hf.co resolves via 8.8.8.8 — local resolver stuck"
+                if ($RestartProtonVPN) {
+                    Log "  attempting ProtonVPN service restart..."
+                    if (Restart-ProtonVPN) {
+                        $dnsOk = Test-XethubDns
+                        Log "  post-restart DNS check: $(if ($dnsOk) { 'RECOVERED' } else { 'STILL BROKEN' })"
+                    }
+                } else {
+                    # Throttle the manual-fix nag to once per 10 min
+                    if (((Get-Date) - $lastProgressLogAt).TotalMinutes -ge 10) {
+                        Log "  manual fix: restart ProtonVPN (or rerun watchdog with -RestartProtonVPN)"
+                        $lastProgressLogAt = Get-Date
+                    }
+                }
+            } else {
+                # Throttle full-outage logs to once per 10 min
+                if (((Get-Date) - $lastProgressLogAt).TotalMinutes -ge 10) {
+                    Log "xethub.hf.co unreachable from local + public DNS (pending: $($pending -join ', '))"
+                    $lastProgressLogAt = Get-Date
+                }
             }
+        }
+
+        # ── Per-tier work, when DNS is up ─────────────────────────────────
+        if ($dnsOk) {
+            foreach ($t in $pending) {
+                $verdict = Test-TierProgress $t
+                $bytes = Get-TierBytesNow $t
+                $bytesGB = [math]::Round($bytes / 1GB, 2)
+                $resolverAlive = $false
+                if ($activePids.ContainsKey($t)) {
+                    try {
+                        $p = Get-Process -Id $activePids[$t] -ErrorAction Stop
+                        $resolverAlive = -not $p.HasExited
+                    } catch { $resolverAlive = $false }
+                }
+
+                if ($verdict -eq 'stalled') {
+                    Log "  $t : STALLED at ${bytesGB} GB for >${ProgressStallSeconds}s — killing + respawning"
+                    Kill-TierResolver $t | Out-Null
+                    Spawn-Resolver $t
+                } elseif (-not $resolverAlive) {
+                    Log "  $t : resolver not running ($bytesGB GB on disk) — spawning"
+                    Spawn-Resolver $t
+                }
+                # else: resolver alive + bytes growing, nothing to do
+            }
+        }
+
+        # ── Periodic 10-min progress summary (always logs at intervals) ──
+        if (((Get-Date) - $lastProgressLogAt).TotalMinutes -ge 10 -or $lastProgressLogAt -eq (Get-Date 0)) {
+            $summary = ($Tiers | ForEach-Object {
+                $b = Get-TierBytesNow $_
+                $gb = [math]::Round($b / 1GB, 1)
+                "$_=${gb}GB"
+            }) -join ', '
+            Log "progress: $summary  (DNS=$(if ($dnsOk) {'OK'} else {'down'}), pending=$($pending.Count))"
+            $lastProgressLogAt = Get-Date
         }
     } catch {
         Log "iteration error: $($_.Exception.Message) — continuing"

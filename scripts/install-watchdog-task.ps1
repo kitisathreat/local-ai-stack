@@ -50,6 +50,16 @@ param(
     [string[]]$Tiers = @('reasoning_max', 'reasoning_xl', 'frontier'),
     [int]$PollSeconds = 60,
     [int]$MaxHours = 12,
+    # Forwarded to the watchdog. 600 s = 10 min, matches the
+    # "monitor every 10 min" requirement from PR #195.
+    [int]$ProgressStallSeconds = 600,
+    # Forwarded to the watchdog. When the watchdog detects DNS is broken
+    # locally but cas-bridge.xethub.hf.co resolves via 8.8.8.8/1.1.1.1
+    # (i.e. the local resolver is stuck — usually ProtonVPN's loopback
+    # proxy at 127.0.2.2/.3 going stale), it tries
+    # `Restart-Service ProtonVPN*`. Off by default since service restart
+    # disrupts the user's VPN session — opt in via this flag.
+    [switch]$RestartProtonVPN,
     [string]$TaskName = 'LocalAIStack-ResumeStalledPulls',
     [switch]$Uninstall
 )
@@ -86,8 +96,10 @@ $argv = @(
     "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$watchScript`""
     "-PollSeconds $PollSeconds"
     "-MaxHours $MaxHours"
+    "-ProgressStallSeconds $ProgressStallSeconds"
     "-Tiers $($Tiers -join ',')"
 )
+if ($RestartProtonVPN) { $argv += '-RestartProtonVPN' }
 $argString = $argv -join ' '
 
 $action = New-ScheduledTaskAction `
