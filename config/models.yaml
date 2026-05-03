@@ -47,6 +47,8 @@ tiers:
   #     considered as a "highest_quality = same model + thinking on"
   #     setup if 80B-Next feels heavy in practice.
   highest_quality:
+    category: "Reasoning"
+    requires_nvme_spillover: true
     name: "Highest Quality (Qwen3-Next 80B-A3B Thinking)"
     description: "MoE with 3B active params, hybrid attention, thinking mode. ~45-55 t/s with expert offload to RAM."
     backend: llama_cpp
@@ -122,6 +124,8 @@ tiers:
   # GPT-OSS-family draft is feasible (e.g. a hypothetical GPT-OSS-2B)
   # but no such GGUF exists at time of writing.
   reasoning_max:
+    category: "Reasoning"
+    requires_nvme_spillover: true
     name: "Reasoning Max (GPT-OSS-120B)"
     description: "OpenAI's open-weight 120 B MoE (5.1 B active). Highest peak quality on hard reasoning; ~25-35 t/s with expert offload."
     backend: llama_cpp
@@ -152,6 +156,157 @@ tiers:
       - ".ffn_.*_exps.=CPU"               # Same MoE expert offload as the
                                           # Qwen3 MoE tiers — keeps every
                                           # attention layer GPU-resident.
+
+  # ── Reasoning XL — Qwen3.5 397B-A17B at UD-IQ2_M ────────────────────────────
+  # Premium reasoning tier above reasoning_max on benchmarks (~79 on
+  # BenchLM open-weight leaderboard, comfortably above the 24 GB-card
+  # ceiling for any non-MoE model). MoE architecture (397 B total /
+  # 17 B active per token) means active inference stays fast even with
+  # ~110 GB of expert weights spilled to system RAM via the standard
+  # `-ot ".ffn_.*_exps.=CPU"` trick — same offload pattern as
+  # versatile / coding / highest_quality.
+  #
+  # Quant: Unsloth Dynamic IQ2_M (UD-IQ2_M). Unsloth's "Dynamic" line
+  # keeps critical layers (attention, embed, output) at higher bpw
+  # even inside a 2-bit overall quant, which preserves coherence
+  # vs. plain IQ2_M. ~115 GB on disk across 4 shards (HF 50 GB
+  # single-file limit forces sharding); resolver auto-pulls all
+  # shards in parallel via the new sharded-pull path.
+  #
+  # Why IQ2_M and not Q4_K_M:
+  #   - Q4_K_M for a 397 B model would be ~225 GB. Doesn't fit RAM.
+  #   - IQ3_XXS (130 GB) marginally better quality but adds 15 GB
+  #     RAM pressure for ~1-2 benchmark points. Not worth it on
+  #     a 125 GB-RAM box.
+  #   - IQ2_M is the sweet spot — IQ2 leaves enough RAM headroom
+  #     for the Q8_0 KV cache and the Qwen3-0.6B speculative draft.
+  #
+  # GLM-5.1 was considered as an alternative (slightly better
+  # benchmarks, ~83 vs ~79) but its smallest GGUF (UD-IQ2_XXS at
+  # 205 GB) exceeds the 125 GB system RAM budget and would page-fault
+  # to disk on every token. Re-evaluate when more RAM is available.
+  reasoning_xl:
+    category: "Reasoning"
+    requires_nvme_spillover: true
+    name: "Reasoning XL (Qwen3.5 397B-A17B)"
+    description: "397 B MoE / 17 B active per token. Top open-weight reasoning at IQ2_M; ~110 GB expert RAM spillover. Slower than reasoning_max."
+    backend: llama_cpp
+    port: 8015
+    model_tag: "qwen3.5-397b-a17b"
+    context_window: 65536                # Hold KV cache below ~3 GB at q8_0
+                                         # parallel=1; Qwen3.5-397B is native
+                                         # 256k but we cap at 64k to leave
+                                         # RAM headroom for the experts.
+    think_default: true                  # Reasoning tier — thinking on by default.
+    think_supported: true
+    preserve_thinking: true
+    params:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 8192
+    vram_estimate_gb: 14                 # attention + KV + embeddings on GPU
+                                         # (~12 GB at 64k ctx, parallel=1)
+                                         # plus the spec-decode draft (~0.5 GB).
+                                         # MoE experts (~110 GB) live in RAM.
+    parallel_slots: 1
+    # Speculative decoding: same Qwen3-0.6B draft as the other Qwen3
+    # tiers. 397B / 0.6B ≈ 660× ratio — exceptionally good for spec
+    # decode (large gap = high acceptance rate).
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
+    n_gpu_layers: -1                     # base case = everything to GPU; -ot
+                                         # pulls experts back to CPU.
+    flash_attention: true                # Standard attention — FA stays correct
+                                         # because every attention layer is on GPU.
+    use_mmap: true                       # MoE experts stream from mmap'd file
+                                         # into RAM lazily; OS page cache holds
+                                         # hot experts.
+    use_mlock: false                     # Don't pin — let cold experts page out
+                                         # under memory pressure (smaller models
+                                         # can then take their RAM).
+    cache_type_k: q8_0                   # Standard attention → q8_0 (q4_0 not
+    cache_type_v: q8_0                   # lossless on this attention shape).
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"              # Standard MoE expert offload — keeps
+                                         # every attention layer GPU-resident,
+                                         # spills the 110 GB of routed experts
+                                         # to system RAM.
+
+  # ── Frontier — DeepSeek V3.2-Speciale at UD-TQ1_0 ───────────────────────────
+  # The "aspirational" tier — V3.2-Speciale-class reasoning that's in
+  # the GPT-5 / Kimi K2-Thinking conversation on multiple multi-step
+  # reasoning benchmarks (arxiv.org/abs/2509.18757-class results).
+  # Trades raw inference speed for peak quality: ~5-10 t/s in practice
+  # because ~25 GB of cold expert pages spill to NVMe via mmap (see
+  # `requires_nvme_spillover: true`).
+  #
+  # Quant: Unsloth Dynamic TQ1_0. 1-bit ternary (3 values per weight,
+  # packed; ~1.6 bpw effective). The "UD" line keeps attention,
+  # embedding, and output layers at much higher bpw inside the 1-bit
+  # quant — that's what makes ternary actually work on a reasoning
+  # workload. 150.2 GB on disk, single file (no sharding).
+  #
+  # Why it's opt-in:
+  #   - Tokenizer is DeepSeek-V3-family — incompatible with the
+  #     Qwen3-0.6B speculative draft. Runs target-only.
+  #   - 25 GB of NVMe spillover means each token cost includes some
+  #     page-fault-driven I/O. Acceptable for one-shot hard-reasoning
+  #     prompts; not for interactive chat.
+  #   - Total disk impact: 150 GB on top of the existing 200+ GB
+  #     models dir. Free disk should comfortably exceed 200 GB headroom
+  #     (we currently have 1.6 TB free).
+  #
+  # Use it when you'd otherwise burn a Claude / GPT API call on a
+  # single hard question. Don't use it as a default chat tier.
+  frontier:
+    category: "Reasoning"
+    requires_nvme_spillover: true
+    name: "Frontier (DeepSeek V3.2-Speciale)"
+    description: "DeepSeek V3.2 at 1.6 bpw. GPT-5-class reasoning quality; ~5-10 t/s with NVMe spillover. Opt-in only."
+    backend: llama_cpp
+    port: 8016
+    model_tag: "deepseek-v3.2"
+    context_window: 65536                # Stay below the q4_0 KV-cache budget
+                                         # at parallel=1; native context is much
+                                         # higher but irrelevant when each token
+                                         # already costs disk I/O.
+    think_default: true                  # Reasoning tier — thinking on by default.
+    think_supported: true
+    preserve_thinking: true
+    params:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 8192
+    vram_estimate_gb: 14                 # attention + KV cache + embeddings on
+                                         # GPU. Experts (~140 GB) live in RAM
+                                         # + NVMe via mmap.
+    parallel_slots: 1
+    # NO speculative decoding: DeepSeek-V3 tokenizer ≠ Qwen3-0.6B
+    # tokenizer. Same constraint as reasoning_max (gpt-oss-120b).
+    n_gpu_layers: -1                     # base case = everything to GPU; -ot
+                                         # below pulls experts back to CPU/NVMe.
+    flash_attention: true
+    use_mmap: true                       # REQUIRED — this is the spillover
+                                         # mechanism. Cold expert pages get
+                                         # paged to/from NVMe by the OS.
+    use_mlock: false                     # MUST be false — mlock would pin
+                                         # everything in RAM, defeating spillover.
+    cache_type_k: q4_0                   # Aggressive KV quant to claw back
+    cache_type_v: q4_0                   # VRAM at long context, per the
+                                         # Opus 4.7 recommendation.
+    override_tensors:
+      - ".ffn_.*_exps.=CPU"              # Standard MoE expert offload —
+                                         # attention stays on GPU, experts
+                                         # spill to RAM and (when RAM is full)
+                                         # NVMe via OS page cache.
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
@@ -252,6 +407,7 @@ tiers:
   # Qwen3-Coder-30B-A3B-Instruct (MoE, 3B active params, ~18 GB at
   # Q4_K_M) which sits comfortably below the VRAM ceiling.
   coding:
+    category: "Coding"
     name: "Coding (Qwen3-Coder 30B-A3B)"
     description: "Qwen3 coder MoE (3B active params). Native tool calling."
     backend: llama_cpp

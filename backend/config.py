@@ -68,6 +68,25 @@ class TierConfig(BaseModel):
     # lifecycle for non-pinned tiers (vision + embedding are pre-spawned by
     # the launcher and pinned).
     role: str = "chat"                    # "chat" | "embedding"
+    # UI grouping label. When set, the chat UI's tier dropdown renders
+    # this tier inside an <optgroup label="<category>"> so related
+    # tiers cluster together. Recommended values: "Reasoning" for the
+    # heavy-reasoning family (highest_quality / reasoning_max /
+    # reasoning_xl / frontier), "Coding" for the coding tiers, etc.
+    # Empty string means the tier renders at the top level outside any
+    # optgroup.
+    category: str = ""
+    # When true, this tier's working set (weights + KV cache) is
+    # expected to exceed system RAM, so cold expert pages are mmap-
+    # spilled to NVMe at inference time. Implies a hard requirement
+    # on `use_mmap=true, use_mlock=false`, plus the GGUF being on a
+    # fast SSD/NVMe. Surfaced by:
+    #   - startup diagnostics (warn if the models dir is on a slow disk)
+    #   - the chat UI tier dropdown (badge tiers as "(NVMe)")
+    #   - README ops table (so an operator sizes their hardware right)
+    # Pure-informational today; a future PR can also add hard config
+    # validation that refuses use_mlock=true when this is set.
+    requires_nvme_spillover: bool = False
     gguf_path: str | None = None          # filled in from data/resolved-models.json
     port: int | None = None               # required at runtime
     n_gpu_layers: int = -1                # -1 = offload all

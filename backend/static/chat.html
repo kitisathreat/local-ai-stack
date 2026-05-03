@@ -1079,13 +1079,28 @@
         let previousIsAvailable = false;
         tierContext.clear();
         tierVariants.clear();
+
+        // Group tiers by their `category` field so related tiers cluster
+        // under one <optgroup>. Tiers with empty category render at the
+        // top level. Order: top-level (empty-category) tiers first in
+        // their original order, then categories in first-seen order, with
+        // each category's tiers in original order. Stable across reloads.
+        const topLevel = [];        // tiers with no category
+        const grouped = new Map();  // category -> [tier...] (preserves insert order)
         (data || []).forEach(m => {
+          const cat = (m.category || '').trim();
+          if (cat) {
+            if (!grouped.has(cat)) grouped.set(cat, []);
+            grouped.get(cat).push(m);
+          } else {
+            topLevel.push(m);
+          }
+        });
+
+        const buildOption = (m) => {
           const o = document.createElement('option');
           o.value = m.id;
-          // Stash per-tier context window so the CTX indicator can
-          // show the right "X / Y" denominator even after a tier swap.
           if (m.context_window) tierContext.set(m.id, m.context_window);
-          // Stash per-tier variant choices for the secondary dropdown.
           if (Array.isArray(m.variants) && m.variants.length > 0) {
             tierVariants.set(m.id, {
               variants: m.variants,
@@ -1097,8 +1112,6 @@
           const cat = tierLabel(key);
           const model = specificModel(info);
           const base = model ? `${cat}: ${model}` : cat;
-          // info.available is true only when the GGUF file exists on
-          // disk. Until the resolver finishes pulling, it's false.
           if (info.available === false) {
             o.textContent = `${base}  (downloading…)`;
             o.disabled = true;
@@ -1107,8 +1120,16 @@
             if (firstAvailableValue === null) firstAvailableValue = m.id;
             if (m.id === previousValue) previousIsAvailable = true;
           }
-          modelEl.appendChild(o);
-        });
+          return o;
+        };
+
+        topLevel.forEach(m => modelEl.appendChild(buildOption(m)));
+        for (const [catName, tiers] of grouped.entries()) {
+          const og = document.createElement('optgroup');
+          og.label = catName;
+          tiers.forEach(m => og.appendChild(buildOption(m)));
+          modelEl.appendChild(og);
+        }
         if (previousValue && previousIsAvailable) {
           // Re-apply the user's previous selection if it's still
           // available. Updates lastSelectedModel below stays in sync.

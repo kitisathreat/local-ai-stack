@@ -96,6 +96,16 @@ The native desktop app lives in [`gui/`](gui/) and is built on PySide6
 (no embedded browser, no JavaScript). Six windows cover the complete
 operator surface; below is each one with its current visual.
 
+> ⚠️ **Visuals refresh pending.** The SVG mockups below were drawn before
+> the chat UI got: (a) the Reasoning / Coding optgroup grouping in the
+> tier dropdown, (b) module-level aggregation in the 🔧 Tools popover
+> (~150 module rows instead of 620 individual tools), (c) the
+> error-code badges (`[LAI-VRAM-001]`-style suffixes), (d) NVMe-spillover
+> tier badges (💾⚠️). The text descriptions below are current; the
+> images are scheduled for refresh — the chat-popover visual was the
+> last regenerated artifact and lives at
+> `data/eval/popover-drilled-*.png` from `scripts/bench_chrome_check.py`.
+
 ### Setup wizard — first run
 
 [`gui/windows/setup_wizard.py`](gui/windows/setup_wizard.py) — a 7-page
@@ -118,11 +128,34 @@ Cloudflare tunnel at `chat.<your-domain>` once provisioned. The Qt
 [`ChatWindow`](gui/windows/chat.py) shows a guidance card pointing
 users there.
 
-When **airgap mode** is toggled on from the admin dashboard, the Qt
+The web chat surface includes:
+
+- **Tier dropdown grouped by category**: top-level entries (`versatile`,
+  `fast`, `vision`) sit first; everything in `category: Reasoning`
+  (`highest_quality`, `reasoning_max`, `reasoning_xl`, `frontier`)
+  clusters under a "Reasoning" optgroup; `coding` sits under "Coding"
+  with its `/coder small | big` variant sub-selector.
+- **🔧 Tools popover**: collapse-by-default tier → group → subgroup
+  tree. Tools are aggregated to the module level — `crossref` shows
+  one row labelled "Academic citations (Crossref)" instead of three
+  separate `crossref.get_journal_info` / `lookup_doi` / `search_works`
+  toggles. Per-method granularity stays in the admin Tools tab.
+- **Streaming markdown** via batched `innerHTML` writes (60 ms flush)
+  so token streams don't re-parse the whole document on every
+  delta — same effect as Qt's `MarkdownView` on the desktop side.
+- **Error code badges**: any `LAI-*` error returned by the backend
+  (`LAI-VRAM-001` for exhausted VRAM, `LAI-AUTH-007` for misconfigured
+  AUTH_SECRET_KEY, etc.) renders as a small `[LAI-XXX-NNN]` suffix
+  on the in-chat error so users have something to quote.
+- **VRAM widget** in the header polls `/vram` to show free GB.
+- **Self-healing**: lazy-load on popover open if the tool list is
+  empty (handles silent-failure recovery), and a refresh banner
+  surfaces backend-bounce gaps via `/healthz` heartbeat.
+
+When **airgap mode** is toggled from the admin dashboard, the Qt
 window swaps in-place to a full local chat UI: tier picker, reasoning
-toggle, streaming markdown via [`MarkdownView`](gui/widgets/markdown_view.py)
-(60 ms batched flush so token streams don't re-parse the whole document),
-multi-agent visibility, and per-chat overrides. A `QTimer` polls
+toggle, streaming markdown via [`MarkdownView`](gui/widgets/markdown_view.py),
+multi-agent visibility, per-chat overrides. A `QTimer` polls
 `/api/airgap` every 5 s and swaps modes live.
 
 <p align="center">
@@ -247,15 +280,46 @@ page cache by [`scripts/warm-page-cache.ps1`](scripts/warm-page-cache.ps1)
 at `-Start`, so even tiers that aren't auto-warmed into VRAM avoid
 disk-read latency on cold-spawn.
 
-| Tier | Model | Port | `--ctx-size` | VRAM | Role |
-|---|---|---|---|---|---|
-| `highest_quality` | Qwen3-Next 80B-A3B Thinking | 8010 | 131 072 (YaRN ×4) | ~14.5 GB VRAM + ~33 GB RAM | Hardest reasoning, MoE w/ expert offload + spec decode |
-| `reasoning_max` | GPT-OSS-120B | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in: highest peak quality on hard reasoning, slower (no spec decode — different tokenizer) |
-| `versatile` | Qwen3.6 35B-A3B (MoE) | 8011 | 131 072 (YaRN ×4) | ~6.5 GB | Default + orchestrator (3 slots, expert offload, spec decode) |
-| `fast` | Qwen3.5 9B | 8012 | 65 536 | ~7.5 GB | Multi-agent workers (4 slots, dense + spec decode) |
-| `coding` | Qwen3-Coder-30B-A3B (default) / Qwen3-Coder-Next-80B-A3B (`/coder big`) | 8013 | 131 072 (YaRN ×4) | ~6.5 / ~14.5 GB | Coding tier with switchable 30B/80B variants |
-| `vision` | Qwen3.6 35B + mmproj | 8001 | 65 536 (YaRN ×2) | ~6.5 GB | Images / charts (expert offload, spec decode) |
-| `embedding` | Qwen3-Embedding-4B | 8090 | 32 768 | ~2.8 GB | RAG + memory distillation (2 560-dim, MTEB ~70.0) — hidden from chat dropdown |
+Tiers are grouped in the chat UI's tier dropdown by `category` (set on
+each tier in `models.yaml`). Currently two groups exist:
+
+- **Reasoning** — `highest_quality`, `reasoning_max`, `reasoning_xl`. Picked
+  when you need maximum capability and accept slower inference.
+- **Coding** — `coding` (with switchable 30B / 80B sub-variants via the
+  `/coder small | big` slash commands).
+
+Everything else (`versatile`, `fast`, `vision`) renders at the top level
+of the dropdown.
+
+| Category | Tier | Model | Quant | Disk | Port | `--ctx-size` | VRAM + RAM | Role |
+|---|---|---|---|---:|---|---|---|---|
+| **Reasoning** | `highest_quality` 💾 | Qwen3-Next 80B-A3B Thinking | UD-Q4_K_XL | 43 GB | 8010 | 131 072 (YaRN ×4) | ~14.5 GB VRAM + ~33 GB RAM | Default heavy-reasoning. MoE w/ expert offload + spec decode |
+| **Reasoning** | `reasoning_max` 💾 | OpenAI GPT-OSS-120B | Q4_K_M (sharded ×2) | 58 GB | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in. Highest peak quality on hard reasoning. No spec decode — different tokenizer |
+| **Reasoning** | `reasoning_xl` 💾 | Qwen3.5 397B-A17B | UD-IQ2_M (sharded ×4) | 115 GB | 8015 | 65 536 | ~14 GB VRAM + ~110 GB RAM | Top open-weight reasoning at IQ2_M. Active 17 B / 397 B w/ expert offload + spec decode |
+| **Reasoning** | `frontier` 💾⚠️ | DeepSeek V3.2-Speciale | UD-TQ1_0 (1.6 bpw, single file) | 150 GB | 8016 | 65 536 | ~14 GB VRAM + ~125 GB RAM + ~25 GB NVMe | Aspirational. GPT-5-class reasoning at 5–10 t/s w/ NVMe spillover. No spec decode |
+| **Coding** | `coding` | Qwen3-Coder 30B-A3B (default) / Qwen3-Coder-Next 80B-A3B (`/coder big`) | UD-Q4_K_XL (30B) / UD-Q4_K_XL sharded (80B) | 18 / 49 GB | 8013 | 131 072 (YaRN ×4) | ~6.5 / ~14.5 GB | Coding tier with switchable 30 B / 80 B variants |
+| (top-level) | `versatile` | Qwen3.6 35B-A3B (MoE) | UD-Q4_K_XL | 20 GB | 8011 | 131 072 (YaRN ×4) | ~6.5 GB | Default + orchestrator (3 slots, expert offload, spec decode) |
+| (top-level) | `fast` | Qwen3.5 9B | UD-Q4_K_XL | 5.3 GB | 8012 | 65 536 | ~7.5 GB | Multi-agent workers (4 slots, dense + spec decode) |
+| (top-level) | `vision` | Qwen3.6 35B + mmproj | UD-Q4_K_XL + BF16 mmproj | 20 GB + 1 GB | 8001 | 65 536 (YaRN ×2) | ~6.5 GB | Images / charts (expert offload, spec decode) |
+| (hidden) | `embedding` | Qwen3-Embedding-4B | Q4_K_M | 2.4 GB | 8090 | 32 768 | ~2.8 GB | RAG + memory distillation (2 560-dim, MTEB ~70.0) |
+| (draft) | `draft_qwen3_06b` | Qwen3-0.6B | UD-Q4_K_XL | 387 MB | — | — | ~0.5 GB | Universal speculative-decode draft for every Qwen3-family chat tier |
+| (rerank) | `reranker` | Qwen3-Reranker-0.6B | Q8_0 | 610 MB | 8091 | — | ~1 GB | RAG retrieval reranker (`--reranking --pooling rank`) |
+
+Legend: **💾 = MoE expert offload to RAM via `-ot`**, **⚠️ = requires NVMe spillover** (working set exceeds 125 GB system RAM, so cold expert pages are mmap-backed by the OS page cache spilling to disk).
+
+**On quants.** "UD" = Unsloth Dynamic — keeps critical layers
+(attention, embed, output) at higher bpw than the headline quant
+suggests. UD-Q4_K_XL ≈ Q4_K_M with attention layers up-quantized;
+UD-IQ2_M ≈ IQ2_M with attention up-quantized. The result is measurably
+better coherence than the plain quant at the same disk size, which
+matters most on extreme low-bit MoE tiers like `reasoning_xl`.
+
+**Heavier tiers we don't ship today:**
+- **Kimi K2.6 (~1 T)** and **DeepSeek V3.2 / V4 (~671 B)** — only fit
+  at sub-2-bit quants (IQ1_M / IQ1_S) where multi-step reasoning fails
+  faster than the parameter count compensates. Tracked in
+  [#186](https://github.com/kitisathreat/local-ai-stack/issues/186) for
+  re-evaluation when better sub-2-bit quant schemes land or RAM grows.
 
 GGUF resolution runs on every `-Start` against
 [`config/model-sources.yaml`](config/model-sources.yaml); cached results

@@ -163,6 +163,40 @@ tiers:
   # higher peak quality on hard reasoning. No speculative draft because
   # GPT-OSS uses OpenAI's o200k_harmony tokenizer which is incompatible
   # with the Qwen3 family draft.
+  # DeepSeek V3.2-Speciale at Unsloth Dynamic TQ1_0. The "Frontier" tier
+  # — V3.2-Speciale-class reasoning quality (GPT-5 / Kimi K2-Thinking
+  # conversation per arxiv.org/abs/2509.18757). 1-bit ternary weights
+  # (UD-TQ1_0) keep critical layers at much higher bpw than headline
+  # ternary suggests; that's what makes ternary actually work here.
+  # 150.2 GB on disk — single file (no sharding), so the resolver pulls
+  # it as one stream. NVMe spillover required (~25 GB of expert pages
+  # don't fit in 125 GB RAM); see models.yaml::frontier.
+  frontier:
+    source: huggingface
+    repo: "unsloth/DeepSeek-V3.2-GGUF"
+    file: "DeepSeek-V3.2-UD-TQ1_0.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "DeepSeek-V3.2-UD-TQ1_0.gguf"
+
+  # Qwen3.5 397B-A17B at Unsloth Dynamic IQ2_M — 4 shards, 114.6 GB
+  # total. The "Dynamic" line keeps critical layers (attention, embed,
+  # output) at higher bpw inside the 2-bit overall quant which
+  # preserves coherence vs. plain IQ2_M. MoE architecture (17 B
+  # active per token of 397 B total) means inference stays fast even
+  # with ~110 GB of expert weights spilled to system RAM.
+  #
+  # Sharded — relies on the parallel-shard pull added in PR #185.
+  reasoning_xl:
+    source: huggingface
+    repo: "unsloth/Qwen3.5-397B-A17B-GGUF"
+    file: "UD-IQ2_M/Qwen3.5-397B-A17B-UD-IQ2_M-00001-of-00004.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "UD-IQ2_M/Qwen3.5-397B-A17B-UD-IQ2_M-00001-of-00004.gguf"
+
   # gpt-oss-120b in Q4_K_M is the highest-quality 4-bit reasoning tier
   # we can run on a 24 GB card (with -ot expert offload putting most of
   # the 117 B parameters in CPU RAM). HF's 50 GB single-file limit
