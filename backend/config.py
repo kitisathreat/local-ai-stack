@@ -68,6 +68,13 @@ class TierConfig(BaseModel):
     # lifecycle for non-pinned tiers (vision + embedding are pre-spawned by
     # the launcher and pinned).
     role: str = "chat"                    # "chat" | "embedding"
+    # UI grouping label. When set, the chat UI's tier dropdown renders
+    # this tier inside an <optgroup label="<category>"> so related
+    # tiers cluster together. Recommended values: "Reasoning" for the
+    # heavy-reasoning family (highest_quality / reasoning_max /
+    # reasoning_xl), "Coding" for the coding tiers, etc. Empty string
+    # means the tier renders at the top level outside any optgroup.
+    category: str = ""
     gguf_path: str | None = None          # filled in from data/resolved-models.json
     port: int | None = None               # required at runtime
     n_gpu_layers: int = -1                # -1 = offload all

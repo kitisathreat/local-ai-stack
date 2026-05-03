@@ -155,6 +155,10 @@ class TierInfo(BaseModel):
     # the request doesn't specify one (e.g. plain `tier.coding`).
     variants: list[TierVariantInfo] = Field(default_factory=list)
     default_variant: str | None = None
+    # Optgroup label for the chat UI's tier dropdown. Empty string
+    # means top-level (no group). Multiple tiers sharing the same
+    # category render under one <optgroup>.
+    category: str = ""
 
 
 class ModelsListResponse(BaseModel):

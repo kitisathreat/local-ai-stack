@@ -247,15 +247,43 @@ page cache by [`scripts/warm-page-cache.ps1`](scripts/warm-page-cache.ps1)
 at `-Start`, so even tiers that aren't auto-warmed into VRAM avoid
 disk-read latency on cold-spawn.
 
-| Tier | Model | Port | `--ctx-size` | VRAM | Role |
-|---|---|---|---|---|---|
-| `highest_quality` | Qwen3-Next 80B-A3B Thinking | 8010 | 131 072 (YaRN ×4) | ~14.5 GB VRAM + ~33 GB RAM | Hardest reasoning, MoE w/ expert offload + spec decode |
-| `reasoning_max` | GPT-OSS-120B | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in: highest peak quality on hard reasoning, slower (no spec decode — different tokenizer) |
-| `versatile` | Qwen3.6 35B-A3B (MoE) | 8011 | 131 072 (YaRN ×4) | ~6.5 GB | Default + orchestrator (3 slots, expert offload, spec decode) |
-| `fast` | Qwen3.5 9B | 8012 | 65 536 | ~7.5 GB | Multi-agent workers (4 slots, dense + spec decode) |
-| `coding` | Qwen3-Coder-30B-A3B (default) / Qwen3-Coder-Next-80B-A3B (`/coder big`) | 8013 | 131 072 (YaRN ×4) | ~6.5 / ~14.5 GB | Coding tier with switchable 30B/80B variants |
-| `vision` | Qwen3.6 35B + mmproj | 8001 | 65 536 (YaRN ×2) | ~6.5 GB | Images / charts (expert offload, spec decode) |
-| `embedding` | Qwen3-Embedding-4B | 8090 | 32 768 | ~2.8 GB | RAG + memory distillation (2 560-dim, MTEB ~70.0) — hidden from chat dropdown |
+Tiers are grouped in the chat UI's tier dropdown by `category` (set on
+each tier in `models.yaml`). Currently two groups exist:
+
+- **Reasoning** — `highest_quality`, `reasoning_max`, `reasoning_xl`. Picked
+  when you need maximum capability and accept slower inference.
+- **Coding** — `coding` (with switchable 30B / 80B sub-variants via the
+  `/coder small | big` slash commands).
+
+Everything else (`versatile`, `fast`, `vision`) renders at the top level
+of the dropdown.
+
+| Category | Tier | Model | Quant | Port | `--ctx-size` | VRAM | Role |
+|---|---|---|---|---|---|---|---|
+| **Reasoning** | `highest_quality` | Qwen3-Next 80B-A3B Thinking | UD-Q4_K_XL (Unsloth Dynamic) | 8010 | 131 072 (YaRN ×4) | ~14.5 GB VRAM + ~33 GB RAM | Default heavy-reasoning. MoE w/ expert offload + spec decode |
+| **Reasoning** | `reasoning_max` | OpenAI GPT-OSS-120B | Q4_K_M (sharded ×2) | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in. Highest peak quality on hard reasoning, slower (no spec decode — different tokenizer) |
+| **Reasoning** | `reasoning_xl` | Qwen3.5 397B-A17B | UD-IQ2_M (Unsloth Dynamic, sharded ×4) | 8015 | 65 536 | ~14 GB VRAM + ~110 GB RAM | Top open-weight reasoning at IQ2_M. Active 17 B / 397 B w/ expert offload + spec decode |
+| **Coding** | `coding` | Qwen3-Coder 30B-A3B (default) / Qwen3-Coder-Next 80B-A3B (`/coder big`) | UD-Q4_K_XL (30B) / UD-Q4_K_XL sharded (80B) | 8013 | 131 072 (YaRN ×4) | ~6.5 / ~14.5 GB | Coding tier with switchable 30 B / 80 B variants |
+| (top-level) | `versatile` | Qwen3.6 35B-A3B (MoE) | UD-Q4_K_XL (Unsloth Dynamic) | 8011 | 131 072 (YaRN ×4) | ~6.5 GB | Default + orchestrator (3 slots, expert offload, spec decode) |
+| (top-level) | `fast` | Qwen3.5 9B | UD-Q4_K_XL (Unsloth Dynamic) | 8012 | 65 536 | ~7.5 GB | Multi-agent workers (4 slots, dense + spec decode) |
+| (top-level) | `vision` | Qwen3.6 35B + mmproj | UD-Q4_K_XL + BF16 mmproj | 8001 | 65 536 (YaRN ×2) | ~6.5 GB | Images / charts (expert offload, spec decode) |
+| (hidden) | `embedding` | Qwen3-Embedding-4B | Q4_K_M | 8090 | 32 768 | ~2.8 GB | RAG + memory distillation (2 560-dim, MTEB ~70.0) — hidden from chat dropdown |
+| (draft) | `draft_qwen3_06b` | Qwen3-0.6B | UD-Q4_K_XL | — | — | ~0.5 GB | Universal speculative-decode draft for every Qwen3-family chat tier |
+| (rerank) | `reranker` | Qwen3-Reranker-0.6B | Q8_0 | 8091 | — | ~1 GB | RAG retrieval reranker (`--reranking --pooling rank`) |
+
+**On quants.** "UD" = Unsloth Dynamic — keeps critical layers
+(attention, embed, output) at higher bpw than the headline quant
+suggests. UD-Q4_K_XL ≈ Q4_K_M with attention layers up-quantized;
+UD-IQ2_M ≈ IQ2_M with attention up-quantized. The result is measurably
+better coherence than the plain quant at the same disk size, which
+matters most on extreme low-bit MoE tiers like `reasoning_xl`.
+
+**Heavier tiers we don't ship today:**
+- **Kimi K2.6 (~1 T)** and **DeepSeek V3.2 / V4 (~671 B)** — only fit
+  at sub-2-bit quants (IQ1_M / IQ1_S) where multi-step reasoning fails
+  faster than the parameter count compensates. Tracked in
+  [#186](https://github.com/kitisathreat/local-ai-stack/issues/186) for
+  re-evaluation when better sub-2-bit quant schemes land or RAM grows.
 
 GGUF resolution runs on every `-Start` against
 [`config/model-sources.yaml`](config/model-sources.yaml); cached results

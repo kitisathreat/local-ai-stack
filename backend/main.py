@@ -533,6 +533,7 @@ async def list_models():
             vram_estimate_gb=tier.vram_estimate_gb,
             variants=variants,
             default_variant=tier.default_variant if variants else None,
+            category=getattr(tier, "category", "") or "",
         ))
     return ModelsListResponse(data=out)
 
