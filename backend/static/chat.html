@@ -39,19 +39,134 @@
     header button { cursor: pointer; }
     header button:hover { background: #2a2d36; }
     header .spacer { flex: 1; }
-    /* Status indicators in the header — small, muted, monospace
-       so the changing numbers don't fight the layout. */
+    /* Status indicators in the header — Claude Code-style proportional
+       torus rings. Hover/tap reveals a popover with the per-component
+       breakdown (loaded models, per-role token spend, etc.). The ring
+       is an SVG circle whose stroke-dasharray is animated; the colour
+       moves green → yellow → red as the fill fraction crosses
+       0.7 / 0.9 thresholds.
+
+       Each .stat is positioned (relative) so its breakdown popover can
+       absolutely-anchor below it without escaping the header. */
     .stat {
+      position: relative;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 8px; cursor: pointer;
       font-size: 11px;
       color: var(--muted);
       font-family: 'Cascadia Code', Consolas, monospace;
-      padding: 0 6px;
       white-space: nowrap;
+      border-radius: 6px;
+      user-select: none;
     }
+    .stat:hover, .stat.open { background: #22252e; }
     .stat .lbl { text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.7; }
     .stat .val { color: var(--fg); }
-    .stat.warn .val { color: #e0c060; }   /* yellow at >70% */
-    .stat.crit .val { color: var(--danger); }   /* red at >90% */
+    .stat.warn .val { color: #e0c060; }
+    .stat.crit .val { color: var(--danger); }
+    .stat.warn .ring-fill { stroke: #e0c060; }
+    .stat.crit .ring-fill { stroke: var(--danger); }
+    .ring {
+      width: 24px; height: 24px; flex: 0 0 24px;
+      transform: rotate(-90deg);
+    }
+    .ring .ring-track { fill: none; stroke: #2a2d36; stroke-width: 4; }
+    .ring .ring-fill {
+      fill: none; stroke: #4caf50; stroke-width: 4;
+      stroke-linecap: round;
+      transition: stroke-dasharray .3s ease, stroke .3s ease;
+    }
+    .stat-popover {
+      position: absolute; top: calc(100% + 6px); right: 0;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px;
+      min-width: 240px; max-width: 320px;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 12px; color: var(--fg);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+      z-index: 50;
+      display: none;
+      white-space: normal;
+    }
+    .stat.open .stat-popover { display: block; }
+    .stat-popover h4 {
+      margin: 0 0 6px 0; font-size: 12px; font-weight: 600;
+      color: var(--fg); text-transform: none; letter-spacing: 0;
+    }
+    .stat-popover .row {
+      display: flex; justify-content: space-between; gap: 12px;
+      padding: 2px 0; color: var(--muted);
+    }
+    .stat-popover .row .k { color: var(--muted); }
+    .stat-popover .row .v { color: var(--fg); font-family: 'Cascadia Code', Consolas, monospace; }
+    .stat-popover .row.total {
+      border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px;
+    }
+    .stat-popover .empty { color: var(--muted); font-style: italic; }
+    /* Composer-area model loading progress bar. Lives just above the
+       composer; visible while a tier is spawning so the user has a
+       proportional indication of how much weight has streamed into
+       VRAM. Falls back to a time-based estimate when no actual
+       byte-progress signal is available. */
+    #model-loading {
+      max-width: 960px; margin: 0 auto; width: 100%;
+      padding: 4px 16px 0; font-size: 11px; color: var(--muted);
+      display: none;
+    }
+    #model-loading.visible { display: block; }
+    #model-loading .ml-bar {
+      height: 4px; background: #22252e; border-radius: 2px;
+      overflow: hidden; margin-top: 3px;
+    }
+    #model-loading .ml-fill {
+      height: 100%; width: 0%; background: var(--accent);
+      transition: width .25s ease;
+    }
+    #model-loading .ml-fill.indeterminate {
+      width: 35%;
+      animation: ml-slide 1.4s ease-in-out infinite;
+    }
+    @keyframes ml-slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(285%); }
+    }
+    /* Per-message edit affordance. The pencil shows on hover for user
+       turns and lets the user rewrite a previous prompt — committing the
+       edit truncates the conversation back to that point and re-sends
+       the new text, mirroring Claude / ChatGPT-style "edit & resubmit". */
+    .msg { position: relative; }
+    .msg .msg-actions {
+      position: absolute; top: 0; right: 0;
+      display: none; gap: 4px;
+    }
+    .msg.user:hover .msg-actions, .msg .msg-actions.force { display: flex; }
+    .msg .msg-actions button {
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer;
+      font-family: inherit;
+    }
+    .msg .msg-actions button:hover { color: var(--fg); background: #22252e; }
+    .msg .edit-area {
+      width: 100%; min-height: 80px;
+      background: #22252e; color: var(--fg);
+      border: 1px solid var(--accent); border-radius: 6px;
+      padding: 8px 10px; font: inherit; resize: vertical;
+      outline: none;
+    }
+    .msg .edit-controls {
+      display: flex; gap: 6px; margin-top: 6px; align-items: center;
+    }
+    .msg .edit-controls .hint {
+      color: var(--muted); font-size: 11px; margin-left: auto;
+    }
+    .msg .edit-controls button {
+      background: #22252e; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 4px; padding: 4px 10px; font: inherit; font-size: 12px;
+      cursor: pointer;
+    }
+    .msg .edit-controls button.primary {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
     #main { flex: 1; display: flex; overflow: hidden; }
     #log { flex: 1; overflow: auto; padding: 16px; max-width: 860px; margin: 0 auto; width: 100%; }
     .msg { margin: 0 0 16px 0; line-height: 1.5; }
@@ -384,10 +499,20 @@
       header { padding: 8px 10px; gap: 6px; flex-wrap: wrap; }
       header .brand { font-size: 13px; }
       header select { max-width: 140px; font-size: 13px; }
-      /* Status indicators and the username eat space on a phone — hide
-         them; the user can pull up /admin in a separate tab if they
-         need raw VRAM numbers. */
-      #vram-stat, #ctx-stat, #who { display: none; }
+      /* The username eats space on a phone — hide it; the user can pull
+         up /admin in a separate tab. The VRAM and CTX torus indicators
+         stay visible (they collapse to ring-only, with the numeric
+         label hidden) because monitoring fill is the whole point on a
+         phone where a runaway tier still kills the chat. The breakdown
+         popover is reachable by tap. */
+      #who { display: none; }
+      #vram-stat .lbl, #ctx-stat .lbl,
+      #vram-stat .val, #ctx-stat .val { display: none; }
+      #vram-stat, #ctx-stat { padding: 2px 4px; }
+      .stat-popover {
+        right: auto; left: 50%; transform: translateX(-50%);
+        max-width: 80vw;
+      }
       header label { font-size: 12px; }
       #menu-btn {
         display: inline-flex; align-items: center; justify-content: center;
@@ -498,11 +623,23 @@
         <select id="model-variant" title="Model variant" style="display:none;"></select>
         <label><input type="checkbox" id="think"> Think</label>
         <span class="spacer"></span>
-        <span id="vram-stat" class="stat" title="GPU VRAM free / total (polled every 15s)">
+        <span id="vram-stat" class="stat" title="GPU VRAM usage — click for breakdown" tabindex="0" role="button" aria-label="VRAM usage">
+          <svg class="ring" viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="ring-track" cx="18" cy="18" r="15"></circle>
+            <circle class="ring-fill"  cx="18" cy="18" r="15"
+                    stroke-dasharray="0 100" pathLength="100"></circle>
+          </svg>
           <span class="lbl">VRAM</span> <span class="val" id="vram-val">—</span>
+          <div class="stat-popover" id="vram-popover" role="dialog" aria-label="VRAM breakdown"></div>
         </span>
-        <span id="ctx-stat" class="stat" title="Estimated tokens used / tier context window">
+        <span id="ctx-stat" class="stat" title="Context window usage — click for breakdown" tabindex="0" role="button" aria-label="Context window usage">
+          <svg class="ring" viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="ring-track" cx="18" cy="18" r="15"></circle>
+            <circle class="ring-fill"  cx="18" cy="18" r="15"
+                    stroke-dasharray="0 100" pathLength="100"></circle>
+          </svg>
           <span class="lbl">CTX</span> <span class="val" id="ctx-val">—</span>
+          <div class="stat-popover" id="ctx-popover" role="dialog" aria-label="Context breakdown"></div>
         </span>
         <span id="who" style="color:var(--muted);"></span>
         <button id="admin-btn" type="button" title="Open backend dashboard">⚙ Admin</button>
@@ -512,6 +649,10 @@
         <div id="log"></div>
         <div id="dashboard" class="hidden"></div>
       </div>
+    <div id="model-loading" role="status" aria-live="polite">
+      <span id="ml-label">Loading model into VRAM…</span>
+      <div class="ml-bar"><div class="ml-fill" id="ml-fill"></div></div>
+    </div>
     <footer>
       <div id="composer-wrap">
         <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
@@ -834,7 +975,7 @@
         for (const m of (conv.messages || [])) {
           if (m.role === 'user' || m.role === 'assistant') {
             history.push({ role: m.role, content: m.content });
-            appendMsg(m.role, m.content);
+            appendMsg(m.role, m.content, m.id);
           }
         }
         // Sync the dropdown to the conversation's tier if available.
@@ -903,30 +1044,92 @@
     const ctxValEl   = $('ctx-val');
 
     function setStatLevel(el, frac) {
-      // 0–0.7 normal, 0.7–0.9 warn, ≥0.9 crit. Mirrors the stat color
-      // CSS classes added above.
+      // 0–0.7 normal (green), 0.7–0.9 warn (yellow), ≥0.9 crit (red).
       el.classList.remove('warn', 'crit');
       if (frac >= 0.9) el.classList.add('crit');
       else if (frac >= 0.7) el.classList.add('warn');
     }
+    function setRing(statEl, frac) {
+      // pathLength=100 means the dasharray is in percentages: a value
+      // of N draws an arc covering N% of the circle. Clamp to [0,100]
+      // so a runaway estimator doesn't render a broken arc.
+      const fill = statEl.querySelector('.ring-fill');
+      if (!fill) return;
+      const pct = Math.max(0, Math.min(100, frac * 100));
+      fill.setAttribute('stroke-dasharray', `${pct.toFixed(1)} ${(100 - pct).toFixed(1)}`);
+    }
+    function fmtTokens(n) {
+      n = Math.round(n || 0);
+      return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+    }
+    function tierShortName(tierId) {
+      // tier.versatile → Versatile. Falls back to the raw id.
+      if (!tierId) return '';
+      const stripped = String(tierId).replace(/^tier[._-]/i, '');
+      return stripped.charAt(0).toUpperCase() + stripped.slice(1).replace(/_/g, ' ');
+    }
+
+    // Cache the most recent /vram payload so the popover can render
+    // the per-tier breakdown without an extra round trip on hover.
+    let lastVramSnapshot = null;
+
+    function renderVramPopover() {
+      const pop = document.getElementById('vram-popover');
+      if (!pop) return;
+      const v = lastVramSnapshot;
+      if (!v || !(v.total_vram_gb > 0)) {
+        pop.innerHTML = '<div class="empty">No GPU detected (CPU-only or driver missing).</div>';
+        return;
+      }
+      const total = v.total_vram_gb;
+      const free  = v.free_vram_gb_actual ?? v.free_vram_gb_projected ?? total;
+      const used  = Math.max(0, total - free);
+      let html = '<h4>VRAM</h4>';
+      html += `<div class="row"><span class="k">Total</span><span class="v">${total.toFixed(1)} GB</span></div>`;
+      html += `<div class="row"><span class="k">Used</span><span class="v">${used.toFixed(1)} GB</span></div>`;
+      html += `<div class="row"><span class="k">Free</span><span class="v">${free.toFixed(1)} GB</span></div>`;
+      const loaded = Array.isArray(v.loaded) ? v.loaded : [];
+      if (loaded.length) {
+        html += '<h4 style="margin-top:8px;">Loaded models</h4>';
+        for (const m of loaded) {
+          const cost = (m.observed_cost_gb && m.observed_cost_gb > 0)
+            ? m.observed_cost_gb : (m.vram_cost_gb || 0);
+          const tag  = tierShortName(m.tier_id);
+          const refs = m.refcount > 0 ? ` (in use ×${m.refcount})` : '';
+          html += `<div class="row"><span class="k">${escapeHtml(tag)}${refs}</span>`
+                + `<span class="v">${cost.toFixed(1)} GB</span></div>`;
+        }
+      } else {
+        html += '<div class="empty" style="margin-top:6px;">No models resident.</div>';
+      }
+      pop.innerHTML = html;
+    }
 
     async function pollVram() {
       // Polls /vram every 15s. Backend's `free_vram_gb_actual` reads
-      // NVML; falls back to projected when NVML isn't available
-      // (CPU-only or driver missing) — both give a usable percentage.
+      // NVML; falls back to projected when NVML isn't available.
       try {
         const r = await api('/vram');
         if (!r.ok) return;
         const v = await r.json();
+        lastVramSnapshot = v;
         const total = v.total_vram_gb || 0;
         const free  = v.free_vram_gb_actual ?? v.free_vram_gb_projected ?? total;
         if (total <= 0) {
           vramValEl.textContent = 'n/a';
+          setRing(vramStatEl, 0);
+          renderVramPopover();
           return;
         }
         const used = Math.max(0, total - free);
-        vramValEl.textContent = `${free.toFixed(1)} / ${total.toFixed(0)} GB free`;
-        setStatLevel(vramStatEl, used / total);
+        const frac = used / total;
+        vramValEl.textContent = `${used.toFixed(1)} / ${total.toFixed(0)} GB`;
+        setStatLevel(vramStatEl, frac);
+        setRing(vramStatEl, frac);
+        renderVramPopover();
+        // Drive the model-loading progress bar from the residency
+        // delta when a load is in flight.
+        ModelLoading.observeFreeGb(free);
       } catch (_) {
         vramValEl.textContent = '—';
       }
@@ -941,22 +1144,136 @@
 
     function updateCtxIndicator() {
       const ctx = tierContext.get(modelEl.value);
+      const pop = document.getElementById('ctx-popover');
       if (!ctx) {
         ctxValEl.textContent = '—';
+        setRing(ctxStatEl, 0);
+        if (pop) pop.innerHTML = '<div class="empty">Pick a model to see its context-window usage.</div>';
         return;
       }
-      // Sum estimated tokens across all messages in the local history.
-      // Includes a small fudge for role markers and chat-template
-      // overhead per turn.
       const overheadPerTurn = 8;
-      let used = 0;
+      let userTok = 0, asstTok = 0, overheadTok = 0;
       for (const m of history) {
-        used += estimateTokens(m.content) + overheadPerTurn;
+        const t = estimateTokens(m.content);
+        if (m.role === 'user') userTok += t;
+        else if (m.role === 'assistant') asstTok += t;
+        overheadTok += overheadPerTurn;
       }
-      const fmt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : `${n}`;
-      ctxValEl.textContent = `${fmt(used)} / ${fmt(ctx)}`;
-      setStatLevel(ctxStatEl, used / ctx);
+      const used = userTok + asstTok + overheadTok;
+      const remaining = Math.max(0, ctx - used);
+      const frac = used / ctx;
+      ctxValEl.textContent = `${fmtTokens(used)} / ${fmtTokens(ctx)}`;
+      setStatLevel(ctxStatEl, frac);
+      setRing(ctxStatEl, frac);
+      if (pop) {
+        const tier = tierShortName(modelEl.value);
+        let html = `<h4>Context window — ${escapeHtml(tier)}</h4>`;
+        html += `<div class="row"><span class="k">Window size</span><span class="v">${fmtTokens(ctx)} tok</span></div>`;
+        html += `<div class="row"><span class="k">Your messages</span><span class="v">${fmtTokens(userTok)} tok</span></div>`;
+        html += `<div class="row"><span class="k">Model replies</span><span class="v">${fmtTokens(asstTok)} tok</span></div>`;
+        html += `<div class="row"><span class="k">Template overhead</span><span class="v">${fmtTokens(overheadTok)} tok</span></div>`;
+        html += `<div class="row total"><span class="k">Used</span><span class="v">${fmtTokens(used)} tok (${(frac*100).toFixed(0)}%)</span></div>`;
+        html += `<div class="row"><span class="k">Remaining</span><span class="v">${fmtTokens(remaining)} tok</span></div>`;
+        pop.innerHTML = html;
+      }
     }
+
+    // Wire popover open/close. Click on the .stat toggles the popover;
+    // click outside closes any open popover. Tap-friendly on mobile
+    // because there's no hover state on touchscreens.
+    function wireStatPopover(stat) {
+      stat.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const wasOpen = stat.classList.contains('open');
+        document.querySelectorAll('.stat.open').forEach(s => s.classList.remove('open'));
+        if (!wasOpen) stat.classList.add('open');
+      });
+      stat.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stat.click(); }
+        if (e.key === 'Escape') stat.classList.remove('open');
+      });
+    }
+    wireStatPopover(vramStatEl);
+    wireStatPopover(ctxStatEl);
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.stat.open').forEach(s => s.classList.remove('open'));
+    });
+
+    // ── Model loading progress bar ───────────────────────────────────
+    // Driven by SSE events (tier.loading sets it, the first streamed
+    // token clears it) and by VRAM polling (the free-GB drop during
+    // load gives us a real "X of Y GB resident" signal). When no VRAM
+    // delta is observable yet, fall back to a slow time-based estimate
+    // so the bar still moves rather than sitting at 0%.
+    const ModelLoading = (() => {
+      const el = document.getElementById('model-loading');
+      const fill = document.getElementById('ml-fill');
+      const label = document.getElementById('ml-label');
+      let startedAt = 0;
+      let baselineFreeGb = null;
+      let targetGb = 0;
+      let tierId = null;
+      let tickHandle = null;
+      let active = false;
+
+      function paint(frac) {
+        const pct = Math.max(0, Math.min(1, frac)) * 100;
+        fill.classList.remove('indeterminate');
+        fill.style.width = pct.toFixed(1) + '%';
+      }
+      function tickTimeBased() {
+        if (!active) return;
+        // No usable VRAM delta yet — fade up to ~85% over the typical
+        // 5-30s window. The remaining 15% is reserved for the actual
+        // first-token confirmation.
+        const elapsed = (Date.now() - startedAt) / 1000;
+        // Asymptote at 0.85, half-life ~12s.
+        const frac = 0.85 * (1 - Math.exp(-elapsed / 12));
+        paint(frac);
+      }
+      return {
+        start(evt) {
+          // evt = {tier_id, model_tag, vram_estimate_gb?}
+          active = true;
+          tierId = evt && evt.tier_id || null;
+          targetGb = (evt && evt.vram_estimate_gb) || 0;
+          baselineFreeGb = (lastVramSnapshot
+            && (lastVramSnapshot.free_vram_gb_actual
+                ?? lastVramSnapshot.free_vram_gb_projected)) || null;
+          startedAt = Date.now();
+          const tag = (evt && (evt.model_tag || evt.tier_id)) || 'model';
+          label.textContent = `Loading ${tag} into VRAM…`;
+          el.classList.add('visible');
+          fill.classList.add('indeterminate');
+          fill.style.width = '';
+          if (tickHandle) clearInterval(tickHandle);
+          tickHandle = setInterval(tickTimeBased, 400);
+          // Speed up VRAM polling while a load is in flight so the bar
+          // tracks actual residency growth.
+          pollVram();
+        },
+        observeFreeGb(freeGb) {
+          if (!active || baselineFreeGb == null || !targetGb) return;
+          const consumed = Math.max(0, baselineFreeGb - freeGb);
+          // Cap at 0.95 so the user sees the bar finish at first-token.
+          const frac = Math.min(0.95, consumed / targetGb);
+          if (frac > 0.02) paint(frac);
+        },
+        finish() {
+          if (!active) return;
+          active = false;
+          paint(1.0);
+          if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
+          // Brief 100% pause before hiding so the user sees completion.
+          setTimeout(() => { el.classList.remove('visible'); paint(0); }, 350);
+        },
+        cancel() {
+          active = false;
+          if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
+          el.classList.remove('visible'); paint(0);
+        },
+      };
+    })();
 
     // Per-tier variant info from /v1/models, keyed by tier_id like "tier.coding".
     // Each value: {variants: [{id, name, available, vram_estimate_gb}], default: "30b"}.
@@ -1431,13 +1748,159 @@
       });
     }
 
-    function appendMsg(role, text) {
+    function appendMsg(role, text, msgId) {
       const box = document.createElement('div');
       box.className = 'msg ' + role;
-      box.innerHTML = `<div class="role">${role}</div><div class="body">${renderMarkdown(text)}</div>`;
+      if (msgId != null) box.dataset.msgId = String(msgId);
+      let actions = '';
+      // Only user turns get the edit affordance — editing an assistant
+      // reply doesn't have well-defined semantics in a generative chat
+      // (the "rewind to here and rerun the model" flow only makes sense
+      // when the user is changing their own input).
+      if (role === 'user') {
+        actions = '<div class="msg-actions"><button class="edit-btn" type="button" title="Edit and resend">✎ Edit</button></div>';
+      }
+      box.innerHTML = `<div class="role">${role}</div>${actions}<div class="body">${renderMarkdown(text)}</div>`;
       logEl.appendChild(box);
+      const editBtn = box.querySelector('.edit-btn');
+      if (editBtn) editBtn.addEventListener('click', () => beginEditMessage(box, text));
       logEl.scrollTop = logEl.scrollHeight;
       return box.querySelector('.body');
+    }
+
+    // ── Edit & rewind ────────────────────────────────────────────────
+    // Swap a user message for a textarea. Saving truncates the
+    // conversation server-side (DELETE /chats/{id}/messages/{msgId})
+    // and re-sends the corrected text via sendMessage(), so the model
+    // re-extends from the edited turn forward.
+    function beginEditMessage(box, originalText) {
+      if (streaming) return;   // refuse mid-stream edits
+      const bodyEl = box.querySelector('.body');
+      const actionsEl = box.querySelector('.msg-actions');
+      if (!bodyEl) return;
+      const original = bodyEl.dataset.rawText || originalText || bodyEl.innerText;
+      bodyEl.dataset.rawText = original;
+      bodyEl.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.className = 'edit-area';
+      ta.value = original;
+      const controls = document.createElement('div');
+      controls.className = 'edit-controls';
+      controls.innerHTML =
+        '<button class="primary save" type="button">Save & rewind</button>' +
+        '<button class="cancel" type="button">Cancel</button>' +
+        '<span class="hint">Subsequent replies will be discarded.</span>';
+      bodyEl.appendChild(ta);
+      bodyEl.appendChild(controls);
+      if (actionsEl) actionsEl.style.display = 'none';
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+
+      const restore = () => {
+        bodyEl.innerHTML = renderMarkdown(original);
+        if (actionsEl) actionsEl.style.display = '';
+      };
+      controls.querySelector('.cancel').addEventListener('click', restore);
+      controls.querySelector('.save').addEventListener('click', async () => {
+        const newText = ta.value.trim();
+        if (!newText || newText === original) { restore(); return; }
+        await commitEditAndRewind(box, newText, restore);
+      });
+      ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); restore(); }
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault(); controls.querySelector('.save').click();
+        }
+      });
+    }
+
+    async function commitEditAndRewind(box, newText, restoreFn) {
+      const msgId = box.dataset.msgId;
+      // Server-side truncate: drop this message and every later one.
+      // For purely-local messages (no id yet — happens if the user
+      // edits the freshly-sent turn before refreshMessageIds runs),
+      // skip the network call and rely on the local rewind below.
+      if (msgId && currentConversationId != null) {
+        try {
+          const r = await api(
+            `/chats/${currentConversationId}/messages/${encodeURIComponent(msgId)}`,
+            { method: 'DELETE' },
+          );
+          if (!r.ok && r.status !== 404) {
+            // 404 is benign here — the message may already have been
+            // truncated by a concurrent rewind. Anything else is a
+            // hard failure: bail without touching the DOM so the user
+            // can retry instead of losing their text.
+            restoreFn();
+            alert('Could not rewind conversation: ' + r.status);
+            return;
+          }
+        } catch (e) {
+          restoreFn();
+          alert('Could not rewind conversation: ' + e);
+          return;
+        }
+      }
+      // Local rewind: drop the edited message + every following node
+      // from the DOM, and trim `history` to match. The pivot is the
+      // index of the corresponding user turn in `history` (counted by
+      // walking the prior siblings).
+      let userIdx = -1;
+      for (const sib of logEl.children) {
+        if (sib === box) break;
+        if (sib.classList && sib.classList.contains('msg')) {
+          // Each .msg corresponds 1:1 to a history entry, so map by
+          // counting prior siblings.
+          userIdx++;
+        }
+      }
+      // userIdx is now the count of prior history entries; the edited
+      // message is at position userIdx + 1 - 1 = userIdx (0-based).
+      const cutAt = userIdx + 1;   // ← edited message itself + everything after
+      // Remove DOM nodes from `box` onward.
+      while (logEl.lastChild && logEl.lastChild !== box) {
+        logEl.removeChild(logEl.lastChild);
+      }
+      logEl.removeChild(box);
+      // Trim local history.
+      if (cutAt - 1 >= 0 && cutAt - 1 < history.length) {
+        history.length = cutAt - 1;
+      }
+      updateCtxIndicator();
+      // Re-send the corrected text. composerEl is the source of truth
+      // for sendMessage(), so prime it then dispatch.
+      composerEl.value = newText;
+      await sendMessage();
+    }
+
+    // After streaming completes, the freshly-stored user + assistant
+    // rows have server-assigned ids that the SSE stream doesn't carry
+    // back. Re-fetch the conversation and stamp data-msg-id onto each
+    // .msg DOM node in order so subsequent edits know which row to
+    // truncate from. Cheap GET, only fires when we're sure a row was
+    // actually persisted (currentConversationId != null).
+    async function refreshMessageIds() {
+      if (currentConversationId == null) return;
+      try {
+        const r = await api('/chats/' + currentConversationId);
+        if (!r.ok) return;
+        const conv = await r.json();
+        const msgs = (conv.messages || []).filter(
+          m => m.role === 'user' || m.role === 'assistant'
+        );
+        const nodes = Array.from(logEl.querySelectorAll('.msg'));
+        // Walk backwards: assistant streaming may have appended the
+        // most recent .msg, but the message list is sorted by created_at
+        // ascending. Pair from the right so off-by-one races (e.g. a
+        // pending tool-call message in flight) don't misalign earlier
+        // ids.
+        const n = Math.min(nodes.length, msgs.length);
+        for (let i = 0; i < n; i++) {
+          const node = nodes[nodes.length - 1 - i];
+          const m = msgs[msgs.length - 1 - i];
+          if (m && m.id != null) node.dataset.msgId = String(m.id);
+        }
+      } catch (_) {}
     }
 
     composerEl.addEventListener('keydown', (e) => {
@@ -1609,6 +2072,11 @@
                   label = tag
                     ? `Loading ${tag} into VRAM (first request takes 5–30s)…`
                     : 'Loading model into VRAM (first request takes 5–30s)…';
+                  // Surface the proportional progress bar above the
+                  // composer. Cleared by the first streamed token (see
+                  // firstTokenSeen branch below) or by the error/finally
+                  // paths so it never gets stuck visible.
+                  ModelLoading.start(chunk.data || {});
                 } else if (t === 'vram.making_room') {
                   const tag = chunk.data && chunk.data.tier_id;
                   label = tag
@@ -1621,6 +2089,7 @@
                   const msg = (chunk.data && chunk.data.message) || 'Unknown error';
                   targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(msg) + '</em>';
                   firstTokenSeen = true;   // suppress further status
+                  ModelLoading.cancel();
                   continue;
                 }
                 if (label) {
@@ -1635,6 +2104,7 @@
                   if (!firstTokenSeen) {
                     firstTokenSeen = true;
                     targetBody.innerHTML = '';
+                    ModelLoading.finish();
                   }
                   buffered += delta;
                   targetBody.innerHTML = renderMarkdown(buffered);
@@ -1646,6 +2116,11 @@
         }
         history.push({ role: 'assistant', content: buffered });
         updateCtxIndicator();
+        // Stamp data-msg-id onto the freshly-rendered .msg nodes so
+        // the edit-and-rewind flow has server ids to call DELETE with.
+        // _finalize_conversation runs as a background task after the
+        // stream closes, so wait a beat before re-fetching.
+        setTimeout(refreshMessageIds, 800);
         // First assistant turn in this conversation triggers a backend
         // auto-title pass. Refresh the sidebar after a short delay so
         // the freshly-generated title replaces the "New chat" sentinel.
@@ -1677,6 +2152,7 @@
       } finally {
         streaming = false;
         sendEl.disabled = false;
+        ModelLoading.cancel();
       }
     }
 

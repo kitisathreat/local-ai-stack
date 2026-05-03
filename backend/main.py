@@ -1979,6 +1979,28 @@ async def delete_chat(
     return {"ok": True, "summarized": keep_summary, "deleted": ok}
 
 
+@app.delete("/chats/{conv_id}/messages/{message_id}")
+async def truncate_messages_from(
+    conv_id: int,
+    message_id: int,
+    user: dict = Depends(auth.current_user),
+):
+    """Delete `message_id` and every later message in the conversation.
+    Powers the chat UI's edit-and-rewind flow: editing a past user turn
+    nukes the original message and every reply that followed it so the
+    new text can take their place.
+    """
+    conv = await db.get_conversation(conv_id, user["id"])
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if bool(conv.get("airgap")) != airgap.is_enabled():
+        raise HTTPException(404, "Conversation not found (other airgap mode)")
+    removed = await db.delete_messages_from(conv_id, user["id"], message_id)
+    if removed == 0:
+        raise HTTPException(404, "Message not found in this conversation")
+    return {"ok": True, "removed": removed}
+
+
 # ── RAG ─────────────────────────────────────────────────────────────────
 
 from fastapi import UploadFile, File
