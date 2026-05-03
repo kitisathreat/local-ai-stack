@@ -655,6 +655,18 @@ function Invoke-Start {
     # by the backend's VRAMScheduler — they cold-spawn on first request.
     $llamaBin = Join-Path $VendorDir 'llama-server\llama-server.exe'
 
+    # Pump every chat-tier .gguf through the OS file-page cache in a
+    # background job before the always-on services spawn. Subsequent
+    # llama-server mmap loads come from RAM rather than disk, dropping
+    # cold-spawn I/O time from "model size / NVMe bandwidth" to ~0.
+    # Doesn't touch the GPU or load anything — just bytes through the
+    # page cache.
+    Write-Step 'Pre-warming OS page cache for GGUFs (background)'
+    $warmJob = Start-Job -ScriptBlock {
+        param($repo)
+        & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'scripts\warm-page-cache.ps1')
+    } -ArgumentList $RepoRoot
+
     # Vision tier is now COLD-SPAWNED by the VRAMScheduler on first
     # image-bearing request (router.py auto-routes when an image_url
     # part is in the message). Pre-spawning it consumed ~6.5 GB VRAM
