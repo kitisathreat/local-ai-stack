@@ -65,6 +65,7 @@ from .schemas import (
 )
 from .diagnostics import run_startup_diagnostics
 from .vram_scheduler import QueueFull, QueueTimeout, VRAMScheduler, VRAMExhausted
+from . import error_codes
 
 
 logging.basicConfig(
@@ -1320,12 +1321,17 @@ async def _single_agent_sse(
             ] + results
     except VRAMExhausted as e:
         yield _agent_event_sse(
-            AgentEvent(type="error", data={"message": str(e), "kind": "vram_exhausted"}),
+            AgentEvent(type="error", data={
+                "code": error_codes.VRAM_EXHAUSTED.code,
+                "message": str(e),
+                "kind": "vram_exhausted",
+            }),
             model_id,
         )
     except QueueFull as e:
         yield _agent_event_sse(
             AgentEvent(type="error", data={
+                "code": error_codes.VRAM_QUEUE_FULL.code,
                 "message": str(e),
                 "kind": "queue_full",
                 "retry_after_sec": 30,
@@ -1335,6 +1341,7 @@ async def _single_agent_sse(
     except QueueTimeout as e:
         yield _agent_event_sse(
             AgentEvent(type="error", data={
+                "code": error_codes.VRAM_QUEUE_TIMEOUT.code,
                 "message": str(e),
                 "kind": "queue_timeout",
                 "retry_after_sec": 15,
@@ -1344,7 +1351,10 @@ async def _single_agent_sse(
     except Exception as e:
         logger.exception("Single-agent stream failed")
         yield _agent_event_sse(
-            AgentEvent(type="error", data={"message": str(e)}),
+            AgentEvent(type="error", data={
+                "code": error_codes.INTERNAL_UNEXPECTED.code,
+                "message": str(e),
+            }),
             model_id,
         )
 
@@ -1867,20 +1877,17 @@ async def auth_login(body: LoginRequest, request: Request):
     cfg = state.config.auth
     user = await auth.authenticate(body.username, body.password)
     if not user:
-        raise HTTPException(401, "Invalid username or password")
-    # Defence-in-depth: the lifespan guard above refuses to boot when
-    # AUTH_SECRET_KEY is missing on a populated DB, so we should never
-    # actually hit this branch. But if some future code path lets us
-    # boot without the key, return a clear 503 instead of leaking a
-    # 500/RuntimeError that the chat UI would render as "Invalid
-    # username or password" — which looks identical to the user's
-    # account being silently invalidated.
+        error_codes.raise_with_code(error_codes.AUTH_INVALID_CREDS)
+    # Defence-in-depth: the lifespan guard refuses to boot when
+    # AUTH_SECRET_KEY is missing on a populated DB. If some future code
+    # path lets us boot without the key, return a coded 503 instead of
+    # a bare 500 that the chat UI would mistake for bad credentials.
     try:
         session_token = auth.issue_session_token(user["id"], cfg)
     except RuntimeError as exc:
         logger.error("Cannot issue session token after successful auth: %s", exc)
-        raise HTTPException(
-            503,
+        error_codes.raise_with_code(
+            error_codes.AUTH_CANNOT_SIGN_TOKEN,
             "Server is misconfigured (cannot sign session tokens) — "
             "contact administrator.",
         )
