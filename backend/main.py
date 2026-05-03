@@ -331,6 +331,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
 app.include_router(admin.router)
 
+# Routes that used to be inline @app.get/@app.post handlers in this file
+# but were extracted into backend/routes/*.py for navigability. The
+# routers reach back into backend.main.state via lazy import — see
+# backend/routes/__init__.py for the pattern.
+from .routes import conversations as _routes_conversations  # noqa: E402
+from .routes import preferences as _routes_preferences  # noqa: E402
+from .routes import rag_memory as _routes_rag_memory  # noqa: E402
+
+app.include_router(_routes_preferences.router)
+app.include_router(_routes_conversations.router)
+app.include_router(_routes_rag_memory.router)
+
 # Serve the minimal vanilla-JS chat UI at / so cloudflared fronting
 # chat.mylensandi.com lands on a real page. No build step; no SPA.
 from fastapi.responses import FileResponse  # noqa: E402
@@ -1804,6 +1816,11 @@ def httpx_module():
     return _httpx
 
 
+def httpx_async_client():
+    import httpx as _httpx
+    return _httpx.AsyncClient(timeout=30.0)
+
+
 # ── Tier pre-warm ───────────────────────────────────────────────────────
 # Hot-load the everyday chat tiers on user login / page connect so the
 # first message doesn't pay the 5-30 s cold-spawn cost. Hooked into
@@ -1958,381 +1975,14 @@ async def me(user: dict = Depends(auth.current_user)):
     return MeResponse(**user)
 
 
-# ── Per-user preferences ────────────────────────────────────────────────
-# Opaque JSON blob owned by the client. Backend never inspects keys —
-# stores and returns whatever the client writes. Used today for tool
-# toggle persistence (`enabled_tools: ["module.method", ...]`); any
-# future per-user UI setting goes here without a backend change.
-
-async def _read_user_prefs(user_id: int) -> dict:
-    async with db.get_conn() as c:
-        row = await (await c.execute(
-            "SELECT preferences FROM users WHERE id = ?", (user_id,),
-        )).fetchone()
-    if not row:
-        return {}
-    raw = row["preferences"] or "{}"
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except json.JSONDecodeError:
-        return {}
-
-
-async def _write_user_prefs(user_id: int, prefs: dict) -> None:
-    payload = json.dumps(prefs, separators=(",", ":"))
-    async with db.get_conn() as c:
-        await c.execute(
-            "UPDATE users SET preferences = ? WHERE id = ?",
-            (payload, user_id),
-        )
-        await c.commit()
-
-
-@app.get("/me/preferences")
-async def get_preferences(user: dict = Depends(auth.current_user)):
-    """Return the user's preference blob. Always a dict — empty when unset."""
-    return {"preferences": await _read_user_prefs(user["id"])}
-
-
-@app.patch("/me/preferences")
-async def patch_preferences(
-    body: dict, user: dict = Depends(auth.current_user),
-):
-    """Shallow-merge the supplied dict into the user's preference blob.
-    To delete a key, send `{"key": null}` — null values are stripped on
-    write so they don't accumulate. Returns the merged result so the
-    client doesn't need to round-trip a follow-up GET."""
-    if not isinstance(body, dict):
-        raise HTTPException(400, "preferences body must be a JSON object")
-    current = await _read_user_prefs(user["id"])
-    for k, v in body.items():
-        if v is None:
-            current.pop(k, None)
-        else:
-            current[k] = v
-    await _write_user_prefs(user["id"], current)
-    return {"preferences": current}
+# /me/preferences endpoints live in backend/routes/preferences.py.
 
 
 # ── Conversations ───────────────────────────────────────────────────────
+# /chats CRUD + /api/chat/upload live in backend/routes/conversations.py.
 
-@app.get("/chats", response_model=ConversationListResponse)
-async def list_chats(
-    user: dict = Depends(auth.current_user),
-    include_archived: bool = False,
-    archived_only: bool = False,
-):
-    """Return conversations matching the current airgap mode.
-    By default archived chats are hidden from the sidebar. Pass
-    `?archived_only=true` to list only archived (used by the
-    "Archived" view) or `?include_archived=true` to list both."""
-    if archived_only:
-        archived_filter: bool | None = True
-    elif include_archived:
-        archived_filter = None
-    else:
-        archived_filter = False
-    rows = await db.list_conversations(
-        user["id"], airgap=airgap.is_enabled(), archived=archived_filter,
-    )
-    return ConversationListResponse(data=[ConversationSummary(**r) for r in rows])
-
-
-@app.post("/chats", response_model=ConversationSummary)
-async def create_chat(
-    body: ConversationUpdate,
-    user: dict = Depends(auth.current_user),
-):
-    # New chats inherit the current mode — you can't create a "normal"
-    # chat while airgap is on, period.
-    is_airgap = airgap.is_enabled()
-    conv = await db.create_conversation(
-        user["id"],
-        title=body.title or "New chat",
-        tier=body.tier,
-        # Default to enabled when the client doesn't say otherwise.
-        memory_enabled=True if body.memory_enabled is None else body.memory_enabled,
-        airgap=is_airgap,
-    )
-    return ConversationSummary(**conv)
-
-
-@app.get("/chats/{conv_id}", response_model=ConversationWithMessages)
-async def get_chat(conv_id: int, user: dict = Depends(auth.current_user)):
-    conv = await db.get_conversation(conv_id, user["id"])
-    if not conv:
-        raise HTTPException(404, "Conversation not found")
-    # Hide cross-mode chats: an airgap conversation must not be openable
-    # while the server is in normal mode and vice versa.
-    if bool(conv.get("airgap")) != airgap.is_enabled():
-        raise HTTPException(
-            404,
-            "Conversation not found (owned by the other airgap mode).",
-        )
-    msgs = await db.list_messages(conv_id)
-    return ConversationWithMessages(
-        **conv,
-        messages=[MessageOut(**m) for m in msgs],
-    )
-
-
-async def _maybe_evict_unused_tier(tier_name: str | None) -> None:
-    """If no other live (non-archived) conversation across any user is
-    pinned to ``tier_name`` and the scheduler shows the tier idle
-    (refcount == 0, not pinned, not in the auto-warm set), unload it.
-
-    Called from update_chat (when archived=True flips on) and
-    delete_chat — together with the no-eager-load policy this enforces
-    "models loaded only during active sessions". The auto-warm set
-    (``_DEFAULT_WARM_TIERS``) is treated as always-active so a freshly
-    archived chat doesn't immediately tear down versatile/fast.
-    """
-    if not tier_name:
-        return
-    if tier_name in _DEFAULT_WARM_TIERS:
-        return
-    try:
-        # Cheap DB existence check — any user, any non-archived conv on
-        # this tier keeps it warm. Memory-distillation eligibility and
-        # airgap mode aren't load-bearing here; we just want "is anyone
-        # else still talking to this model?"
-        async with db.get_conn() as c:
-            cur = await c.execute(
-                "SELECT 1 FROM conversations WHERE tier = ? "
-                "AND archived = 0 LIMIT 1",
-                (tier_name,),
-            )
-            row = await cur.fetchone()
-        if row is not None:
-            return
-        sched = getattr(state, "scheduler", None)
-        if sched is None:
-            return
-        async with sched._lock:
-            m = sched.loaded.get(tier_name)
-            if m is None:
-                return
-            if m.pinned or m.refcount > 0:
-                return
-            if m.state.value != "resident":
-                return
-            await sched._unload(m)
-        logger.info(
-            "Evicted tier %r — last active conversation closed/archived",
-            tier_name,
-        )
-    except Exception as exc:
-        logger.debug("Idle-evict skipped for tier %r: %s", tier_name, exc)
-
-
-@app.patch("/chats/{conv_id}", response_model=ConversationSummary)
-async def update_chat(
-    conv_id: int,
-    body: ConversationUpdate,
-    user: dict = Depends(auth.current_user),
-):
-    prev = await db.get_conversation(conv_id, user["id"])
-    ok = await db.update_conversation(
-        conv_id, user["id"],
-        title=body.title, tier=body.tier,
-        memory_enabled=body.memory_enabled,
-        archived=body.archived,
-    )
-    if not ok:
-        raise HTTPException(404, "Conversation not found")
-    conv = await db.get_conversation(conv_id, user["id"])
-    # Archive flipped on → maybe evict the model if nothing else uses it.
-    if body.archived and prev and not prev.get("archived"):
-        await _maybe_evict_unused_tier(prev.get("tier"))
-    return ConversationSummary(**conv)
-
-
-@app.delete("/chats/{conv_id}")
-async def delete_chat(
-    conv_id: int,
-    user: dict = Depends(auth.current_user),
-    keep_summary: bool = True,
-):
-    """Delete a conversation. By default, distill it into a memory entry
-    first (`?keep_summary=true`, default) so the user keeps the gist
-    without the verbatim transcript. Pass `?keep_summary=false` to
-    skip distillation (e.g., for accidental chats with nothing worth
-    remembering)."""
-    conv = await db.get_conversation(conv_id, user["id"])
-    if not conv:
-        raise HTTPException(404, "Conversation not found")
-    if bool(conv.get("airgap")) != airgap.is_enabled():
-        raise HTTPException(404, "Conversation not found (other airgap mode)")
-    if keep_summary and conv.get("memory_enabled", True):
-        # Best-effort summary — never let memory failure block delete.
-        try:
-            versatile_tier = state.config.models.tiers.get("versatile")
-            if versatile_tier is not None:
-                await memory.distill_and_store(
-                    user["id"], conv_id, state.llama_cpp, versatile_tier,
-                    airgap=bool(conv.get("airgap")),
-                )
-                logger.info("Pre-delete summary stored for conv %d", conv_id)
-        except Exception as e:
-            logger.warning("Pre-delete summary failed for conv %d: %s", conv_id, e)
-    ok = await db.delete_conversation(conv_id, user["id"])
-    if ok:
-        await _maybe_evict_unused_tier(conv.get("tier"))
-    return {"ok": True, "summarized": keep_summary, "deleted": ok}
-
-
-# ── RAG ─────────────────────────────────────────────────────────────────
-
-from fastapi import UploadFile, File
-
-
-# ── Chat attachments (per-message, ephemeral) ───────────────────────────
-#
-# Different from /rag/upload: chat attachments are scoped to the next
-# chat turn (and at most a handful of follow-ups). They live under
-# data/uploads/<user_id>/<id>.<ext> and the chat composer surfaces them
-# as removable chips. The chat handler picks them up via
-# req.attachment_ids — it inlines text content into the user message and
-# sends image bytes through to the vision tier when one is selected.
-import secrets as _secrets
-
-_ATTACH_MAX_BYTES = 20 * 1024 * 1024   # 20 MB per file, like /rag/upload
-
-
-def _attachments_dir(user_id: int) -> Path:
-    base = Path(os.getenv("LAI_DATA_DIR") or
-                Path(__file__).resolve().parent.parent / "data")
-    d = base / "uploads" / str(user_id)
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-@app.post("/api/chat/upload")
-async def chat_upload(
-    file: UploadFile = File(...),
-    user: dict = Depends(auth.current_user),
-):
-    """Stash a file for the user's next chat turn. Returns an opaque id
-    the chat composer attaches to the next /v1/chat/completions request
-    via attachment_ids=[...]. Files are NOT indexed into RAG (use
-    /rag/upload for that)."""
-    content = await file.read()
-    if not content:
-        raise HTTPException(400, "Empty file")
-    if len(content) > _ATTACH_MAX_BYTES:
-        raise HTTPException(413, f"File too large (>{_ATTACH_MAX_BYTES // (1024*1024)} MB)")
-    aid = _secrets.token_urlsafe(12)
-    # Preserve a sane suffix so downstream code can sniff text-vs-image
-    # without re-reading the file. We don't trust the original name for
-    # disk path; only the suffix.
-    fname = (file.filename or "upload").lower()
-    ext = Path(fname).suffix[:8] or ""
-    if ext and not re.fullmatch(r"\.[a-z0-9]+", ext):
-        ext = ""
-    dest = _attachments_dir(user["id"]) / f"{aid}{ext}"
-    dest.write_bytes(content)
-    return {
-        "id": aid,
-        "name": file.filename or "upload",
-        "size": len(content),
-        "content_type": file.content_type or "application/octet-stream",
-    }
-
-
-@app.post("/rag/upload")
-async def rag_upload(
-    file: UploadFile = File(...),
-    user: dict = Depends(auth.current_user),
-):
-    content = await file.read()
-    if not content:
-        raise HTTPException(400, "Empty file")
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(413, "File too large (>20MB)")
-    try:
-        ingest = await rag.ingest_document(
-            user["id"], file.filename or "upload", content, mime=file.content_type,
-        )
-    except Exception as e:
-        logger.exception("RAG ingest failed")
-        raise HTTPException(500, f"Ingest failed: {e}")
-
-    # Persist doc metadata so the UI can list + delete.
-    now = time.time()
-    async with db.get_conn() as c:
-        import json as _json
-        await c.execute(
-            "INSERT INTO rag_docs (user_id, filename, mime_type, size_bytes, chunk_count, qdrant_ids, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                user["id"], file.filename, file.content_type, len(content),
-                ingest["chunks"], _json.dumps(ingest["qdrant_ids"]), now,
-            ),
-        )
-        await c.commit()
-    return {"ok": True, "chunks": ingest["chunks"], "filename": file.filename}
-
-
-@app.get("/rag/docs")
-async def rag_list(user: dict = Depends(auth.current_user)):
-    async with db.get_conn() as c:
-        rows = await (await c.execute(
-            "SELECT id, filename, mime_type, size_bytes, chunk_count, created_at "
-            "FROM rag_docs WHERE user_id = ? ORDER BY created_at DESC",
-            (user["id"],),
-        )).fetchall()
-        return {"data": [dict(r) for r in rows]}
-
-
-@app.delete("/rag/docs/{doc_id}")
-async def rag_delete(doc_id: int, user: dict = Depends(auth.current_user)):
-    import json as _json
-    async with db.get_conn() as c:
-        row = await (await c.execute(
-            "SELECT id, qdrant_ids FROM rag_docs WHERE id = ? AND user_id = ?",
-            (doc_id, user["id"]),
-        )).fetchone()
-        if not row:
-            raise HTTPException(404, "Document not found")
-        ids = _json.loads(row["qdrant_ids"] or "[]")
-        await c.execute("DELETE FROM rag_docs WHERE id = ?", (doc_id,))
-        await c.commit()
-    # Best-effort Qdrant cleanup (the upload persists point IDs, not doc_id).
-    if ids:
-        coll = rag.collection_name(user["id"])
-        async with httpx_async_client() as cx:
-            await cx.post(
-                f"{rag.QDRANT_URL.rstrip('/')}/collections/{coll}/points/delete",
-                json={"points": ids},
-                params={"wait": "true"},
-            )
-    return {"ok": True}
-
-
-def httpx_async_client():
-    import httpx as _httpx
-    return _httpx.AsyncClient(timeout=30.0)
-
-
-# ── Memory ──────────────────────────────────────────────────────────────
-
-@app.get("/memory")
-async def memory_list(user: dict = Depends(auth.current_user)):
-    """List the user's stored memories for the *current* mode only.
-    Airgap and non-airgap memories never appear together so a user in
-    airgap mode can't accidentally see distilled facts from their
-    normal conversations (or vice versa)."""
-    rows = await memory.list_for_user(user["id"], airgap=airgap.is_enabled())
-    return {"data": rows}
-
-
-@app.delete("/memory/{memory_id}")
-async def memory_delete(memory_id: int, user: dict = Depends(auth.current_user)):
-    ok = await memory.delete(user["id"], memory_id)
-    if not ok:
-        raise HTTPException(404, "Memory not found")
-    return {"ok": True}
+# /chats CRUD, /api/chat/upload, /rag/*, /memory/* live under
+# backend/routes/{conversations,rag_memory}.py.
 
 
 @app.exception_handler(Exception)
