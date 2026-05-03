@@ -210,6 +210,35 @@ def route(
     tier_name_input = parsed.set_tier or req.model
     tier_name, tier = config.models.resolve(tier_name_input)
 
+    # Virtual team tier (`multi_agent`): the user picked the "Multi-Agent
+    # Team" entry in the tier dropdown. That tier owns no llama-server
+    # of its own — its job is to (a) force multi-agent ON and (b) pin
+    # the orchestrator tier to whatever the chat panel sent. Resolve
+    # `tier_name` to the orchestrator tier here, before the rest of
+    # the router runs, so downstream code (specialist routing, thinking
+    # signals, vision auto-route) operates on a real tier and the
+    # orchestrator is correctly spawned for the synthesis step.
+    team_tier_picked = (getattr(tier, "role", None) == "team")
+    if team_tier_picked:
+        # Force multi-agent on for this request, regardless of any
+        # other heuristic, by mutating the request's options. Defaults
+        # come from router.multi_agent in config; the chat UI's team
+        # panel populates orchestrator_tier / worker_tier / num_workers
+        # over the wire, so per-request overrides win as usual.
+        ma_opts = req.multi_agent_options
+        if ma_opts is None:
+            from .schemas import MultiAgentOptions  # local import — schemas.py imports config indirectly
+            ma_opts = MultiAgentOptions()
+            req.multi_agent_options = ma_opts
+        ma_opts.enabled = True
+        # Pick the orchestrator tier: per-request override > config default.
+        orch_pick = (ma_opts.orchestrator_tier
+                     or config.router.multi_agent.orchestrator_tier)
+        if orch_pick and orch_pick.startswith("tier."):
+            orch_pick = orch_pick[5:]
+        if orch_pick in config.models.tiers:
+            tier_name, tier = config.models.resolve(orch_pick)
+
     # Specialist auto-routing (vision/coding) unless user picked vision explicitly
     specialist_reason: str | None = None
     if has_image(req.messages) and tier_name != "vision":

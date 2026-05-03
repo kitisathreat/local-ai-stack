@@ -502,6 +502,20 @@
         <span class="brand">Local AI Stack</span>
         <select id="model"></select>
         <select id="model-variant" title="Model variant" style="display:none;"></select>
+        <span id="team-config" title="Multi-agent team configuration" style="display:none; gap:6px; align-items:center;">
+          <label style="display:flex; gap:4px; align-items:center;" title="Orchestrator decomposes the task and synthesises worker outputs">
+            <span style="color:var(--muted); font-size:0.85em;">Orch</span>
+            <select id="team-orchestrator"></select>
+          </label>
+          <label style="display:flex; gap:4px; align-items:center;" title="Tier each worker runs on (all workers share this tier)">
+            <span style="color:var(--muted); font-size:0.85em;">Workers</span>
+            <select id="team-worker"></select>
+          </label>
+          <label style="display:flex; gap:4px; align-items:center;" title="Number of parallel workers (1–8)">
+            <span style="color:var(--muted); font-size:0.85em;">N</span>
+            <input id="team-n" type="number" min="1" max="8" step="1" value="3" style="width:3em;">
+          </label>
+        </span>
         <label><input type="checkbox" id="think"> Think</label>
         <span class="spacer"></span>
         <span id="vram-stat" class="stat" title="GPU VRAM free / total (polled every 15s)">
@@ -1051,6 +1065,58 @@
       if (tierId) variantPick.set(tierId, variantEl.value);
     });
 
+    // ── Multi-Agent Team panel ─────────────────────────────────────────
+    // The header has a `<span id="team-config">` with three controls:
+    //   - team-orchestrator (select): tier that decomposes + synthesises
+    //   - team-worker       (select): tier each worker runs on
+    //   - team-n            (number): number of parallel workers (1–8)
+    // Only visible when the user picks the "Multi-Agent Team" tier
+    // (id === "tier.multi_agent"). When visible, the chat-completions
+    // request body grows a `multi_agent_options` block populated from
+    // these controls.
+    const teamConfigEl = $('team-config');
+    const teamOrchEl   = $('team-orchestrator');
+    const teamWorkerEl = $('team-worker');
+    const teamNEl      = $('team-n');
+
+    function populateTeamDropdowns(modelsList) {
+      // Eligible orchestrator + worker tiers: any chat tier that
+      // ISN'T the multi_agent virtual tier itself, isn't the embedding /
+      // reranker (excluded by /v1/models already), and isn't currently
+      // unavailable (gguf not on disk).
+      // Preserve current selections across reloads.
+      const prevOrch   = teamOrchEl.value;
+      const prevWorker = teamWorkerEl.value;
+      teamOrchEl.innerHTML   = '';
+      teamWorkerEl.innerHTML = '';
+      (modelsList || []).forEach(m => {
+        if (m.id === 'tier.multi_agent') return;
+        // Skip "downloading…" tiers — picking them would 404 the spawn.
+        if (m.context_window === undefined && m.available === false) return;
+        const key = m.id.replace(/^tier\./, '');
+        const label = m.name || key;
+        const o1 = document.createElement('option');
+        o1.value = key;
+        o1.textContent = label;
+        teamOrchEl.appendChild(o1);
+        teamWorkerEl.appendChild(o1.cloneNode(true));
+      });
+      if (prevOrch   && [...teamOrchEl.options].some(o => o.value === prevOrch))     teamOrchEl.value   = prevOrch;
+      if (prevWorker && [...teamWorkerEl.options].some(o => o.value === prevWorker)) teamWorkerEl.value = prevWorker;
+      // Sensible first-time defaults: orchestrator=versatile, worker=fast.
+      if (!teamOrchEl.value && [...teamOrchEl.options].some(o => o.value === 'versatile')) {
+        teamOrchEl.value = 'versatile';
+      }
+      if (!teamWorkerEl.value && [...teamWorkerEl.options].some(o => o.value === 'fast')) {
+        teamWorkerEl.value = 'fast';
+      }
+    }
+
+    function applyTeamPanelVisibility() {
+      const isTeamTier = (modelEl.value === 'tier.multi_agent');
+      teamConfigEl.style.display = isTeamTier ? 'inline-flex' : 'none';
+    }
+
     async function loadModels() {
       // Fetch /v1/models for the available tier list and /resolved-models
       // for the per-tier specific model name + on-disk availability.
@@ -1141,6 +1207,8 @@
         }
         lastSelectedModel = modelEl.value;
         applyVariantSelector(modelEl.value);
+        populateTeamDropdowns(data || []);
+        applyTeamPanelVisibility();
         updateCtxIndicator();
       } catch (_) {}
     }
@@ -1171,6 +1239,8 @@
       lastSelectedModel = newVal;
       // Re-render the variant sub-selector for the newly-picked tier.
       applyVariantSelector(newVal);
+      // Show/hide the multi-agent team panel based on the new tier.
+      applyTeamPanelVisibility();
     });
 
     // Refresh the tier list every 30 s so download-completed tiers
@@ -1883,6 +1953,23 @@
         if (variantsForTier && variantEl.value && variantEl.style.display !== 'none') {
           const def = variantsForTier.default;
           if (variantEl.value !== def) body.variant = variantEl.value;
+        }
+
+        // Multi-Agent Team: when the user picked the team tier, attach
+        // the orchestrator / worker / num_workers from the header
+        // controls. The backend's router forces multi_agent on whenever
+        // tier.role == "team", but we ALSO set enabled=true here so the
+        // signal is explicit on the wire (and so the request still
+        // routes correctly if a downstream handler short-circuits the
+        // role check).
+        if (modelEl.value === 'tier.multi_agent') {
+          const n = Math.max(1, Math.min(8, parseInt(teamNEl.value, 10) || 3));
+          body.multi_agent_options = {
+            enabled: true,
+            orchestrator_tier: teamOrchEl.value || undefined,
+            worker_tier: teamWorkerEl.value || undefined,
+            num_workers: n,
+          };
         }
 
         const r = await fetch('/v1/chat/completions', {

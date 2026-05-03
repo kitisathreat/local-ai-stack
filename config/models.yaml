@@ -565,6 +565,39 @@ tiers:
       factor: 2.0                       # 65536 = 2.0 × orig_ctx 32768.
       orig_ctx: 32768
 
+  # ── Multi-Agent — virtual UI tier for configurable team orchestration ─────
+  # When the chat UI selects this tier, the request is forced through the
+  # multi-agent path (decompose → parallel workers → synthesise). The team
+  # config (orchestrator tier, worker tier, number of workers) is supplied
+  # per-request via `multi_agent_options` and shown in the chat UI as a
+  # team panel next to the tier dropdown.
+  #
+  # This tier owns no llama-server itself — the orchestrator and worker
+  # tiers are spawned (and evicted) by the VRAM scheduler the same way they
+  # would be on a normal request. `port` and `gguf_path` are intentionally
+  # absent so any code that tries to spawn a `multi_agent` llama-server
+  # fails loudly instead of silently dispatching to a default tier.
+  multi_agent:
+    name: "Multi-Agent Team"
+    description: "Configurable team: pick orchestrator, worker tier, and number of workers. Decompose → parallel → synthesise."
+    backend: virtual_team
+    role: team
+    category: "Multi-Agent"
+    # No `port` and no `model_tag` — virtual tier, never spawned directly.
+    context_window: 65536                  # informational only — workers
+                                           # use their own tier ctx
+    think_supported: true
+    think_default: false
+    parallel_slots: 1
+    n_gpu_layers: -1
+    flash_attention: true
+    cache_type_k: q4_0
+    cache_type_v: q4_0
+    # Surface vram_estimate at the orchestrator's typical cost so the
+    # tier dropdown's VRAM annotation is useful even though the actual
+    # cost is the sum of orchestrator + N×worker costs at run time.
+    vram_estimate_gb: 5.5
+
   # ── Embedding — Qwen3-Embedding-4B, pre-spawned, pinned ────────────────────
   # Upgraded from nomic-embed-text-v1.5 (137 M, 768-dim, 8 k ctx,
   # MTEB ~62.4) to Qwen3-Embedding-4B (4 B params, 2 560-dim, 32 k ctx,
