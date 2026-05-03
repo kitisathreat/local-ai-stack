@@ -296,7 +296,7 @@ of the dropdown.
 | **Reasoning** | `highest_quality` 💾 | Qwen3-Next 80B-A3B Thinking | UD-Q4_K_XL | 43 GB | 8010 | 131 072 (YaRN ×4) | ~14.5 GB VRAM + ~33 GB RAM | Default heavy-reasoning. MoE w/ expert offload + spec decode |
 | **Reasoning** | `reasoning_max` 💾 | OpenAI GPT-OSS-120B | Q4_K_M (sharded ×2) | 58 GB | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in. Highest peak quality on hard reasoning. No spec decode — different tokenizer |
 | **Reasoning** | `reasoning_xl` 💾 | Qwen3.5 397B-A17B | UD-IQ2_M (sharded ×4) | 115 GB | 8015 | 65 536 | ~14 GB VRAM + ~110 GB RAM | Top open-weight reasoning at IQ2_M. Active 17 B / 397 B w/ expert offload + spec decode |
-| **Reasoning** | `frontier` 💾⚠️ | DeepSeek V3.2-Speciale | UD-TQ1_0 (1.6 bpw, single file) | 150 GB | 8016 | 65 536 | ~14 GB VRAM + ~125 GB RAM + ~25 GB NVMe | Aspirational. GPT-5-class reasoning at 5–10 t/s w/ NVMe spillover. No spec decode |
+| **Reasoning** | `frontier` 💾⚠️ | DeepSeek V3.2-Speciale | UD-IQ1_S (1.6 bpw, sharded ×4) | 172 GB | 8016 | 65 536 | ~14 GB VRAM + ~125 GB RAM + ~30 GB NVMe | Aspirational. GPT-5-class reasoning at 5–10 t/s w/ NVMe spillover. No spec decode. Sharded for 3× faster pull vs UD-TQ1_0 |
 | **Coding** | `coding` | Qwen3-Coder 30B-A3B (default) / Qwen3-Coder-Next 80B-A3B (`/coder big`) | UD-Q4_K_XL (30B) / UD-Q4_K_XL sharded (80B) | 18 / 49 GB | 8013 | 131 072 (YaRN ×4) | ~6.5 / ~14.5 GB | Coding tier with switchable 30 B / 80 B variants |
 | (top-level) | `versatile` | Qwen3.6 35B-A3B (MoE) | UD-Q4_K_XL | 20 GB | 8011 | 131 072 (YaRN ×4) | ~6.5 GB | Default + orchestrator (3 slots, expert offload, spec decode) |
 | (top-level) | `fast` | Qwen3.5 9B | UD-Q4_K_XL | 5.3 GB | 8012 | 65 536 | ~7.5 GB | Multi-agent workers (4 slots, dense + spec decode) |

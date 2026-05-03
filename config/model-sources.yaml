@@ -163,22 +163,37 @@ tiers:
   # higher peak quality on hard reasoning. No speculative draft because
   # GPT-OSS uses OpenAI's o200k_harmony tokenizer which is incompatible
   # with the Qwen3 family draft.
-  # DeepSeek V3.2-Speciale at Unsloth Dynamic TQ1_0. The "Frontier" tier
+  # DeepSeek V3.2-Speciale at Unsloth Dynamic IQ1_S. The "Frontier" tier
   # — V3.2-Speciale-class reasoning quality (GPT-5 / Kimi K2-Thinking
-  # conversation per arxiv.org/abs/2509.18757). 1-bit ternary weights
-  # (UD-TQ1_0) keep critical layers at much higher bpw than headline
-  # ternary suggests; that's what makes ternary actually work here.
-  # 150.2 GB on disk — single file (no sharding), so the resolver pulls
-  # it as one stream. NVMe spillover required (~25 GB of expert pages
-  # don't fit in 125 GB RAM); see models.yaml::frontier.
+  # conversation per arxiv.org/abs/2509.18757).
+  #
+  # Quant choice (UD-IQ1_S over UD-TQ1_0):
+  #   - UD-TQ1_0 = 1-bit ternary, single 150 GB file, downloads as ONE
+  #     HTTP stream → bottlenecked at ~5 MB/s on residential bandwidth,
+  #     ~9 hour wall-clock pull.
+  #   - UD-IQ1_S = importance-aware 1-bit, sharded across 4 files
+  #     (171.5 GB total) → resolver pulls all 4 in parallel via
+  #     pull_missing_hf_files's ThreadPoolExecutor (PR #185), 3-4× the
+  #     wall-clock throughput.
+  #   - Quality: both are sub-2-bit; both UD-line variants up-quantize
+  #     attention/embed/output layers (the ones that matter for
+  #     reasoning coherence). The bulk-weight representation differs
+  #     (ternary vs importance-weighted 1-bit) but on benchmarks the
+  #     gap is within noise.
+  #   - Cost: 21 GB more disk (171 vs 150) and ~4 GB more RAM working
+  #     set. Both fine on 125 GB RAM + 1.6 TB disk; both still need
+  #     NVMe spillover for the 25-30 GB delta.
+  #
+  # Resolver auto-pulls all 4 shards in parallel (LAI_PARALLEL_SHARDS=4
+  # by default).
   frontier:
     source: huggingface
     repo: "unsloth/DeepSeek-V3.2-GGUF"
-    file: "DeepSeek-V3.2-UD-TQ1_0.gguf"
+    file: "UD-IQ1_S/DeepSeek-V3.2-UD-IQ1_S-00001-of-00004.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "DeepSeek-V3.2-UD-TQ1_0.gguf"
+      file: "UD-IQ1_S/DeepSeek-V3.2-UD-IQ1_S-00001-of-00004.gguf"
 
   # Qwen3.5 397B-A17B at Unsloth Dynamic IQ2_M — 4 shards, 114.6 GB
   # total. The "Dynamic" line keeps critical layers (attention, embed,
