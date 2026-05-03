@@ -301,18 +301,48 @@ tiers:
     category: "Reasoning"
     requires_nvme_spillover: true
     name: "Frontier (DeepSeek V3.2-Speciale)"
-    description: "DeepSeek V3.2 at 1.6 bpw. GPT-5-class reasoning quality; ~5-10 t/s with NVMe spillover. Opt-in only."
+    description: "DeepSeek V3.2 at 1.6 bpw, pure-CPU + NVMe-paged. GPT-5-class reasoning at ~0.5–2 t/s. Opt-in only — fire-and-forget for one hard question, not interactive."
     backend: llama_cpp
     port: 8016
     model_tag: "deepseek-v3.2"
-    # Was 65 536. Halved to 32 768 because the larger ctx blew up the
-    # llama.cpp compute graph during tensor load (warning: "tensor
-    # overrides to CPU are used with mmap enabled" → exit). 32k is
-    # plenty for a tier whose use case is "burn one slow request on a
-    # hard reasoning prompt"; long-doc work belongs on `reasoning_xl`
-    # or `highest_quality` anyway.
-    context_window: 32768
-    think_default: true                  # Reasoning tier — thinking on by default.
+    # ── Frontier-only config ─────────────────────────────────────────
+    # Frontier is the only tier that runs PURE CPU. Three reasons the
+    # GPU-offload + -ot pattern used by every other heavy tier breaks
+    # here:
+    #   1. 171 GB sharded GGUF on a 125 GB-RAM box. mmap'd pages
+    #      that the GPU registry tries to enumerate at load time blow
+    #      past committable memory before tensor-load completes.
+    #   2. The 1.6-bpw IQ1_S quant uses tensor types that interact
+    #      poorly with `-ot` overrides on this llama.cpp build —
+    #      llama-server logs "tensor overrides to CPU are used with
+    #      mmap enabled" then exits during tensor load, before
+    #      warmup gets a chance.
+    #   3. Even with KV offloaded, the GPU has to track every
+    #      attention layer's tensor metadata, which on this card-size
+    #      pushes the DeepSeek-V3 layer count + expert metadata over
+    #      the GPU's allocation budget.
+    #
+    # The fix: drop GPU entirely. mmap the model from NVMe, run pure
+    # CPU. With ~256 experts at top-k=2, each token's working set is
+    # ~5–10 GB of hot pages (active experts + attention) — plenty of
+    # room in 125 GB RAM, and cold expert pages stream from NVMe via
+    # the OS pager. NO `-ot` (no GPU/CPU split needed when there's
+    # no GPU), NO `kv_offload` (no GPU KV to offload), NO
+    # `flash_attention` (FA needs GPU layers).
+    #
+    # Realistic throughput: 0.5–2 tok/s. Slow but functional. Cold
+    # load on the first request: ~30–60 s as the OS warm-pages the
+    # attention/embedding tensors.
+    #
+    # If the operator later upgrades to 192 GB+ RAM, the GPU-hybrid
+    # config can come back — just revert this comment block to the
+    # pre-#213 version.
+    context_window: 32768                # 32k is plenty for one-shot
+                                         # reasoning prompts. Larger ctx
+                                         # makes the KV (which lives in
+                                         # RAM here) eat into the budget
+                                         # available for hot expert pages.
+    think_default: true
     think_supported: true
     preserve_thinking: true
     params:
@@ -322,39 +352,37 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 14                 # attention + KV cache + embeddings on
-                                         # GPU. Experts (~140 GB) live in RAM
-                                         # + NVMe via mmap.
+    # No GPU residency at all. The scheduler's accounting still uses
+    # this number for "fits on card" math, but the actual GPU use is
+    # ~0 GB once spawned. Set to 0.5 GB to keep the scheduler from
+    # treating frontier as costless (which would let it coexist with
+    # any other chat tier and confuse the LRU). Real cost is system
+    # RAM, which the scheduler doesn't currently track per-tier.
+    vram_estimate_gb: 0.5
     parallel_slots: 1
-    # NO speculative decoding: DeepSeek-V3 tokenizer ≠ Qwen3-0.6B
-    # tokenizer. Same constraint as reasoning_max (gpt-oss-120b).
-    n_gpu_layers: -1                     # base case = everything to GPU; -ot
-                                         # below pulls experts back to CPU/NVMe.
-    flash_attention: true
-    use_mmap: true                       # REQUIRED — this is the spillover
-                                         # mechanism. Cold expert pages get
-                                         # paged to/from NVMe by the OS.
-    use_mlock: false                     # MUST be false — mlock would pin
-                                         # everything in RAM, defeating spillover.
-    cache_type_k: q4_0                   # Aggressive KV quant to claw back
-    cache_type_v: q4_0                   # VRAM at long context, per the
-                                         # Opus 4.7 recommendation.
-    # KV to CPU RAM. Frontier already pays NVMe-spillover latency on
-    # cold expert pages, so adding CPU↔GPU traffic for KV is a
-    # marginal cost on a tier that's "5–10 t/s aspirational" anyway.
-    # Frees ~1-2 GB of VRAM at 32k q4_0 — meaningful when we're trying
-    # to fit attention + spec scratch within the GPU envelope.
-    kv_offload: true
-    override_tensors:
-      - ".ffn_.*_exps.=CPU"              # Standard MoE expert offload —
-                                         # attention stays on GPU, experts
-                                         # spill to RAM and (when RAM is full)
-                                         # NVMe via OS page cache.
-    # Skip llama-server's "empty-run" warmup. The compute graph for a
-    # 1.6-bpw 671 B MoE with kv_offload + expert offload has too many
-    # splits to warm up cleanly; defer compilation to the first real
-    # request. First-token latency is already long with NVMe spillover,
-    # so the extra cost is hidden in the noise.
+    # NO speculative decoding: DeepSeek-V3 tokenizer ≠ Qwen3-0.6B.
+    # NO GPU offload — pure CPU.
+    n_gpu_layers: 0
+    flash_attention: false               # FA requires GPU layers.
+    use_mmap: true                       # Critical — the OS pager is
+                                         # what makes the model usable
+                                         # at all. Cold expert pages
+                                         # stream from NVMe on demand.
+    use_mlock: false                     # Don't pin — let cold experts
+                                         # page back out under memory
+                                         # pressure from other tiers.
+    cache_type_k: q4_0                   # KV in RAM (no GPU). q4_0
+    cache_type_v: q4_0                   # halves the KV RAM footprint
+                                         # vs q8_0; 32k ctx q4_0 is
+                                         # ~1 GB and frees that much
+                                         # for hot expert pages.
+    # NO override_tensors. Without GPU layers there's no GPU/CPU split
+    # to express; everything is on CPU by default.
+    override_tensors: []
+    # NO kv_offload (no GPU KV to offload from).
+    # --no-warmup is still defensive: the empty-run warmup at this
+    # scale touches a lot of cold pages. Skipping it lets the first
+    # real request do the page-in lazily.
     extra_args:
       - "--no-warmup"
 
