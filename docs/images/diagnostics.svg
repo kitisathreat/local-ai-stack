@@ -66,8 +66,10 @@
   <text class="dim" x="600" y="156" font-size="11">spawn in 1.2 s · 6.9 GB</text>
   <line class="sep" x1="0" y1="166" x2="920" y2="166"/>
 
-  <!-- Selected row -->
-  <rect fill="#7c9cff" fill-opacity="0.12" x="0" y="170" width="920" height="22"/>
+  <!-- Selected row — pulses to draw eye to the failing test -->
+  <rect fill="#7c9cff" x="0" y="170" width="920" height="22">
+    <animate attributeName="fill-opacity" values="0.08;0.18;0.08" dur="2.2s" repeatCount="indefinite"/>
+  </rect>
   <text class="fail" x="20"  y="186" font-size="11" font-weight="700">FAIL</text>
   <text class="dim mono" x="100" y="186" font-size="11">cloudflared</text>
   <text class="fg"  x="240" y="186" font-weight="600">tunnel service is not running</text>
@@ -103,6 +105,13 @@
   <text class="fg" x="240" y="326">JWT round-trip succeeds</text>
   <text class="dim" x="600" y="326" font-size="11">issue → verify → revoke ok</text>
 
+  <!-- Scanning indicator: a 4 px dot drifts down the gutter to suggest
+       sequential test execution. Loops the height of the visible test list. -->
+  <circle cx="8" cy="120" r="3" fill="#7c9cff">
+    <animate attributeName="cy" values="120;200;240;280;330;120" dur="6s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0;1;1;1;1;0" keyTimes="0;0.06;0.4;0.6;0.94;1" dur="6s" repeatCount="indefinite"/>
+  </circle>
+
   <!-- Splitter handle -->
   <rect class="panel" x="0" y="358" width="920" height="6"/>
 
@@ -116,9 +125,12 @@
   <text class="fg mono" x="32" y="460" font-size="10.5">expected: STATE: 4  RUNNING</text>
   <text class="fg mono" x="32" y="488" font-size="10.5">last successful boot: 2026-04-30 18:41:22</text>
 
-  <!-- Fix hint -->
+  <!-- Fix hint — orange border pulses to advertise the auto-fix path -->
   <text class="label" x="640" y="384">FIX HINT</text>
-  <rect fill="#2a1f12" x="640" y="392" width="260" height="120" rx="6" stroke="#ffb860"/>
+  <rect fill="#2a1f12" x="640" y="392" width="260" height="120" rx="6" stroke="#ffb860" stroke-width="1.5">
+    <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="1.8s" repeatCount="indefinite"/>
+    <animate attributeName="stroke-width"   values="1;1.6;1"   dur="1.8s" repeatCount="indefinite"/>
+  </rect>
   <text class="warn" x="654" y="412" font-size="11" font-weight="700">Auto-fix available</text>
   <text class="fg" x="654" y="432" font-size="11">Click Auto-fix selected to:</text>
   <text class="dim mono" x="654" y="452" font-size="10.5">Start-Service Cloudflared</text>

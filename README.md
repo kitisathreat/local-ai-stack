@@ -96,16 +96,6 @@ The native desktop app lives in [`gui/`](gui/) and is built on PySide6
 (no embedded browser, no JavaScript). Six windows cover the complete
 operator surface; below is each one with its current visual.
 
-> All visuals are **animated SVG mockups** — they show shape, intent,
-> and live behaviour (multi-agent worker pulses, the Tools popover
-> drilling open then back, a master toggle flipping on mid-cycle, etc.).
-> No PNG screenshots in the README; that keeps the visuals scalable,
-> diff-readable, and free of OS chrome. Updates captured here: tier
-> dropdown grouped by category (Reasoning / Coding optgroups),
-> module-aggregated 🔧 Tools popover (~150 module rows instead of 620
-> individual methods), `[LAI-XXX-NNN]` error-code badges, and 💾 / ⚠️
-> tier badges for MoE expert offload + NVMe spillover.
-
 ### Setup wizard — first run
 
 [`gui/windows/setup_wizard.py`](gui/windows/setup_wizard.py) — a 7-page
@@ -543,37 +533,48 @@ are written to `data/eval/tier-bench-<ts>.json` for A/B tracking
 across quant swaps, llama.cpp version bumps, hardware changes, etc.
 
 Reference numbers from the RTX Pro 4000 SFF (24 GB) reference rig,
-post-merge of
-[#199](https://github.com/kitisathreat/local-ai-stack/pull/199) (hf_transfer default off),
-[#202](https://github.com/kitisathreat/local-ai-stack/pull/202) (observed_cost EMA clamp),
-[#206](https://github.com/kitisathreat/local-ai-stack/pull/206) (versatile long-ctx variant),
-[#208](https://github.com/kitisathreat/local-ai-stack/pull/208) + [#209](https://github.com/kitisathreat/local-ai-stack/pull/209) (Multi-Agent Team tier + per-agent tiers),
-[#210](https://github.com/kitisathreat/local-ai-stack/pull/210) (sharded GGUF spawn fix + KV offload on heavy tiers).
-2026-05-03 14:14 PT run, warm OS page cache, `--tokens 100`,
-~16 GB GPU free (non-stack apps closed, RAG services pre-spawned):
+post-merge of [#199](https://github.com/kitisathreat/local-ai-stack/pull/199),
+[#202](https://github.com/kitisathreat/local-ai-stack/pull/202),
+[#206](https://github.com/kitisathreat/local-ai-stack/pull/206),
+[#208](https://github.com/kitisathreat/local-ai-stack/pull/208) +
+[#209](https://github.com/kitisathreat/local-ai-stack/pull/209),
+[#210](https://github.com/kitisathreat/local-ai-stack/pull/210),
+[#211](https://github.com/kitisathreat/local-ai-stack/pull/211),
+[#214](https://github.com/kitisathreat/local-ai-stack/pull/214) (frontier `--cpu-moe` config).
+
+**2026-05-03 15:42 PT clean-slate run** — every tier benched in
+isolation, evicted-via-`fast` between runs (or via `versatile` for
+`fast` itself), warm OS page cache, `--tokens 220`. The earlier
+bench had ~3× lower numbers across the board because the bench
+script's `--evict-tier` left tiers in degraded states between
+runs; running each tier from a clean slate produces the real
+throughput.
 
 | tier | model | cold-load (s) | warm-first (s) | tok/s @ slot=1 | notes |
 |---|---|---:|---:|---:|---|
-| `fast`             | Qwen3.5 9B (dense + spec-decode)            |  0.6 | 0.63 | **12.7** | small, fully GPU-resident |
-| `versatile`        | Qwen3.6 35B-A3B MoE (expert offload + spec) | 13.6 | 1.63 |  **9.0** | default chat tier; 65k ctx default, `Long context (131k)` variant available |
-| `coding`           | Qwen3-Coder 30B-A3B (expert offload + spec) | 14.7 | 15.06| **10.4** | default coder |
-| `coding_80b`       | Qwen3-Coder-Next 80B-A3B (`/coder big`)     | 24.4 | 2.61 | **22.3** | 3 B active MoE — clean wins on the 80B over the 30B |
-| `highest_quality`  | Qwen3-Next 80B-A3B Thinking                 | 41.9 | 57.90|  **7.2** | KV offloaded to CPU per [#210](https://github.com/kitisathreat/local-ai-stack/pull/210) — slower attention path, but fits |
-| `reasoning_max`    | OpenAI GPT-OSS-120B (Q4_K_M sharded ×2)     | 36.3 | 4.69 |  **6.1** | first successful bench post-#210; sharded spawn fix lets llama.cpp find shard 2 |
-| `reasoning_xl`     | Qwen3.5 397B-A17B (UD-IQ2_M sharded ×4)     |  8.9 |104.24|  **1.0** | first-ever successful bench; post-[#211](https://github.com/kitisathreat/local-ai-stack/pull/211) `--no-warmup` skipped the OOM-prone graph-warmup. 17 B active params + KV-on-CPU pegs throughput at ~1 t/s. Aspirational, not interactive. |
-| `frontier`         | DeepSeek V3.2 (UD-IQ1_S sharded ×4)         | —    | —    |  blocked | still crashes during tensor load even after [#211](https://github.com/kitisathreat/local-ai-stack/pull/211) (`--no-warmup` + ctx 32k). Root cause: 171 GB on a 125 GB RAM box — even with NVMe spillover, llama.cpp's tensor-load pre-allocation pushes past available physical RAM before the mmap pager can kick in. Real fix is either a 192 GB+ RAM upgrade or a llama.cpp build that handles the mmap+`-ot` combination more conservatively. |
+| `fast`             | Qwen3.5 9B (dense + spec-decode)            |  6.9 | 0.56 | **57.5** | small, fully GPU-resident |
+| `versatile`        | Qwen3.6 35B-A3B MoE (expert offload + spec) | 11.7 | 1.60 | **36.7** | default chat tier; 65k ctx default, `Long context (131k)` variant via the chat-UI sub-selector |
+| `coding`           | Qwen3-Coder 30B-A3B (expert offload + spec) | 16.0 | 0.95 | **25.9** | default coder |
+| `coding_80b`       | Qwen3-Coder-Next 80B-A3B (`/coder big`)     | 16.6 | 23.22| **20.2** | 3 B active MoE; bench via API `variant: "80b"` field |
+| `highest_quality`  | Qwen3-Next 80B-A3B Thinking                 | 25.2 | 89.62| **18.7** | post-#214 with `vram_estimate_gb` lowered 16 → 13 to accept the actual cost (kv_offload pushes most KV to CPU). Cold spawn occasionally needs a retry — backend's auto-restart kicks in. |
+| `reasoning_max`    | OpenAI GPT-OSS-120B (Q4_K_M sharded ×2)     | 33.7 | 26.16|  **9.7** | sharded-spawn fix from [#210](https://github.com/kitisathreat/local-ai-stack/pull/210) + kv_offload |
+| `reasoning_xl`     | Qwen3.5 397B-A17B (UD-IQ2_M sharded ×4)     | 90.6 | 13.10|  **3.3** | `--no-warmup` from [#211](https://github.com/kitisathreat/local-ai-stack/pull/211) skips the OOM-prone graph warmup; 17 B active + KV-on-CPU pegs throughput in low single digits |
+| `frontier`         | DeepSeek V3.2 (UD-IQ1_S sharded ×4)         | —    | —    |  blocked | hardware blocker: 171 GB GGUF on 125 GB RAM + 8 GB pagefile = 133 GB commit limit. Three llama-server configs tried (`-ot`, pure-CPU, `--cpu-moe`) all crash during tensor load. See `config/models.yaml` frontier section for the two unblock paths (grow Windows pagefile to 100+ GB, or RAM upgrade to 192 GB+). |
 
-The cascade-driven KV→CPU spillover (heavy tiers) frees ~3–5 GB of
-VRAM at full ctx, the difference between "doesn't fit" and "fits and
-runs at 6–7 tok/s." Cold-load latency for these tiers grew (was
-infinity, since they didn't load at all) — measured at 36–42 s on a
-warm OS cache. Worth it.
+**Clean-slate methodology matters.** The first-pass numbers we
+captured earlier (versatile 9.0, coding 10.4, fast 12.7) were
+artifacts of `bench_tiers.py --tiers a,b,c` running tiers
+back-to-back: each tier was acquired AFTER `--evict-tier` had
+just shuffled VRAM, leaving the scheduler in a transient state
+where the new tier's spawn was racing with eviction cleanup. Run
+each tier in its own bench invocation, with an eviction step
+beforehand, and the numbers settle 2–4× higher.
 
-`coding_80b` doesn't have a `tier.coding_80b` model id in `/v1/models`
-— it's selected through the `coding` tier with `variant: "80b"` in the
-chat request body (or `/coder big` from the chat input). The bench
-script doesn't yet support `--variant`; the row above came from a
-hand-rolled stream-counter using the same prompts.
+`coding_80b` doesn't have its own `tier.coding_80b` model id in
+`/v1/models` — it's selected through the `coding` tier with
+`variant: "80b"` in the chat request body (or `/coder big` from
+the chat input). The bench script doesn't yet support `--variant`;
+the row above came from a hand-rolled stream-counter.
 
 #### What's fixed and what's still open
 

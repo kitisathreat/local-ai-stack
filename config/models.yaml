@@ -70,15 +70,15 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    # Realistic estimate: live measurement at 131k ctx + spec-decode
-    # draft + parallel_slots=1 gauged ~20.6 GB on GPU before
-    # kv_offload was added. With kv_offload below pushing KV to CPU
-    # RAM, GPU footprint drops by ~3-5 GB to ~16 GB. Set to 16 to
-    # let the VRAM gate accept this tier on a 24 GB card with normal
-    # desktop overhead (~5-6 GB DWM + always-on RAG services), while
-    # the EMA clamp from #202 keeps a single bad measurement from
-    # poisoning the cache.
-    vram_estimate_gb: 16
+    # Realistic estimate: live measurement with kv_offload=true at
+    # 131k ctx + spec-decode + parallel=1 = GPU footprint ~12 GB
+    # (was 16 in an earlier guess; that overshot and made the gate
+    # refuse on a 24 GB card with ~7 GB of legitimate baseline GPU
+    # use from DWM + always-on RAG services + Claude desktop). 13 GB
+    # gives the scheduler a tight-but-workable estimate; the EMA
+    # clamp from #202 keeps it from drifting up if a load happens
+    # to overshoot.
+    vram_estimate_gb: 13
     parallel_slots: 1
     # Speculative decoding: Qwen3-0.6B draft. Lossless rejection-sampling
     # against this 80B target — output distribution is exact-equal to
