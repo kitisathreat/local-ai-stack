@@ -553,7 +553,11 @@ page cache:
 |---|---:|---:|---:|---|
 | `versatile` | 12.85 | 1.81 | **12.3** | Qwen3.6 35B-A3B MoE, expert offload, spec-decode (+43% tok/s vs pre-merge) |
 | `fast`      |  8.93 | 0.58 | 22.0 | Qwen3.5 9B dense, spec-decode |
-| `coding`    | 11.05 | 1.03 |  9.7 | Qwen3-Coder-30B-A3B, expert offload, spec-decode |
+| `coding`    | 11.05 | 1.03 |  9.7 |
+| `versatile` | 14.5 | 1.66 | **11** | +27.9% vs pre-merge baseline |
+| `fast` | 9.03 | 0.57 | **21.3** | -7.4% vs pre-merge baseline |
+| `coding` | 13.15 | 0.97 | **9.1** | -4.2% vs pre-merge baseline |
+| `highest_quality` | 0.78 | 0.02 | **0** | Auto-bench 2026-05-03 | Qwen3-Coder-30B-A3B, expert offload, spec-decode |
 
 The cascade-driven KV→CPU spillover frees the equivalent of ~5 GB of
 VRAM at full ctx for `versatile` (3 slots, q4_0 KV), which keeps the
@@ -774,3 +778,4 @@ Internet Archive distributes legally.
 ## License
 
 See repository settings.
+
