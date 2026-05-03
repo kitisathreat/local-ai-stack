@@ -188,6 +188,28 @@ function Restart-ProtonVPN {
     return $any
 }
 
+function Invoke-ProtonAutoRecover {
+    # Defer to tools/proton_vpn.py::auto_recover_dns() via the backend
+    # venv. That method walks the full Restart-Service → cycle-adapter
+    # ladder and reports back. Falls back to Restart-ProtonVPN
+    # (above) if Python invocation fails for any reason.
+    $py = Join-Path $RepoRoot 'vendor\venv-backend\Scripts\python.exe'
+    if (-not (Test-Path $py)) {
+        Log "    proton_vpn tool unavailable (no backend venv) — falling back to service restart"
+        return (Restart-ProtonVPN)
+    }
+    try {
+        $script = "import asyncio, sys; sys.path.insert(0, r'$RepoRoot'); from tools.proton_vpn import Tools; print(asyncio.run(Tools().auto_recover_dns()))"
+        $out = & $py -c $script 2>&1
+        $tail = ($out -split "`n" | Select-Object -Last 6) -join '; '
+        Log "    proton_vpn.auto_recover_dns: $tail"
+        return $true
+    } catch {
+        Log "    proton_vpn.auto_recover_dns failed: $($_.Exception.Message) — falling back to service restart"
+        return (Restart-ProtonVPN)
+    }
+}
+
 # Per-tier byte-progress tracker so we can detect TCP stalls (DNS up,
 # resolver alive, but no bytes flowing). Map: tier -> @{ bytes, ts }.
 $progressMarks = @{}
@@ -311,11 +333,10 @@ while ((Get-Date) -lt $deadline) {
             if ($upstreamOk) {
                 Log "system DNS broken but cas-bridge.xethub.hf.co resolves via 8.8.8.8 — local resolver stuck"
                 if ($RestartProtonVPN) {
-                    Log "  attempting ProtonVPN service restart..."
-                    if (Restart-ProtonVPN) {
-                        $dnsOk = Test-XethubDns
-                        Log "  post-restart DNS check: $(if ($dnsOk) { 'RECOVERED' } else { 'STILL BROKEN' })"
-                    }
+                    Log "  invoking proton_vpn.auto_recover_dns (Restart-Service → cycle_adapter ladder)..."
+                    Invoke-ProtonAutoRecover | Out-Null
+                    $dnsOk = Test-XethubDns
+                    Log "  post-recover DNS check: $(if ($dnsOk) { 'RECOVERED' } else { 'STILL BROKEN' })"
                 } else {
                     # Throttle the manual-fix nag to once per 10 min
                     if (((Get-Date) - $lastProgressLogAt).TotalMinutes -ge 10) {
