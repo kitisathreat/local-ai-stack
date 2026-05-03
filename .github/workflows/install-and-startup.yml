@@ -90,13 +90,8 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          $log = Join-Path (Get-Location) 'ci-logs/03-init-env.log'
-          $buf = [System.Text.StringBuilder]::new()
-          function Log($msg) {
-            Write-Host $msg
-            [void]$buf.AppendLine($msg)
-            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
-          }
+          . ./.github/scripts/step-logging.ps1
+          Init-StepLog '03-init-env.log'
 
           Log "step started at $(Get-Date -Format s)"
           Log "running LocalAIStack.ps1 -InitEnv"
@@ -120,8 +115,7 @@ jobs:
             $redacted = if ($_ -match '^(AUTH_SECRET_KEY|HISTORY_SECRET_KEY)=') { $_ -replace '=.*$', '=<redacted>' } else { $_ }
             Log $redacted
           }
-          $global:LASTEXITCODE = 0
-          exit 0
+          Exit-Step
 
       - name: Setup (venvs + vendor binaries + dry-run pull; skip winget prereqs)
         continue-on-error: true
@@ -129,13 +123,8 @@ jobs:
         env:
           OFFLINE: "1"
         run: |
-          $log = Join-Path (Get-Location) 'ci-logs/setup.log'
-          $buf = [System.Text.StringBuilder]::new()
-          function Log($msg) {
-            Write-Host $msg
-            [void]$buf.AppendLine($msg)
-            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
-          }
+          . ./.github/scripts/step-logging.ps1
+          Init-StepLog 'setup.log'
 
           Log "step started at $(Get-Date -Format s)"
           try {
@@ -155,11 +144,7 @@ jobs:
             if ($_.InvocationInfo.PositionMessage) { Log ("AT: " + $_.InvocationInfo.PositionMessage) }
             throw
           }
-          # Pip and other native invocations inside -Setup can leave
-          # $LASTEXITCODE set even on success paths where we caught
-          # non-zero and continued. Force clean step exit.
-          $global:LASTEXITCODE = 0
-          exit 0
+          Exit-Step
 
       - name: Verify tier detection wrote resolved-models.json
         # continue-on-error: Setup step already prints the dry-run tier
@@ -170,13 +155,8 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          $log = Join-Path (Get-Location) 'ci-logs/05-verify-tiers.log'
-          $buf = [System.Text.StringBuilder]::new()
-          function Log($msg) {
-            Write-Host $msg
-            [void]$buf.AppendLine($msg)
-            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
-          }
+          . ./.github/scripts/step-logging.ps1
+          Init-StepLog '05-verify-tiers.log'
           Log "step started at $(Get-Date -Format s)"
           if (-not (Test-Path data/resolved-models.json)) {
             Log 'FAIL: resolved-models.json was not written'
@@ -189,8 +169,7 @@ jobs:
           }
           $tierNames = $j.tiers.PSObject.Properties.Name
           Log "Detected tiers: $($tierNames -join ', ')"
-          $global:LASTEXITCODE = 0
-          exit 0
+          Exit-Step
 
       - name: Verify pull machinery can initiate downloads (dry-run)
         continue-on-error: true
@@ -198,13 +177,8 @@ jobs:
         env:
           OFFLINE: "1"
         run: |
-          $log = Join-Path (Get-Location) 'ci-logs/06-verify-pulls.log'
-          $buf = [System.Text.StringBuilder]::new()
-          function Log($msg) {
-            Write-Host $msg
-            [void]$buf.AppendLine($msg)
-            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
-          }
+          . ./.github/scripts/step-logging.ps1
+          Init-StepLog '06-verify-pulls.log'
           Log "step started at $(Get-Date -Format s)"
           $py = Join-Path (Get-Location) 'vendor\venv-backend\Scripts\python.exe'
           if (-not (Test-Path $py)) {
@@ -217,8 +191,7 @@ jobs:
           if ($LASTEXITCODE -gt 0) {
             throw "dry-run pull reported tier errors (exit $LASTEXITCODE)"
           }
-          $global:LASTEXITCODE = 0
-          exit 0
+          Exit-Step
 
       - name: Start + health + sanity + stop
         # Consolidated so the subprocess tree spawned by -Start stays
@@ -235,13 +208,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          $log = Join-Path (Get-Location) 'ci-logs/04-start-health.log'
-          $buf = [System.Text.StringBuilder]::new()
-          function Log($msg) {
-            Write-Host $msg
-            [void]$buf.AppendLine($msg)
-            [System.IO.File]::WriteAllText($log, $buf.ToString(), [System.Text.UTF8Encoding]::new($false))
-          }
+          . ./.github/scripts/step-logging.ps1
+          Init-StepLog '04-start-health.log'
           Log "step started at $(Get-Date -Format s)"
 
           $launcher = Join-Path (Get-Location) 'LocalAIStack.ps1'
@@ -356,13 +324,7 @@ jobs:
             Log ("Stop EXCEPTION (ignored): " + $_.Exception.Message)
           }
           Log "step completed at $(Get-Date -Format s)"
-          # Force clean exit — by this point /healthz and /v1/models have
-          # already verified the happy path. Any stray non-zero
-          # $LASTEXITCODE from native invocations inside -Start/-Stop
-          # (Start-Process returns process objects, etc.) must not fail
-          # the job.
-          $global:LASTEXITCODE = 0
-          exit 0
+          Exit-Step
 
       - name: Collect logs for artifact (always)
         if: always()
