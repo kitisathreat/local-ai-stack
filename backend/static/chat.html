@@ -1602,6 +1602,16 @@
         }
         history.push({ role: 'assistant', content: buffered });
         updateCtxIndicator();
+        // First assistant turn in this conversation triggers a backend
+        // auto-title pass. Refresh the sidebar after a short delay so
+        // the freshly-generated title replaces the "New chat" sentinel.
+        // Conservative timing: ~5 s covers the title-gen latency on
+        // tier.fast (~1-3 s with think:false). No-op if the title
+        // wasn't replaced (re-render is cheap).
+        const userTurnsSoFar = history.filter(m => m.role === 'user').length;
+        if (userTurnsSoFar === 1 && currentConversationId) {
+          setTimeout(loadConversations, 5000);
+        }
       } catch (err) {
         // Connection-style failures (TypeError "Failed to fetch", or
         // 502/503 from cloudflared while the backend restarts) are the
