@@ -705,7 +705,23 @@
         }),
       });
       if (!r.ok) {
-        err.textContent = 'Invalid username or password.';
+        // Distinguish "wrong password" (401) from server-side problems
+        // (5xx) so a misconfigured backend doesn't silently look like
+        // the user's credentials got revoked. Try to surface the
+        // server's detail message when it's 5xx — it usually tells the
+        // user / admin exactly what to fix.
+        if (r.status >= 500) {
+          let detail = 'Server error during sign-in. Contact administrator.';
+          try {
+            const body = await r.json();
+            if (body && body.detail) detail = body.detail;
+          } catch (_) { /* non-JSON body, fall back to generic */ }
+          err.textContent = detail;
+        } else if (r.status === 429) {
+          err.textContent = 'Too many sign-in attempts — please wait a moment and try again.';
+        } else {
+          err.textContent = 'Invalid username or password.';
+        }
         return;
       }
       const info = await r.json();

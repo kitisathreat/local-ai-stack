@@ -166,6 +166,33 @@ async def lifespan(app: FastAPI):
     logger.info("Initialising database…")
     await db.init_db()
 
+    # Refuse to boot when AUTH_SECRET_KEY is missing AND the DB already has
+    # at least one user. Without the key, every /auth/login crashes 500
+    # inside issue_session_token after a successful password verify; the
+    # chat UI's generic error handler renders that as "Invalid username or
+    # password" — which looks identical to the user's account being silently
+    # invalidated. This guard makes the failure mode loud and immediate at
+    # startup instead of latent at first login. We allow boot when there are
+    # no users yet so the first-run setup path (Qt seed-admin / setup wizard)
+    # can complete on a fresh install before .env is fully populated.
+    if not os.getenv("AUTH_SECRET_KEY"):
+        try:
+            existing_users = await db.count_users()
+        except Exception:
+            existing_users = 0
+        if existing_users > 0:
+            raise RuntimeError(
+                "AUTH_SECRET_KEY env var is not set and the user database "
+                f"already contains {existing_users} account(s). Refusing to "
+                "boot — every /auth/login would crash after a successful "
+                "password verify and the chat UI would render it as "
+                '"Invalid username or password" (silent auth lockout). '
+                "Restart through LocalAIStack.ps1 -Start (which loads .env), "
+                "or set AUTH_SECRET_KEY in the parent shell before starting "
+                "uvicorn directly. Generate a key with: python -c 'import "
+                "secrets; print(secrets.token_urlsafe(48))'"
+            )
+
     # Load persisted airgap state and publish it module-globally so
     # middleware and tool gates can consult it without walking app.state.
     state.airgap = airgap.AirgapState()
@@ -1784,7 +1811,22 @@ async def auth_login(body: LoginRequest, request: Request):
     user = await auth.authenticate(body.username, body.password)
     if not user:
         raise HTTPException(401, "Invalid username or password")
-    session_token = auth.issue_session_token(user["id"], cfg)
+    # Defence-in-depth: the lifespan guard above refuses to boot when
+    # AUTH_SECRET_KEY is missing on a populated DB, so we should never
+    # actually hit this branch. But if some future code path lets us
+    # boot without the key, return a clear 503 instead of leaking a
+    # 500/RuntimeError that the chat UI would render as "Invalid
+    # username or password" — which looks identical to the user's
+    # account being silently invalidated.
+    try:
+        session_token = auth.issue_session_token(user["id"], cfg)
+    except RuntimeError as exc:
+        logger.error("Cannot issue session token after successful auth: %s", exc)
+        raise HTTPException(
+            503,
+            "Server is misconfigured (cannot sign session tokens) — "
+            "contact administrator.",
+        )
     resp = JSONResponse(
         LoginResponse(
             ok=True,

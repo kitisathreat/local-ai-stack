@@ -311,6 +311,14 @@ async def count_admins() -> int:
         return int(row["n"])
 
 
+async def count_users() -> int:
+    async with get_conn() as c:
+        row = await (await c.execute(
+            "SELECT COUNT(*) AS n FROM users"
+        )).fetchone()
+        return int(row["n"])
+
+
 async def mark_login(user_id: int) -> None:
     async with get_conn() as c:
         await c.execute(
