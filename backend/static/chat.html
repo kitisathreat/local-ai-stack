@@ -39,19 +39,164 @@
     header button { cursor: pointer; }
     header button:hover { background: #2a2d36; }
     header .spacer { flex: 1; }
-    /* Status indicators in the header — small, muted, monospace
-       so the changing numbers don't fight the layout. */
+    /* Status indicators in the header — Claude Code-style proportional
+       torus rings. Hover/tap reveals a popover with the per-component
+       breakdown (loaded models, per-role token spend, etc.). The ring
+       is an SVG circle whose stroke-dasharray is animated; the colour
+       moves green → yellow → red as the fill fraction crosses
+       0.7 / 0.9 thresholds.
+
+       Each .stat is positioned (relative) so its breakdown popover can
+       absolutely-anchor below it without escaping the header. */
     .stat {
+      position: relative;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 8px; cursor: pointer;
       font-size: 11px;
       color: var(--muted);
       font-family: 'Cascadia Code', Consolas, monospace;
-      padding: 0 6px;
       white-space: nowrap;
+      border-radius: 6px;
+      user-select: none;
     }
+    .stat:hover, .stat.open { background: #22252e; }
     .stat .lbl { text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.7; }
     .stat .val { color: var(--fg); }
-    .stat.warn .val { color: #e0c060; }   /* yellow at >70% */
-    .stat.crit .val { color: var(--danger); }   /* red at >90% */
+    .stat.warn .val { color: #e0c060; }
+    .stat.crit .val { color: var(--danger); }
+    .stat.warn .ring-fill { stroke: #e0c060; }
+    .stat.crit .ring-fill { stroke: var(--danger); }
+    .ring {
+      width: 24px; height: 24px; flex: 0 0 24px;
+      transform: rotate(-90deg);
+    }
+    .ring .ring-track { fill: none; stroke: #2a2d36; stroke-width: 4; }
+    .ring .ring-fill {
+      fill: none; stroke: #4caf50; stroke-width: 4;
+      stroke-linecap: round;
+      transition: stroke-dasharray .3s ease, stroke .3s ease;
+    }
+    .stat-popover {
+      position: absolute; top: calc(100% + 6px); right: 0;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px;
+      min-width: 240px; max-width: 320px;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 12px; color: var(--fg);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+      z-index: 50;
+      display: none;
+      white-space: normal;
+    }
+    .stat.open .stat-popover { display: block; }
+    .stat-popover h4 {
+      margin: 0 0 6px 0; font-size: 12px; font-weight: 600;
+      color: var(--fg); text-transform: none; letter-spacing: 0;
+    }
+    .stat-popover .row {
+      display: flex; justify-content: space-between; gap: 12px;
+      padding: 2px 0; color: var(--muted);
+    }
+    .stat-popover .row .k { color: var(--muted); }
+    .stat-popover .row .v { color: var(--fg); font-family: 'Cascadia Code', Consolas, monospace; }
+    .stat-popover .row.total {
+      border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px;
+    }
+    .stat-popover .empty { color: var(--muted); font-style: italic; }
+    /* Composer-area model loading progress bar. Lives just above the
+       composer; visible while a tier is spawning so the user has a
+       proportional indication of how much weight has streamed into
+       VRAM. Falls back to a time-based estimate when no actual
+       byte-progress signal is available. */
+    #model-loading {
+      max-width: 960px; margin: 0 auto; width: 100%;
+      padding: 4px 16px 0; font-size: 11px; color: var(--muted);
+      display: none;
+    }
+    #model-loading.visible { display: block; }
+    #model-loading .ml-bar {
+      height: 4px; background: #22252e; border-radius: 2px;
+      overflow: hidden; margin-top: 3px;
+    }
+    #model-loading .ml-fill {
+      height: 100%; width: 0%; background: var(--accent);
+      transition: width .25s ease;
+    }
+    #model-loading .ml-fill.indeterminate {
+      width: 35%;
+      animation: ml-slide 1.4s ease-in-out infinite;
+    }
+    @keyframes ml-slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(285%); }
+    }
+    /* Forced-tool prefix UI. When the user types "*/" the textarea
+       grows a hint chip that confirms which registered tool will be
+       pinned (or warns when the partial name doesn't resolve), plus an
+       inline autocomplete list so the user can pick by tab/click
+       instead of typing the full module.method. */
+    #forced-tool-hint {
+      padding: 4px 10px; font-size: 11px; color: #4caf50;
+      border-top: 1px solid var(--border);
+      font-family: 'Cascadia Code', Consolas, monospace;
+    }
+    #forced-tool-hint.unknown { color: var(--danger); }
+    #forced-tool-hint.hidden { display: none; }
+    #tool-autocomplete {
+      max-height: 160px; overflow-y: auto;
+      border-top: 1px solid var(--border);
+      font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px;
+    }
+    #tool-autocomplete.hidden { display: none; }
+    #tool-autocomplete .ac-row {
+      padding: 4px 10px; cursor: pointer; color: var(--fg);
+      border-bottom: 1px solid var(--border);
+    }
+    #tool-autocomplete .ac-row:last-child { border-bottom: none; }
+    #tool-autocomplete .ac-row:hover,
+    #tool-autocomplete .ac-row.active {
+      background: #2a2d36; color: var(--accent);
+    }
+    #tool-autocomplete .ac-row .ac-hint {
+      color: var(--muted); font-size: 11px; margin-left: 8px;
+    }
+    /* Per-message edit affordance. The pencil shows on hover for user
+       turns and lets the user rewrite a previous prompt — committing the
+       edit truncates the conversation back to that point and re-sends
+       the new text, mirroring Claude / ChatGPT-style "edit & resubmit". */
+    .msg { position: relative; }
+    .msg .msg-actions {
+      position: absolute; top: 0; right: 0;
+      display: none; gap: 4px;
+    }
+    .msg.user:hover .msg-actions, .msg .msg-actions.force { display: flex; }
+    .msg .msg-actions button {
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer;
+      font-family: inherit;
+    }
+    .msg .msg-actions button:hover { color: var(--fg); background: #22252e; }
+    .msg .edit-area {
+      width: 100%; min-height: 80px;
+      background: #22252e; color: var(--fg);
+      border: 1px solid var(--accent); border-radius: 6px;
+      padding: 8px 10px; font: inherit; resize: vertical;
+      outline: none;
+    }
+    .msg .edit-controls {
+      display: flex; gap: 6px; margin-top: 6px; align-items: center;
+    }
+    .msg .edit-controls .hint {
+      color: var(--muted); font-size: 11px; margin-left: auto;
+    }
+    .msg .edit-controls button {
+      background: #22252e; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 4px; padding: 4px 10px; font: inherit; font-size: 12px;
+      cursor: pointer;
+    }
+    .msg .edit-controls button.primary {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
     #main { flex: 1; display: flex; overflow: hidden; }
     #log { flex: 1; overflow: auto; padding: 16px; max-width: 860px; margin: 0 auto; width: 100%; }
     .msg { margin: 0 0 16px 0; line-height: 1.5; }
@@ -196,6 +341,20 @@
     #tools-popover .tier-body.hidden { display: none; }
     /* Master toggle (per tier/group/subgroup) — same look as the per-tool one */
     #tools-popover .header-toggle { flex-shrink: 0; }
+    #tools-popover .preload-row {
+      padding: 8px 10px; border-bottom: 1px solid var(--border);
+      background: #1c1f27;
+    }
+    #tools-popover .preload-row label {
+      display: flex; align-items: center; gap: 10px;
+      cursor: pointer; font-size: 12px; color: var(--fg);
+    }
+    #tools-popover .preload-row label > span:first-child { flex: 1; }
+    #tools-popover .preload-hint {
+      margin-top: 4px; font-size: 11px; color: var(--muted);
+      line-height: 1.3;
+    }
+    #tools-popover .preload-row.on .preload-hint { color: #e0c060; }
     /* iOS-style toggle switch */
     .toggle {
       position: relative; width: 30px; height: 16px; flex-shrink: 0;
@@ -384,10 +543,20 @@
       header { padding: 8px 10px; gap: 6px; flex-wrap: wrap; }
       header .brand { font-size: 13px; }
       header select { max-width: 140px; font-size: 13px; }
-      /* Status indicators and the username eat space on a phone — hide
-         them; the user can pull up /admin in a separate tab if they
-         need raw VRAM numbers. */
-      #vram-stat, #ctx-stat, #who { display: none; }
+      /* The username eats space on a phone — hide it; the user can pull
+         up /admin in a separate tab. The VRAM and CTX torus indicators
+         stay visible (they collapse to ring-only, with the numeric
+         label hidden) because monitoring fill is the whole point on a
+         phone where a runaway tier still kills the chat. The breakdown
+         popover is reachable by tap. */
+      #who { display: none; }
+      #vram-stat .lbl, #ctx-stat .lbl,
+      #vram-stat .val, #ctx-stat .val { display: none; }
+      #vram-stat, #ctx-stat { padding: 2px 4px; }
+      .stat-popover {
+        right: auto; left: 50%; transform: translateX(-50%);
+        max-width: 80vw;
+      }
       header label { font-size: 12px; }
       #menu-btn {
         display: inline-flex; align-items: center; justify-content: center;
@@ -495,13 +664,26 @@
         <button id="menu-btn" type="button" aria-label="Open conversations" title="Conversations">☰</button>
         <span class="brand">Local AI Stack</span>
         <select id="model"></select>
+        <select id="model-variant" title="Model variant" style="display:none;"></select>
         <label><input type="checkbox" id="think"> Think</label>
         <span class="spacer"></span>
-        <span id="vram-stat" class="stat" title="GPU VRAM free / total (polled every 15s)">
+        <span id="vram-stat" class="stat" title="GPU VRAM usage — click for breakdown" tabindex="0" role="button" aria-label="VRAM usage">
+          <svg class="ring" viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="ring-track" cx="18" cy="18" r="15"></circle>
+            <circle class="ring-fill"  cx="18" cy="18" r="15"
+                    stroke-dasharray="0 100" pathLength="100"></circle>
+          </svg>
           <span class="lbl">VRAM</span> <span class="val" id="vram-val">—</span>
+          <div class="stat-popover" id="vram-popover" role="dialog" aria-label="VRAM breakdown"></div>
         </span>
-        <span id="ctx-stat" class="stat" title="Estimated tokens used / tier context window">
+        <span id="ctx-stat" class="stat" title="Context window usage — click for breakdown" tabindex="0" role="button" aria-label="Context window usage">
+          <svg class="ring" viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="ring-track" cx="18" cy="18" r="15"></circle>
+            <circle class="ring-fill"  cx="18" cy="18" r="15"
+                    stroke-dasharray="0 100" pathLength="100"></circle>
+          </svg>
           <span class="lbl">CTX</span> <span class="val" id="ctx-val">—</span>
+          <div class="stat-popover" id="ctx-popover" role="dialog" aria-label="Context breakdown"></div>
         </span>
         <span id="who" style="color:var(--muted);"></span>
         <button id="admin-btn" type="button" title="Open backend dashboard">⚙ Admin</button>
@@ -511,15 +693,28 @@
         <div id="log"></div>
         <div id="dashboard" class="hidden"></div>
       </div>
+    <div id="model-loading" role="status" aria-live="polite">
+      <span id="ml-label">Loading model into VRAM…</span>
+      <div class="ml-bar"><div class="ml-fill" id="ml-fill"></div></div>
+    </div>
     <footer>
       <div id="composer-wrap">
-        <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
+        <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline. Prefix with */tool_name to force a specific tool." rows="1"></textarea>
+        <div id="forced-tool-hint" class="hidden"></div>
+        <div id="tool-autocomplete" class="hidden"></div>
         <div id="attached-list"></div>
         <div class="composer-tools">
           <button class="icon-btn" id="tools-btn" title="Enable tools">🔧 Tools <span id="tools-count" style="color:var(--muted);"></span></button>
           <button class="icon-btn" id="attach-btn" title="Attach files">📎 Attach</button>
           <input type="file" id="attach-input" multiple>
           <div id="tools-popover" class="hidden">
+            <div class="preload-row">
+              <label for="preload-all" title="When on, every registered tool is sent to the model on every turn — without modifying the individual toggles below. Off by default; the model only sees tools you've explicitly enabled.">
+                <span>Preload all tools</span>
+                <span class="toggle"><input type="checkbox" id="preload-all"><span class="slider"></span></span>
+              </label>
+              <div class="preload-hint" id="preload-hint">Off — only tools you toggle below are sent to the model.</div>
+            </div>
             <input type="text" class="tool-search" id="tool-search" placeholder="Filter tools…">
             <div id="tools-list"></div>
           </div>
@@ -833,7 +1028,7 @@
         for (const m of (conv.messages || [])) {
           if (m.role === 'user' || m.role === 'assistant') {
             history.push({ role: m.role, content: m.content });
-            appendMsg(m.role, m.content);
+            appendMsg(m.role, m.content, m.id);
           }
         }
         // Sync the dropdown to the conversation's tier if available.
@@ -902,30 +1097,92 @@
     const ctxValEl   = $('ctx-val');
 
     function setStatLevel(el, frac) {
-      // 0–0.7 normal, 0.7–0.9 warn, ≥0.9 crit. Mirrors the stat color
-      // CSS classes added above.
+      // 0–0.7 normal (green), 0.7–0.9 warn (yellow), ≥0.9 crit (red).
       el.classList.remove('warn', 'crit');
       if (frac >= 0.9) el.classList.add('crit');
       else if (frac >= 0.7) el.classList.add('warn');
     }
+    function setRing(statEl, frac) {
+      // pathLength=100 means the dasharray is in percentages: a value
+      // of N draws an arc covering N% of the circle. Clamp to [0,100]
+      // so a runaway estimator doesn't render a broken arc.
+      const fill = statEl.querySelector('.ring-fill');
+      if (!fill) return;
+      const pct = Math.max(0, Math.min(100, frac * 100));
+      fill.setAttribute('stroke-dasharray', `${pct.toFixed(1)} ${(100 - pct).toFixed(1)}`);
+    }
+    function fmtTokens(n) {
+      n = Math.round(n || 0);
+      return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+    }
+    function tierShortName(tierId) {
+      // tier.versatile → Versatile. Falls back to the raw id.
+      if (!tierId) return '';
+      const stripped = String(tierId).replace(/^tier[._-]/i, '');
+      return stripped.charAt(0).toUpperCase() + stripped.slice(1).replace(/_/g, ' ');
+    }
+
+    // Cache the most recent /vram payload so the popover can render
+    // the per-tier breakdown without an extra round trip on hover.
+    let lastVramSnapshot = null;
+
+    function renderVramPopover() {
+      const pop = document.getElementById('vram-popover');
+      if (!pop) return;
+      const v = lastVramSnapshot;
+      if (!v || !(v.total_vram_gb > 0)) {
+        pop.innerHTML = '<div class="empty">No GPU detected (CPU-only or driver missing).</div>';
+        return;
+      }
+      const total = v.total_vram_gb;
+      const free  = v.free_vram_gb_actual ?? v.free_vram_gb_projected ?? total;
+      const used  = Math.max(0, total - free);
+      let html = '<h4>VRAM</h4>';
+      html += `<div class="row"><span class="k">Total</span><span class="v">${total.toFixed(1)} GB</span></div>`;
+      html += `<div class="row"><span class="k">Used</span><span class="v">${used.toFixed(1)} GB</span></div>`;
+      html += `<div class="row"><span class="k">Free</span><span class="v">${free.toFixed(1)} GB</span></div>`;
+      const loaded = Array.isArray(v.loaded) ? v.loaded : [];
+      if (loaded.length) {
+        html += '<h4 style="margin-top:8px;">Loaded models</h4>';
+        for (const m of loaded) {
+          const cost = (m.observed_cost_gb && m.observed_cost_gb > 0)
+            ? m.observed_cost_gb : (m.vram_cost_gb || 0);
+          const tag  = tierShortName(m.tier_id);
+          const refs = m.refcount > 0 ? ` (in use ×${m.refcount})` : '';
+          html += `<div class="row"><span class="k">${escapeHtml(tag)}${refs}</span>`
+                + `<span class="v">${cost.toFixed(1)} GB</span></div>`;
+        }
+      } else {
+        html += '<div class="empty" style="margin-top:6px;">No models resident.</div>';
+      }
+      pop.innerHTML = html;
+    }
 
     async function pollVram() {
       // Polls /vram every 15s. Backend's `free_vram_gb_actual` reads
-      // NVML; falls back to projected when NVML isn't available
-      // (CPU-only or driver missing) — both give a usable percentage.
+      // NVML; falls back to projected when NVML isn't available.
       try {
         const r = await api('/vram');
         if (!r.ok) return;
         const v = await r.json();
+        lastVramSnapshot = v;
         const total = v.total_vram_gb || 0;
         const free  = v.free_vram_gb_actual ?? v.free_vram_gb_projected ?? total;
         if (total <= 0) {
           vramValEl.textContent = 'n/a';
+          setRing(vramStatEl, 0);
+          renderVramPopover();
           return;
         }
         const used = Math.max(0, total - free);
-        vramValEl.textContent = `${free.toFixed(1)} / ${total.toFixed(0)} GB free`;
-        setStatLevel(vramStatEl, used / total);
+        const frac = used / total;
+        vramValEl.textContent = `${used.toFixed(1)} / ${total.toFixed(0)} GB`;
+        setStatLevel(vramStatEl, frac);
+        setRing(vramStatEl, frac);
+        renderVramPopover();
+        // Drive the model-loading progress bar from the residency
+        // delta when a load is in flight.
+        ModelLoading.observeFreeGb(free);
       } catch (_) {
         vramValEl.textContent = '—';
       }
@@ -940,22 +1197,178 @@
 
     function updateCtxIndicator() {
       const ctx = tierContext.get(modelEl.value);
+      const pop = document.getElementById('ctx-popover');
       if (!ctx) {
         ctxValEl.textContent = '—';
+        setRing(ctxStatEl, 0);
+        if (pop) pop.innerHTML = '<div class="empty">Pick a model to see its context-window usage.</div>';
         return;
       }
-      // Sum estimated tokens across all messages in the local history.
-      // Includes a small fudge for role markers and chat-template
-      // overhead per turn.
       const overheadPerTurn = 8;
-      let used = 0;
+      let userTok = 0, asstTok = 0, overheadTok = 0;
       for (const m of history) {
-        used += estimateTokens(m.content) + overheadPerTurn;
+        const t = estimateTokens(m.content);
+        if (m.role === 'user') userTok += t;
+        else if (m.role === 'assistant') asstTok += t;
+        overheadTok += overheadPerTurn;
       }
-      const fmt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : `${n}`;
-      ctxValEl.textContent = `${fmt(used)} / ${fmt(ctx)}`;
-      setStatLevel(ctxStatEl, used / ctx);
+      const used = userTok + asstTok + overheadTok;
+      const remaining = Math.max(0, ctx - used);
+      const frac = used / ctx;
+      ctxValEl.textContent = `${fmtTokens(used)} / ${fmtTokens(ctx)}`;
+      setStatLevel(ctxStatEl, frac);
+      setRing(ctxStatEl, frac);
+      if (pop) {
+        const tier = tierShortName(modelEl.value);
+        let html = `<h4>Context window — ${escapeHtml(tier)}</h4>`;
+        html += `<div class="row"><span class="k">Window size</span><span class="v">${fmtTokens(ctx)} tok</span></div>`;
+        html += `<div class="row"><span class="k">Your messages</span><span class="v">${fmtTokens(userTok)} tok</span></div>`;
+        html += `<div class="row"><span class="k">Model replies</span><span class="v">${fmtTokens(asstTok)} tok</span></div>`;
+        html += `<div class="row"><span class="k">Template overhead</span><span class="v">${fmtTokens(overheadTok)} tok</span></div>`;
+        html += `<div class="row total"><span class="k">Used</span><span class="v">${fmtTokens(used)} tok (${(frac*100).toFixed(0)}%)</span></div>`;
+        html += `<div class="row"><span class="k">Remaining</span><span class="v">${fmtTokens(remaining)} tok</span></div>`;
+        pop.innerHTML = html;
+      }
     }
+
+    // Wire popover open/close. Click on the .stat toggles the popover;
+    // click outside closes any open popover. Tap-friendly on mobile
+    // because there's no hover state on touchscreens.
+    function wireStatPopover(stat) {
+      stat.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const wasOpen = stat.classList.contains('open');
+        document.querySelectorAll('.stat.open').forEach(s => s.classList.remove('open'));
+        if (!wasOpen) stat.classList.add('open');
+      });
+      stat.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stat.click(); }
+        if (e.key === 'Escape') stat.classList.remove('open');
+      });
+    }
+    wireStatPopover(vramStatEl);
+    wireStatPopover(ctxStatEl);
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.stat.open').forEach(s => s.classList.remove('open'));
+    });
+
+    // ── Model loading progress bar ───────────────────────────────────
+    // Driven by SSE events (tier.loading sets it, the first streamed
+    // token clears it) and by VRAM polling (the free-GB drop during
+    // load gives us a real "X of Y GB resident" signal). When no VRAM
+    // delta is observable yet, fall back to a slow time-based estimate
+    // so the bar still moves rather than sitting at 0%.
+    const ModelLoading = (() => {
+      const el = document.getElementById('model-loading');
+      const fill = document.getElementById('ml-fill');
+      const label = document.getElementById('ml-label');
+      let startedAt = 0;
+      let baselineFreeGb = null;
+      let targetGb = 0;
+      let tierId = null;
+      let tickHandle = null;
+      let active = false;
+
+      function paint(frac) {
+        const pct = Math.max(0, Math.min(1, frac)) * 100;
+        fill.classList.remove('indeterminate');
+        fill.style.width = pct.toFixed(1) + '%';
+      }
+      function tickTimeBased() {
+        if (!active) return;
+        // No usable VRAM delta yet — fade up to ~85% over the typical
+        // 5-30s window. The remaining 15% is reserved for the actual
+        // first-token confirmation.
+        const elapsed = (Date.now() - startedAt) / 1000;
+        // Asymptote at 0.85, half-life ~12s.
+        const frac = 0.85 * (1 - Math.exp(-elapsed / 12));
+        paint(frac);
+      }
+      return {
+        start(evt) {
+          // evt = {tier_id, model_tag, vram_estimate_gb?}
+          active = true;
+          tierId = evt && evt.tier_id || null;
+          targetGb = (evt && evt.vram_estimate_gb) || 0;
+          baselineFreeGb = (lastVramSnapshot
+            && (lastVramSnapshot.free_vram_gb_actual
+                ?? lastVramSnapshot.free_vram_gb_projected)) || null;
+          startedAt = Date.now();
+          const tag = (evt && (evt.model_tag || evt.tier_id)) || 'model';
+          label.textContent = `Loading ${tag} into VRAM…`;
+          el.classList.add('visible');
+          fill.classList.add('indeterminate');
+          fill.style.width = '';
+          if (tickHandle) clearInterval(tickHandle);
+          tickHandle = setInterval(tickTimeBased, 400);
+          // Speed up VRAM polling while a load is in flight so the bar
+          // tracks actual residency growth.
+          pollVram();
+        },
+        observeFreeGb(freeGb) {
+          if (!active || baselineFreeGb == null || !targetGb) return;
+          const consumed = Math.max(0, baselineFreeGb - freeGb);
+          // Cap at 0.95 so the user sees the bar finish at first-token.
+          const frac = Math.min(0.95, consumed / targetGb);
+          if (frac > 0.02) paint(frac);
+        },
+        finish() {
+          if (!active) return;
+          active = false;
+          paint(1.0);
+          if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
+          // Brief 100% pause before hiding so the user sees completion.
+          setTimeout(() => { el.classList.remove('visible'); paint(0); }, 350);
+        },
+        cancel() {
+          active = false;
+          if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
+          el.classList.remove('visible'); paint(0);
+        },
+      };
+    })();
+
+    // Per-tier variant info from /v1/models, keyed by tier_id like "tier.coding".
+    // Each value: {variants: [{id, name, available, vram_estimate_gb}], default: "30b"}.
+    // Used by the variant selector beside the model dropdown.
+    const tierVariants = new Map();
+    const variantEl = $('model-variant');
+    // User's chosen variant per tier (sticky across tier switches).
+    // tier_id → variant_id. Undefined means "use the tier's default".
+    const variantPick = new Map();
+
+    function applyVariantSelector(tierId) {
+      const meta = tierVariants.get(tierId);
+      if (!meta || !meta.variants || meta.variants.length === 0) {
+        variantEl.style.display = 'none';
+        variantEl.innerHTML = '';
+        return;
+      }
+      const previous = variantPick.get(tierId) || meta.default || meta.variants[0].id;
+      variantEl.innerHTML = '';
+      meta.variants.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.id;
+        const label = v.name || v.id;
+        if (v.available === false) {
+          o.textContent = `${label} (downloading…)`;
+          o.disabled = true;
+        } else {
+          o.textContent = label;
+        }
+        if (v.id === previous && !o.disabled) {
+          o.selected = true;
+        }
+        variantEl.appendChild(o);
+      });
+      variantEl.style.display = '';
+      variantPick.set(tierId, variantEl.value);
+    }
+
+    variantEl.addEventListener('change', () => {
+      const tierId = modelEl.value;
+      if (tierId) variantPick.set(tierId, variantEl.value);
+    });
 
     async function loadModels() {
       // Fetch /v1/models for the available tier list and /resolved-models
@@ -984,12 +1397,20 @@
         let firstAvailableValue = null;
         let previousIsAvailable = false;
         tierContext.clear();
+        tierVariants.clear();
         (data || []).forEach(m => {
           const o = document.createElement('option');
           o.value = m.id;
           // Stash per-tier context window so the CTX indicator can
           // show the right "X / Y" denominator even after a tier swap.
           if (m.context_window) tierContext.set(m.id, m.context_window);
+          // Stash per-tier variant choices for the secondary dropdown.
+          if (Array.isArray(m.variants) && m.variants.length > 0) {
+            tierVariants.set(m.id, {
+              variants: m.variants,
+              default: m.default_variant || (m.variants[0] && m.variants[0].id),
+            });
+          }
           const key = m.id.replace(/^tier\./, '');
           const info = resolved[key] || resolved[m.id] || {};
           const cat = tierLabel(key);
@@ -1017,6 +1438,7 @@
           modelEl.value = firstAvailableValue;
         }
         lastSelectedModel = modelEl.value;
+        applyVariantSelector(modelEl.value);
         updateCtxIndicator();
       } catch (_) {}
     }
@@ -1045,6 +1467,8 @@
         }
       }
       lastSelectedModel = newVal;
+      // Re-render the variant sub-selector for the newly-picked tier.
+      applyVariantSelector(newVal);
     });
 
     // Refresh the tier list every 30 s so download-completed tiers
@@ -1164,15 +1588,59 @@
     const toolState = new Map();   // name → enabled (boolean)
     let toolsTaxonomy = [];        // [{tier, title, groups: [{group, title, subgroups: [{subgroup, title, tools}]}]}]
 
-    async function loadTools() {
+    // Surfaces a human-readable error inside the tools popover instead
+    // of leaving it visually empty when /tools fails. The previous
+    // behaviour ("silent return on !r.ok") looked identical to a real
+    // empty registry on the user's side, so the dropdown just looked
+    // broken on every host where /tools was 403'd or 500'd.
+    function renderToolsError(msg) {
+      toolsList.innerHTML =
+        '<div class="tool-row" style="padding-left:8px;color:var(--danger);'
+        + 'white-space:normal;line-height:1.4;">'
+        + escapeHtml(msg) + '</div>';
+    }
+
+    let _toolsRetryTimer = null;
+
+    async function loadTools(attempt = 0) {
       // Default every tool to OFF. Auto-enabling default-enabled tools
       // pushes the request body past llama-server's per-slot context
       // window once the registry has 200+ entries (28k+ tokens of
       // schemas alone). The 🔧 popover is the explicit opt-in surface;
       // the user toggles only what they need for that turn.
+      let r;
       try {
-        const r = await api('/tools');
-        if (!r.ok) return;
+        r = await api('/tools');
+      } catch (e) {
+        // Network-level failure (offline, DNS, CORS preflight reject).
+        // Schedule one retry — the chat UI's first paint can race the
+        // backend lifespan during a refresh-after-pull.
+        renderToolsError('Could not reach /tools: ' + String(e)
+          + (attempt < 2 ? ' — retrying…' : ''));
+        if (attempt < 2) {
+          clearTimeout(_toolsRetryTimer);
+          _toolsRetryTimer = setTimeout(() => loadTools(attempt + 1),
+            (attempt + 1) * 2000);
+        }
+        return;
+      }
+      if (!r.ok) {
+        // Most common cases: 403 from HostGate (CHAT_HOSTNAME mismatch)
+        // and 500 from a not-yet-initialised state.tools (lifespan
+        // race). Surface the status so the user can self-diagnose
+        // instead of staring at a blank popover.
+        let detail = '';
+        try { detail = (await r.text()).slice(0, 200); } catch (_) {}
+        renderToolsError(`Failed to load tools (${r.status}): ${detail}`
+          + (attempt < 2 ? ' — retrying…' : ''));
+        if (r.status >= 500 && attempt < 2) {
+          clearTimeout(_toolsRetryTimer);
+          _toolsRetryTimer = setTimeout(() => loadTools(attempt + 1),
+            (attempt + 1) * 2000);
+        }
+        return;
+      }
+      try {
         const j = await r.json();
         toolState.clear();
         (j.data || []).forEach(t => {
@@ -1190,11 +1658,16 @@
             enabled.forEach(name => {
               if (toolState.has(name)) toolState.set(name, true);
             });
+            // Restore the preload-all-tools master switch state.
+            preloadAllTools = !!(data.preferences && data.preferences.preload_all_tools);
           }
         } catch (_) {}
+        applyPreloadAllUI();
         updateToolsCount();
         renderTools();
-      } catch (_) {}
+      } catch (e) {
+        renderToolsError('Tool registry response was malformed: ' + String(e));
+      }
     }
 
     // Debounced PATCH to persist toggle state. Bounces rapid bulk-
@@ -1338,6 +1811,42 @@
       toolsCount.textContent = n ? `(${n})` : '';
     }
 
+    // ── "Preload all tools" master switch ────────────────────────────
+    // When ON, every registered tool name is sent to the model on
+    // every turn — independent of which checkboxes the user toggled
+    // below. Useful for "I'm not sure which tool fits, let the model
+    // pick" mode, at the cost of a much fatter request body. Persisted
+    // in /me/preferences so it survives page reloads.
+    let preloadAllTools = false;
+    const preloadAllEl = $('preload-all');
+    const preloadHintEl = $('preload-hint');
+    const preloadRowEl = preloadAllEl && preloadAllEl.closest('.preload-row');
+
+    function applyPreloadAllUI() {
+      preloadAllEl.checked = preloadAllTools;
+      if (preloadRowEl) preloadRowEl.classList.toggle('on', preloadAllTools);
+      if (preloadHintEl) {
+        preloadHintEl.textContent = preloadAllTools
+          ? `On — all ${toolState.size} registered tools will be sent to the model every turn.`
+          : 'Off — only tools you toggle below are sent to the model.';
+      }
+    }
+
+    async function setPreloadAll(on) {
+      preloadAllTools = !!on;
+      applyPreloadAllUI();
+      try {
+        await api('/me/preferences', {
+          method: 'PATCH',
+          body: JSON.stringify({ preload_all_tools: preloadAllTools }),
+        });
+      } catch (_) {}
+    }
+
+    if (preloadAllEl) {
+      preloadAllEl.addEventListener('change', () => setPreloadAll(preloadAllEl.checked));
+    }
+
     toolsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       toolsPop.classList.toggle('hidden');
@@ -1377,16 +1886,192 @@
       });
     }
 
-    function appendMsg(role, text) {
+    function appendMsg(role, text, msgId) {
       const box = document.createElement('div');
       box.className = 'msg ' + role;
-      box.innerHTML = `<div class="role">${role}</div><div class="body">${renderMarkdown(text)}</div>`;
+      if (msgId != null) box.dataset.msgId = String(msgId);
+      let actions = '';
+      // Only user turns get the edit affordance — editing an assistant
+      // reply doesn't have well-defined semantics in a generative chat
+      // (the "rewind to here and rerun the model" flow only makes sense
+      // when the user is changing their own input).
+      if (role === 'user') {
+        actions = '<div class="msg-actions"><button class="edit-btn" type="button" title="Edit and resend">✎ Edit</button></div>';
+      }
+      box.innerHTML = `<div class="role">${role}</div>${actions}<div class="body">${renderMarkdown(text)}</div>`;
       logEl.appendChild(box);
+      const editBtn = box.querySelector('.edit-btn');
+      if (editBtn) editBtn.addEventListener('click', () => beginEditMessage(box, text));
       logEl.scrollTop = logEl.scrollHeight;
       return box.querySelector('.body');
     }
 
+    // ── Edit & rewind ────────────────────────────────────────────────
+    // Swap a user message for a textarea. Saving truncates the
+    // conversation server-side (DELETE /chats/{id}/messages/{msgId})
+    // and re-sends the corrected text via sendMessage(), so the model
+    // re-extends from the edited turn forward.
+    function beginEditMessage(box, originalText) {
+      if (streaming) return;   // refuse mid-stream edits
+      const bodyEl = box.querySelector('.body');
+      const actionsEl = box.querySelector('.msg-actions');
+      if (!bodyEl) return;
+      const original = bodyEl.dataset.rawText || originalText || bodyEl.innerText;
+      bodyEl.dataset.rawText = original;
+      bodyEl.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.className = 'edit-area';
+      ta.value = original;
+      const controls = document.createElement('div');
+      controls.className = 'edit-controls';
+      controls.innerHTML =
+        '<button class="primary save" type="button">Save & rewind</button>' +
+        '<button class="cancel" type="button">Cancel</button>' +
+        '<span class="hint">Subsequent replies will be discarded.</span>';
+      bodyEl.appendChild(ta);
+      bodyEl.appendChild(controls);
+      if (actionsEl) actionsEl.style.display = 'none';
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+
+      const restore = () => {
+        bodyEl.innerHTML = renderMarkdown(original);
+        if (actionsEl) actionsEl.style.display = '';
+      };
+      controls.querySelector('.cancel').addEventListener('click', restore);
+      controls.querySelector('.save').addEventListener('click', async () => {
+        const newText = ta.value.trim();
+        if (!newText || newText === original) { restore(); return; }
+        await commitEditAndRewind(box, newText, restore);
+      });
+      ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); restore(); }
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault(); controls.querySelector('.save').click();
+        }
+      });
+    }
+
+    async function commitEditAndRewind(box, newText, restoreFn) {
+      const msgId = box.dataset.msgId;
+      // Server-side truncate: drop this message and every later one.
+      // For purely-local messages (no id yet — happens if the user
+      // edits the freshly-sent turn before refreshMessageIds runs),
+      // skip the network call and rely on the local rewind below.
+      if (msgId && currentConversationId != null) {
+        try {
+          const r = await api(
+            `/chats/${currentConversationId}/messages/${encodeURIComponent(msgId)}`,
+            { method: 'DELETE' },
+          );
+          if (!r.ok && r.status !== 404) {
+            // 404 is benign here — the message may already have been
+            // truncated by a concurrent rewind. Anything else is a
+            // hard failure: bail without touching the DOM so the user
+            // can retry instead of losing their text.
+            restoreFn();
+            alert('Could not rewind conversation: ' + r.status);
+            return;
+          }
+        } catch (e) {
+          restoreFn();
+          alert('Could not rewind conversation: ' + e);
+          return;
+        }
+      }
+      // Local rewind: drop the edited message + every following node
+      // from the DOM, and trim `history` to match. The pivot is the
+      // index of the corresponding user turn in `history` (counted by
+      // walking the prior siblings).
+      let userIdx = -1;
+      for (const sib of logEl.children) {
+        if (sib === box) break;
+        if (sib.classList && sib.classList.contains('msg')) {
+          // Each .msg corresponds 1:1 to a history entry, so map by
+          // counting prior siblings.
+          userIdx++;
+        }
+      }
+      // userIdx is now the count of prior history entries; the edited
+      // message is at position userIdx + 1 - 1 = userIdx (0-based).
+      const cutAt = userIdx + 1;   // ← edited message itself + everything after
+      // Remove DOM nodes from `box` onward.
+      while (logEl.lastChild && logEl.lastChild !== box) {
+        logEl.removeChild(logEl.lastChild);
+      }
+      logEl.removeChild(box);
+      // Trim local history.
+      if (cutAt - 1 >= 0 && cutAt - 1 < history.length) {
+        history.length = cutAt - 1;
+      }
+      updateCtxIndicator();
+      // Re-send the corrected text. composerEl is the source of truth
+      // for sendMessage(), so prime it then dispatch.
+      composerEl.value = newText;
+      await sendMessage();
+    }
+
+    // After streaming completes, the freshly-stored user + assistant
+    // rows have server-assigned ids that the SSE stream doesn't carry
+    // back. Re-fetch the conversation and stamp data-msg-id onto each
+    // .msg DOM node in order so subsequent edits know which row to
+    // truncate from. Cheap GET, only fires when we're sure a row was
+    // actually persisted (currentConversationId != null).
+    async function refreshMessageIds() {
+      if (currentConversationId == null) return;
+      try {
+        const r = await api('/chats/' + currentConversationId);
+        if (!r.ok) return;
+        const conv = await r.json();
+        const msgs = (conv.messages || []).filter(
+          m => m.role === 'user' || m.role === 'assistant'
+        );
+        const nodes = Array.from(logEl.querySelectorAll('.msg'));
+        // Walk backwards: assistant streaming may have appended the
+        // most recent .msg, but the message list is sorted by created_at
+        // ascending. Pair from the right so off-by-one races (e.g. a
+        // pending tool-call message in flight) don't misalign earlier
+        // ids.
+        const n = Math.min(nodes.length, msgs.length);
+        for (let i = 0; i < n; i++) {
+          const node = nodes[nodes.length - 1 - i];
+          const m = msgs[msgs.length - 1 - i];
+          if (m && m.id != null) node.dataset.msgId = String(m.id);
+        }
+      } catch (_) {}
+    }
+
     composerEl.addEventListener('keydown', (e) => {
+      // Forced-tool autocomplete intercepts arrow / tab / enter while
+      // the suggestion list is open. Only "send" once the list is
+      // closed so the user can pick a tool with Enter without firing
+      // the message.
+      const acOpen = !acEl.classList.contains('hidden') && acItems.length > 0;
+      if (acOpen) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          acIndex = (acIndex + 1) % acItems.length;
+          refreshForcedToolUI();
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          acIndex = (acIndex - 1 + acItems.length) % acItems.length;
+          refreshForcedToolUI();
+          return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+          e.preventDefault();
+          acceptAutocomplete();
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          acEl.classList.add('hidden');
+          acItems = []; acIndex = -1;
+          return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
@@ -1395,11 +2080,140 @@
     sendEl.addEventListener('click', sendMessage);
 
     let streaming = false;
+    // Parse a "*/<tool_name> <prompt>" prefix into a forced-tool
+    // invocation. Returns {toolName, prompt} when the prefix is
+    // recognised against the loaded registry, else null. The tool name
+    // can be `<module>` (single-method modules) or `<module>.<method>`,
+    // matching what /tools surfaces in toolState.
+    //
+    // Example: "*/web.search latest CUDA release notes"
+    //   → { toolName: "web.search", prompt: "latest CUDA release notes" }
+    function parseForcedToolPrefix(text) {
+      if (!text || !text.startsWith('*/')) return null;
+      const rest = text.slice(2);
+      // Split on the first whitespace; everything before is the tool
+      // identifier. Allow letters, digits, underscore, dot, hyphen so
+      // both `module` and `module.method` parse cleanly.
+      const m = rest.match(/^([A-Za-z0-9_.\-]+)(?:\s+([\s\S]*))?$/);
+      if (!m) return null;
+      const toolName = m[1];
+      const prompt = (m[2] || '').trim();
+      // Resolve against the registry — only force when the name is
+      // actually registered. Unknown names fall through to a normal
+      // prompt so a stray "*/foo" typed in chat doesn't silently break.
+      if (!toolState.has(toolName)) return null;
+      return { toolName, prompt };
+    }
+
+    // ── Forced-tool composer hint + autocomplete ─────────────────────
+    // While the textarea begins with "*/", surface a hint chip and an
+    // autocomplete list of matching tool names from the loaded
+    // registry. Arrow-up/down moves the highlight, Tab/Enter accepts.
+    const forcedHintEl = $('forced-tool-hint');
+    const acEl = $('tool-autocomplete');
+    let acItems = [];
+    let acIndex = -1;
+
+    function currentForcedQuery() {
+      const v = composerEl.value;
+      if (!v.startsWith('*/')) return null;
+      const rest = v.slice(2);
+      // Whatever's typed before the first whitespace is the partial
+      // tool name. Once the user types whitespace, autocomplete closes
+      // and we just show the resolved-tool hint chip.
+      const wsIdx = rest.search(/\s/);
+      if (wsIdx === -1) return { partial: rest, locked: false };
+      return { partial: rest.slice(0, wsIdx), locked: true };
+    }
+
+    function refreshForcedToolUI() {
+      const q = currentForcedQuery();
+      if (!q) {
+        forcedHintEl.classList.add('hidden');
+        acEl.classList.add('hidden');
+        acItems = []; acIndex = -1;
+        return;
+      }
+      // Resolve hint: exact match → green chip; partial match → muted.
+      if (toolState.has(q.partial)) {
+        forcedHintEl.classList.remove('hidden', 'unknown');
+        forcedHintEl.textContent = `↳ Forcing tool: ${q.partial}`;
+      } else if (q.locked) {
+        forcedHintEl.classList.remove('hidden');
+        forcedHintEl.classList.add('unknown');
+        forcedHintEl.textContent = `↳ Unknown tool "${q.partial}" — message will be sent as a normal prompt.`;
+      } else {
+        forcedHintEl.classList.add('hidden');
+      }
+      // Autocomplete is shown only while the user is still typing the
+      // tool identifier (no whitespace yet) and there's a partial.
+      if (!q.locked && q.partial.length > 0) {
+        const ql = q.partial.toLowerCase();
+        const matches = [];
+        toolState.forEach((_v, name) => {
+          if (name.toLowerCase().includes(ql)) matches.push(name);
+        });
+        // Prefer prefix matches over substring matches; cap at 8.
+        matches.sort((a, b) => {
+          const ap = a.toLowerCase().startsWith(ql) ? 0 : 1;
+          const bp = b.toLowerCase().startsWith(ql) ? 0 : 1;
+          return ap - bp || a.localeCompare(b);
+        });
+        acItems = matches.slice(0, 8);
+        if (acIndex >= acItems.length) acIndex = acItems.length - 1;
+        if (acIndex < 0 && acItems.length > 0) acIndex = 0;
+        if (acItems.length === 0) {
+          acEl.classList.add('hidden');
+        } else {
+          acEl.classList.remove('hidden');
+          acEl.innerHTML = acItems.map((name, i) =>
+            `<div class="ac-row${i === acIndex ? ' active' : ''}" data-i="${i}">`
+            + escapeHtml(name) + '</div>'
+          ).join('');
+        }
+      } else {
+        acEl.classList.add('hidden');
+        acItems = []; acIndex = -1;
+      }
+    }
+
+    function acceptAutocomplete(i) {
+      if (i == null) i = acIndex;
+      if (i < 0 || i >= acItems.length) return;
+      const name = acItems[i];
+      // Replace the partial with the full name + a trailing space so
+      // the user can immediately type the prompt.
+      composerEl.value = '*/' + name + ' ';
+      acEl.classList.add('hidden');
+      acItems = []; acIndex = -1;
+      composerEl.focus();
+      refreshForcedToolUI();
+    }
+
+    composerEl.addEventListener('input', refreshForcedToolUI);
+    acEl.addEventListener('mousedown', (e) => {
+      // mousedown (not click) so we beat the textarea's blur and don't
+      // lose focus before accepting.
+      const row = e.target.closest('.ac-row');
+      if (!row) return;
+      e.preventDefault();
+      acceptAutocomplete(parseInt(row.dataset.i, 10));
+    });
+
     async function sendMessage() {
       if (streaming) return;
-      const text = composerEl.value.trim();
-      if (!text && attached.length === 0) return;
+      const rawText = composerEl.value.trim();
+      if (!rawText && attached.length === 0) return;
+      // Detect & strip the "*/<tool_name>" manual-invocation prefix.
+      // When present, we force enabled_tools to just that one tool +
+      // tool_choice={function:{name}} so the model is required to call
+      // it on this turn. The user-visible bubble keeps the original
+      // text (so the conversation is self-documenting) but the message
+      // sent to the model has the prefix stripped.
+      const forced = parseForcedToolPrefix(rawText);
+      const text = forced ? forced.prompt : rawText;
       composerEl.value = '';
+      refreshForcedToolUI();   // hide the prefix hint chip + autocomplete
 
       // Upload any attached files first. Each call returns an
       // attachment_id we hand to /v1/chat/completions; the backend
@@ -1422,10 +2236,15 @@
       }
 
       // Surface attachments inline in the user message bubble so the
-      // chat history is self-explanatory.
-      const visibleText = text + (uploadList.length
+      // chat history is self-explanatory. For forced-tool turns we
+      // keep the original "*/tool_name …" rendering visible so the
+      // user can see at a glance which tool was pinned.
+      const visibleText = rawText + (uploadList.length
         ? '\n\n_attached: ' + uploadList.map(a => a.name).join(', ') + '_'
         : '');
+      // For the message *sent to the model*, drop the "*/tool_name"
+      // prefix — the model only needs the underlying request, with
+      // tool_choice doing the actual pinning.
       history.push({ role: 'user', content: text || '(attachment only)' });
       updateCtxIndicator();
       appendMsg('user', visibleText);
@@ -1441,9 +2260,15 @@
       try {
         // Per-request enabled tools: only send the names the user
         // toggled on. Empty array means "no tools this turn"; null
-        // (no key) means "use registry defaults".
+        // (no key) means "use registry defaults". The "preload all"
+        // master switch overrides the toggles and sends every
+        // registered tool name regardless — see setPreloadAll above.
         const toolNames = [];
-        toolState.forEach((on, name) => { if (on) toolNames.push(name); });
+        if (preloadAllTools) {
+          toolState.forEach((_on, name) => toolNames.push(name));
+        } else {
+          toolState.forEach((on, name) => { if (on) toolNames.push(name); });
+        }
         // Lazy-create the conversation row on first send so its tier
         // matches whichever the user picked. Subsequent turns reuse
         // the same conversation_id.
@@ -1474,7 +2299,28 @@
         // preserves backwards compat with handlers that don't know
         // about it yet.
         if (toolState.size > 0) body.enabled_tools = toolNames;
+        // "*/tool_name" manual invocation overrides the toggle list:
+        // we narrow enabled_tools to just that one tool AND set
+        // tool_choice to OpenAI's "force this function" shape so the
+        // model is required to call it (rather than describing it).
+        // Backend already honors tool_choice (see main.py:1127).
+        if (forced) {
+          body.enabled_tools = [forced.toolName];
+          body.tool_choice = {
+            type: 'function',
+            function: { name: forced.toolName },
+          };
+        }
         if (attachmentIds.length) body.attachment_ids = attachmentIds;
+        // Variant sub-selector: only forward when a non-default value
+        // is picked AND the variant select is visible for the current
+        // tier (otherwise the field is meaningless and would be a no-op
+        // on the backend anyway).
+        const variantsForTier = tierVariants.get(modelEl.value);
+        if (variantsForTier && variantEl.value && variantEl.style.display !== 'none') {
+          const def = variantsForTier.default;
+          if (variantEl.value !== def) body.variant = variantEl.value;
+        }
 
         const r = await fetch('/v1/chat/completions', {
           method: 'POST',
@@ -1546,6 +2392,11 @@
                   label = tag
                     ? `Loading ${tag} into VRAM (first request takes 5–30s)…`
                     : 'Loading model into VRAM (first request takes 5–30s)…';
+                  // Surface the proportional progress bar above the
+                  // composer. Cleared by the first streamed token (see
+                  // firstTokenSeen branch below) or by the error/finally
+                  // paths so it never gets stuck visible.
+                  ModelLoading.start(chunk.data || {});
                 } else if (t === 'vram.making_room') {
                   const tag = chunk.data && chunk.data.tier_id;
                   label = tag
@@ -1558,6 +2409,7 @@
                   const msg = (chunk.data && chunk.data.message) || 'Unknown error';
                   targetBody.innerHTML = '<em style="color:#c44;">Error: ' + escapeHtml(msg) + '</em>';
                   firstTokenSeen = true;   // suppress further status
+                  ModelLoading.cancel();
                   continue;
                 }
                 if (label) {
@@ -1572,6 +2424,7 @@
                   if (!firstTokenSeen) {
                     firstTokenSeen = true;
                     targetBody.innerHTML = '';
+                    ModelLoading.finish();
                   }
                   buffered += delta;
                   targetBody.innerHTML = renderMarkdown(buffered);
@@ -1583,6 +2436,11 @@
         }
         history.push({ role: 'assistant', content: buffered });
         updateCtxIndicator();
+        // Stamp data-msg-id onto the freshly-rendered .msg nodes so
+        // the edit-and-rewind flow has server ids to call DELETE with.
+        // _finalize_conversation runs as a background task after the
+        // stream closes, so wait a beat before re-fetching.
+        setTimeout(refreshMessageIds, 800);
         // First assistant turn in this conversation triggers a backend
         // auto-title pass. Refresh the sidebar after a short delay so
         // the freshly-generated title replaces the "New chat" sentinel.
@@ -1614,6 +2472,7 @@
       } finally {
         streaming = false;
         sendEl.disabled = false;
+        ModelLoading.cancel();
       }
     }
 

@@ -50,6 +50,9 @@ def _build_app(monkeypatch, *, chat_host="chat.mylensandi.com", airgap=False):
     @app.get("/api/airgap")
     async def _ag(): return {"enabled": airgap}
 
+    @app.get("/tools")
+    async def _t(): return {"data": [], "groups": []}
+
     @app.get("/")
     async def _root(): return {"ok": True}
 
@@ -64,6 +67,14 @@ def test_healthz_always_allowed(monkeypatch):
 def test_v1_models_always_allowed(monkeypatch):
     c = _build_app(monkeypatch)
     assert c.get("/v1/models", headers={"host": "evil.example.com"}).status_code == 200
+
+
+def test_tools_always_allowed(monkeypatch):
+    """The /tools registry is read-only static taxonomy data — gating it
+    on hostname caused the chat UI's tools dropdown to render empty when
+    CHAT_HOSTNAME wasn't set to the deployment's actual tunnel domain."""
+    c = _build_app(monkeypatch)
+    assert c.get("/tools", headers={"host": "evil.example.com"}).status_code == 200
 
 
 def test_chat_path_from_correct_host_allowed(monkeypatch):

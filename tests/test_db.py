@@ -234,3 +234,39 @@ def test_deleting_conversation_cascades_messages(db):
     run(db.add_message(conv["id"], "user", "x"))
     run(db.delete_conversation(conv["id"], u["id"]))
     assert run(db.list_messages(conv["id"])) == []
+
+
+def test_delete_messages_from_truncates_conversation(db):
+    """Edit-and-rewind flow: delete_messages_from drops the pivot row
+    AND every later row, leaving prior turns intact."""
+    u = _mkuser(db, "rw", "rw@x.io")
+    conv = run(db.create_conversation(u["id"]))
+    m1 = run(db.add_message(conv["id"], "user", "first"))
+    m2 = run(db.add_message(conv["id"], "assistant", "first reply"))
+    m3 = run(db.add_message(conv["id"], "user", "second"))
+    run(db.add_message(conv["id"], "assistant", "second reply"))
+    removed = run(db.delete_messages_from(conv["id"], u["id"], m3["id"]))
+    assert removed == 2
+    msgs = run(db.list_messages(conv["id"]))
+    assert [m["id"] for m in msgs] == [m1["id"], m2["id"]]
+
+
+def test_delete_messages_from_rejects_other_users(db):
+    """Cross-user truncate must be a no-op so users can't nuke each
+    other's conversations by guessing message ids."""
+    owner = _mkuser(db, "own", "own@x.io")
+    other = _mkuser(db, "oth", "oth@x.io")
+    conv = run(db.create_conversation(owner["id"]))
+    m = run(db.add_message(conv["id"], "user", "mine"))
+    removed = run(db.delete_messages_from(conv["id"], other["id"], m["id"]))
+    assert removed == 0
+    assert len(run(db.list_messages(conv["id"]))) == 1
+
+
+def test_delete_messages_from_unknown_pivot_is_noop(db):
+    u = _mkuser(db, "np", "np@x.io")
+    conv = run(db.create_conversation(u["id"]))
+    run(db.add_message(conv["id"], "user", "x"))
+    removed = run(db.delete_messages_from(conv["id"], u["id"], 999_999))
+    assert removed == 0
+    assert len(run(db.list_messages(conv["id"]))) == 1

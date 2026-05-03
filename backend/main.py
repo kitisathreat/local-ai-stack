@@ -60,6 +60,7 @@ from .schemas import (
     MessageOut,
     ModelsListResponse,
     TierInfo,
+    TierVariantInfo,
     UpdateUserRequest,
 )
 from .diagnostics import run_startup_diagnostics
@@ -379,8 +380,32 @@ async def list_models():
     keeps the GUI's tier dropdown clean.
     """
     tiers = state.config.models.tiers
-    return ModelsListResponse(data=[
-        TierInfo(
+
+    # Variant on-disk check: a variant is `available` only when its
+    # gguf_path resolves to an actual file. Lets the UI grey-out
+    # variants that haven't been pulled yet (e.g. coding_80b before
+    # the user runs -CheckUpdates).
+    def _variant_available(tier_name: str, variant_id: str) -> bool:
+        try:
+            t = tiers[tier_name].resolve_variant(variant_id)
+            p = getattr(t, "gguf_path", None)
+            return bool(p and Path(p).exists())
+        except Exception:
+            return False
+
+    out: list[TierInfo] = []
+    for name, tier in tiers.items():
+        if tier.role == "embedding":
+            continue
+        variants: list[TierVariantInfo] = []
+        for vid, vcfg in (tier.variants or {}).items():
+            variants.append(TierVariantInfo(
+                id=vid,
+                name=getattr(vcfg, "model_tag", None) or vid,
+                vram_estimate_gb=getattr(vcfg, "vram_estimate_gb", None),
+                available=_variant_available(name, vid),
+            ))
+        out.append(TierInfo(
             id=f"tier.{name}",
             name=tier.name,
             description=tier.description,
@@ -388,10 +413,10 @@ async def list_models():
             context_window=tier.context_window,
             think_supported=tier.think_supported,
             vram_estimate_gb=tier.vram_estimate_gb,
-        )
-        for name, tier in tiers.items()
-        if tier.role != "embedding"
-    ])
+            variants=variants,
+            default_variant=tier.default_variant if variants else None,
+        ))
+    return ModelsListResponse(data=out)
 
 
 @app.get("/vram")
@@ -1952,6 +1977,28 @@ async def delete_chat(
             logger.warning("Pre-delete summary failed for conv %d: %s", conv_id, e)
     ok = await db.delete_conversation(conv_id, user["id"])
     return {"ok": True, "summarized": keep_summary, "deleted": ok}
+
+
+@app.delete("/chats/{conv_id}/messages/{message_id}")
+async def truncate_messages_from(
+    conv_id: int,
+    message_id: int,
+    user: dict = Depends(auth.current_user),
+):
+    """Delete `message_id` and every later message in the conversation.
+    Powers the chat UI's edit-and-rewind flow: editing a past user turn
+    nukes the original message and every reply that followed it so the
+    new text can take their place.
+    """
+    conv = await db.get_conversation(conv_id, user["id"])
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if bool(conv.get("airgap")) != airgap.is_enabled():
+        raise HTTPException(404, "Conversation not found (other airgap mode)")
+    removed = await db.delete_messages_from(conv_id, user["id"], message_id)
+    if removed == 0:
+        raise HTTPException(404, "Message not found in this conversation")
+    return {"ok": True, "removed": removed}
 
 
 # ── RAG ─────────────────────────────────────────────────────────────────

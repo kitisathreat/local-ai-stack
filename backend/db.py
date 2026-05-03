@@ -555,3 +555,38 @@ async def add_message(
         await c.commit()
         return {"id": cur.lastrowid, "role": role, "content": content,
                 "tier": tier, "think": think, "created_at": now}
+
+
+async def delete_messages_from(conv_id: int, user_id: int, message_id: int) -> int:
+    """Delete `message_id` and every later message in the conversation.
+
+    Used by the chat UI's edit-and-rewind flow: when a user edits a prior
+    user turn, the original message and every assistant/user reply that
+    followed it are dropped so the conversation can be re-extended from
+    that point with the corrected text. Returns the number of rows
+    removed; returns 0 if the conversation isn't owned by the user or
+    the pivot message doesn't belong to it.
+    """
+    async with get_conn() as c:
+        owner = await (await c.execute(
+            "SELECT user_id FROM conversations WHERE id = ?", (conv_id,),
+        )).fetchone()
+        if not owner or int(owner["user_id"]) != int(user_id):
+            return 0
+        pivot = await (await c.execute(
+            "SELECT created_at FROM messages "
+            "WHERE id = ? AND conversation_id = ?",
+            (message_id, conv_id),
+        )).fetchone()
+        if not pivot:
+            return 0
+        cur = await c.execute(
+            "DELETE FROM messages WHERE conversation_id = ? AND created_at >= ?",
+            (conv_id, pivot["created_at"]),
+        )
+        await c.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (time.time(), conv_id),
+        )
+        await c.commit()
+        return cur.rowcount or 0
