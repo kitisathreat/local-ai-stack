@@ -41,7 +41,15 @@ class MultiAgentOptions(BaseModel):
 
     enabled: bool | None = None            # True/False to force multi-agent on or off
     num_workers: int | None = None         # cap on parallel subtasks (1..8)
-    worker_tier: str | None = None         # tier name (e.g. "fast", "versatile")
+    worker_tier: str | None = None         # tier name applied to ALL workers
+                                           # when worker_tiers is unset
+    # Per-agent worker tier list. When provided, takes precedence over
+    # `worker_tier` and `num_workers` — the orchestrator decomposes into
+    # exactly len(worker_tiers) subtasks, and subtask N runs on
+    # worker_tiers[N] regardless of specialist routing. Ignored if empty
+    # list. Each entry must be a known tier name (case-sensitive); unknown
+    # entries fall back to the global default worker tier.
+    worker_tiers: list[str] | None = None
     orchestrator_tier: str | None = None   # tier name
     reasoning_workers: bool | None = None  # reasoning on for workers
     # "independent" | "collaborative". In collaborative mode, workers see each

@@ -93,6 +93,12 @@ class _RuntimeSettings:
 
     orchestrator_tier: str
     worker_tier: str
+    # Per-agent worker tier list. When non-empty, max_workers and
+    # min_workers are clamped to len(worker_tiers) and each subtask N
+    # runs on worker_tiers[N] regardless of specialist routing.
+    # Sanitised at resolve time: unknown tier names are replaced with
+    # `worker_tier` (the global default).
+    worker_tiers: list[str]
     max_workers: int
     min_workers: int
     reasoning_workers: bool
@@ -121,9 +127,32 @@ def _resolved_settings(
     rounds = o.interaction_rounds if o.interaction_rounds is not None else cfg.interaction_rounds
     rounds = max(0, min(int(rounds or 0), 4))   # clamp 0..4 to bound cost
 
-    max_w = o.num_workers if o.num_workers is not None else cfg.max_workers
-    max_w = max(1, min(int(max_w), 8))          # clamp 1..8
-    min_w = max(1, min(int(cfg.min_workers), max_w))
+    worker_tier_default = _tier_or_default(o.worker_tier, cfg.worker_tier)
+
+    # Per-agent worker tier list (Phase 2). When provided and non-empty,
+    # it pins both the count of workers (max == min == len(list)) and
+    # the per-position tier assignment. Sanitise unknown names to the
+    # global default so a typo doesn't 404 the spawn — the operator
+    # sees the corrected list in the agent.workers_start event.
+    worker_tiers_raw = list(o.worker_tiers or [])
+    worker_tiers: list[str] = []
+    for name in worker_tiers_raw:
+        if not name:
+            continue
+        worker_tiers.append(_tier_or_default(name, worker_tier_default))
+    # Clamp to 1..8 even when the list is given (defence against UI bugs
+    # sending arrays of arbitrary length).
+    if len(worker_tiers) > 8:
+        worker_tiers = worker_tiers[:8]
+
+    if worker_tiers:
+        # Per-agent list pins worker count.
+        max_w = len(worker_tiers)
+        min_w = max_w
+    else:
+        max_w = o.num_workers if o.num_workers is not None else cfg.max_workers
+        max_w = max(1, min(int(max_w), 8))          # clamp 1..8
+        min_w = max(1, min(int(cfg.min_workers), max_w))
 
     reasoning = (
         o.reasoning_workers if o.reasoning_workers is not None
@@ -133,7 +162,8 @@ def _resolved_settings(
 
     return _RuntimeSettings(
         orchestrator_tier=_tier_or_default(o.orchestrator_tier, cfg.orchestrator_tier),
-        worker_tier=_tier_or_default(o.worker_tier, cfg.worker_tier),
+        worker_tier=worker_tier_default,
+        worker_tiers=worker_tiers,
         max_workers=max_w,
         min_workers=min_w,
         reasoning_workers=bool(reasoning),
@@ -148,7 +178,23 @@ class Subtask:
     task: str
     specialist: str                        # GENERAL | CODING | VISION | REASONING
 
-    def resolved_tier(self, multi_agent_cfg: MultiAgentConfig, default_worker: str) -> str:
+    def resolved_tier(
+        self,
+        multi_agent_cfg: MultiAgentConfig,
+        default_worker: str,
+        *,
+        worker_tiers: list[str] | None = None,
+        index: int | None = None,
+    ) -> str:
+        # Per-agent override (Phase 2): when the user supplied an
+        # explicit per-agent tier list, position-index wins over
+        # specialist routing. The user has explicitly chosen tier T
+        # for this slot — honour that even if the specialist heuristic
+        # would have picked something else. Out-of-range indices fall
+        # through to the normal specialist path (defensive: shouldn't
+        # happen because settings.max_workers == len(worker_tiers)).
+        if worker_tiers and index is not None and 0 <= index < len(worker_tiers):
+            return worker_tiers[index]
         routes = multi_agent_cfg.specialist_routes
         if self.specialist == "CODING":
             return routes.get("code_block_present", "coding")
@@ -224,9 +270,29 @@ class Orchestrator:
         # the orchestrator over-decomposes.
         if len(subtasks) > settings.max_workers:
             subtasks = subtasks[: settings.max_workers]
+
+        # Per-agent worker tier list (Phase 2): the user explicitly
+        # asked for N agents. Pad the subtask list to len(worker_tiers)
+        # so every requested tier actually runs. Padded subtasks share
+        # the original user question — the per-tier diversity is the
+        # point. If the orchestrator returned ZERO subtasks (no
+        # decomposition possible), this also turns the request into an
+        # N-tier ensemble of the original question rather than a
+        # single-shot fallback.
+        if settings.worker_tiers and len(subtasks) < len(settings.worker_tiers):
+            next_id = max((s.id for s in subtasks), default=0) + 1
+            while len(subtasks) < len(settings.worker_tiers):
+                subtasks.append(Subtask(
+                    id=next_id, task=user_message, specialist="GENERAL",
+                ))
+                next_id += 1
+
         yield AgentEvent(type="agent.plan_done", data={"subtask_count": len(subtasks)})
 
         # Fallback: no decomposition → single-shot on orchestrator
+        # (only when the user did NOT pin a per-agent tier list — with
+        # an explicit list, the padding above already produced enough
+        # subtasks, so this branch is effectively unreachable then).
         if not subtasks:
             async with self.scheduler.reserve(orch_tier_name):
                 async for chunk in _stream_as_events(
@@ -244,10 +310,13 @@ class Orchestrator:
             "workers": [
                 {
                     "id": s.id,
-                    "tier": s.resolved_tier(ma_cfg, settings.worker_tier),
+                    "tier": s.resolved_tier(
+                        ma_cfg, settings.worker_tier,
+                        worker_tiers=settings.worker_tiers, index=i,
+                    ),
                     "task": s.task[:100],
                 }
-                for s in subtasks
+                for i, s in enumerate(subtasks)
             ],
         })
 
@@ -330,8 +399,18 @@ class Orchestrator:
         each worker is given the other workers' prior-round outputs and asked
         to refine its own (collaborative mode)."""
 
+        # Build a stable subtask-id -> position-index map so the
+        # per-agent `worker_tiers` list can be honoured by run_worker
+        # without changing run_worker's signature (kept tight because
+        # asyncio.gather wraps it).
+        subtask_index = {s.id: i for i, s in enumerate(subtasks)}
+
         async def run_worker(s: Subtask) -> dict:
-            worker_tier_name = s.resolved_tier(ma_cfg, settings.worker_tier)
+            worker_tier_name = s.resolved_tier(
+                ma_cfg, settings.worker_tier,
+                worker_tiers=settings.worker_tiers,
+                index=subtask_index.get(s.id),
+            )
             worker_tier = self.cfg.models.tiers[worker_tier_name]
             worker_client = self.backends[worker_tier.backend]
 
