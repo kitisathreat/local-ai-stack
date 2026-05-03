@@ -1416,6 +1416,11 @@
         });
         tierBlock.appendChild(tierHeader);
         tierBlock.appendChild(tierBody);
+        // The actual root insertion. Without this the entire tier
+        // subtree is built in memory and immediately GC'd, leaving the
+        // popover blank — the original symptom of "Tools shows only
+        // Filter tools".
+        toolsList.appendChild(tierBlock);
 
         tier.groups.forEach(group => {
           const groupTools = group.subgroups.flatMap(s => s.tools);
