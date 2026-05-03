@@ -44,6 +44,16 @@ logger = logging.getLogger("backend.model_resolver")
 
 CACHE_TTL_SECONDS = 24 * 60 * 60
 
+# How many shards of a sharded GGUF download in parallel. HF allows
+# multiple concurrent connections per IP; 4 is well below their soft
+# rate-limit budget and gets us most of the wall-clock win over
+# sequential pulls. Override at runtime via LAI_PARALLEL_SHARDS.
+# Set to 1 to force purely sequential downloads (the legacy behaviour).
+try:
+    _PARALLEL_SHARD_WORKERS = max(1, int(os.getenv("LAI_PARALLEL_SHARDS", "4")))
+except ValueError:
+    _PARALLEL_SHARD_WORKERS = 4
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -513,20 +523,70 @@ def pull_missing_hf_files(
                 shards = _list_shard_companions(r.repo, r.filename, revision)
                 if len(shards) > 1:
                     logger.info(
-                        "Pulling %d shards for tier %s: %s + %d more",
-                        len(shards), tier, shards[0], len(shards) - 1,
+                        "Pulling %d shards for tier %s in parallel "
+                        "(max workers: %d): %s + %d more",
+                        len(shards), tier, _PARALLEL_SHARD_WORKERS,
+                        shards[0], len(shards) - 1,
                     )
-                first_shard_path: Path | None = None
-                for shard_filename in shards:
-                    downloaded = _download_with_retry(
-                        repo_id=r.repo,
-                        filename=shard_filename,
-                        revision=revision,
-                        local_dir=str(target_root),
-                        token=token,
+                # Parallel shard download via ThreadPoolExecutor.
+                # hf_hub_download is sync I/O, so threads parallelize
+                # cleanly. HF allows multiple concurrent connections per
+                # IP (we cap at LAI_PARALLEL_SHARDS=4 to avoid burning
+                # the CDN's good-graces budget). Each shard has its own
+                # ~/.cache/huggingface/.../<basename>.lock so two
+                # workers can't trample each other's partial blobs even
+                # if the same script is re-run mid-download.
+                #
+                # Single-shard tiers fall through to the same code path
+                # — ThreadPoolExecutor with 1 task degenerates to a
+                # synchronous call with negligible overhead.
+                shard_paths: dict[str, Path] = {}
+                shard_errors: list[tuple[str, Exception]] = []
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                workers = max(1, min(_PARALLEL_SHARD_WORKERS, len(shards)))
+                with ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix=f"hf-pull-{tier}",
+                ) as pool:
+                    futures = {
+                        pool.submit(
+                            _download_with_retry,
+                            repo_id=r.repo,
+                            filename=sh,
+                            revision=revision,
+                            local_dir=str(target_root),
+                            token=token,
+                        ): sh
+                        for sh in shards
+                    }
+                    for fut in as_completed(futures):
+                        sh = futures[fut]
+                        try:
+                            shard_paths[sh] = fut.result()
+                            if len(shards) > 1:
+                                logger.info(
+                                    "Tier %s shard complete: %s (%.2f GB)",
+                                    tier, sh,
+                                    shard_paths[sh].stat().st_size / (1024 ** 3),
+                                )
+                        except Exception as exc:
+                            shard_errors.append((sh, exc))
+                            logger.warning(
+                                "Tier %s shard FAILED: %s — %s",
+                                tier, sh, exc,
+                            )
+                if shard_errors:
+                    # Re-raise the first failure so the outer try/except
+                    # records the tier as unpulled. Other shards may have
+                    # downloaded successfully — they stay in the HF cache
+                    # for the next attempt to pick up.
+                    raise shard_errors[0][1]
+                first_shard_path = shard_paths.get(shards[0])
+                if first_shard_path is None:
+                    raise RuntimeError(
+                        f"first shard {shards[0]!r} missing from completed "
+                        "downloads — should be unreachable"
                     )
-                    if shard_filename == shards[0]:
-                        first_shard_path = downloaded
                 # Symlink the canonical <tier>.gguf to the first shard
                 # (or to the only file when not sharded — same code path).
                 _link_or_copy(first_shard_path, target_gguf)
