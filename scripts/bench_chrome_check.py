@@ -362,6 +362,11 @@ async def drive():
                   group_headers: list.querySelectorAll('.group-header').length,
                   subgroup_headers: list.querySelectorAll('.subgroup-header').length,
                   tool_rows: list.querySelectorAll('.tool-row').length,
+                  module_rows: list.querySelectorAll('.module-row').length,
+                  // Default-collapsed sanity: every tier-body should
+                  // start with .hidden when there is no search query.
+                  tier_bodies_hidden: list.querySelectorAll('.tier-body.hidden').length,
+                  group_bodies_visible: list.querySelectorAll('.group-body:not(.hidden)').length,
                   retry_btn: !!list.querySelector('#tools-retry'),
                   // Are we actually on the chat UI (chatapp visible) or
                   // still at the signin form?
@@ -380,15 +385,46 @@ async def drive():
             })
             inspection = r.get("result", {}).get("result", {}).get("value", {})
 
-            # Take a screenshot.
+            # Take the default-collapsed screenshot.
             shot = await cdp.send("Page.captureScreenshot", {
                 "format": "png", "captureBeyondViewport": False,
             })
             png_b64 = shot.get("result", {}).get("data")
             png_path = None
             if png_b64:
-                png_path = EVAL_DIR / f"popover-headless-{int(time.time())}.png"
+                png_path = EVAL_DIR / f"popover-collapsed-{int(time.time())}.png"
                 png_path.write_bytes(base64.b64decode(png_b64))
+
+            # Drill in: click first tier header, first group header, first
+            # subgroup header — confirms manual expand reveals modules.
+            drill_js = """
+              (() => {
+                const tiers = document.querySelectorAll('#tools-list .tier-header');
+                if (tiers[0]) tiers[0].click();
+                const groups = document.querySelectorAll('#tools-list .group-header');
+                if (groups[0]) groups[0].click();
+                const subs = document.querySelectorAll('#tools-list .subgroup-header');
+                if (subs[0]) subs[0].click();
+                const visible_modules = document.querySelectorAll(
+                  '#tools-list .group-body:not(.hidden) .subgroup-body:not(.hidden) .module-row'
+                ).length;
+                return { visible_modules };
+              })()
+            """
+            r = await cdp.send("Runtime.evaluate", {
+                "expression": drill_js, "returnByValue": True,
+            })
+            print("=== AFTER MANUAL DRILL ===")
+            print(json.dumps(r.get("result", {}).get("result", {}).get("value", {}), indent=2))
+            print()
+            shot2 = await cdp.send("Page.captureScreenshot", {
+                "format": "png", "captureBeyondViewport": False,
+            })
+            png2 = shot2.get("result", {}).get("data")
+            if png2:
+                p2 = EVAL_DIR / f"popover-drilled-{int(time.time())}.png"
+                p2.write_bytes(base64.b64decode(png2))
+                print(f"Drilled-down screenshot: {p2}")
 
             console_msgs = list(cdp.console)
             page_errors = list(cdp.exceptions)

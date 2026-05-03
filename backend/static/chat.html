@@ -191,6 +191,12 @@
     #tools-popover .header-title { flex: 1; }
     #tools-popover .header-count { color: var(--muted); font-size: 11px; }
     #tools-popover .tool-row { padding-left: 38px; }
+    #tools-popover .module-row .module-count {
+      color: var(--muted); font-size: 11px;
+    }
+    #tools-popover .module-row label {
+      flex: 1; cursor: pointer; color: var(--fg);
+    }
     #tools-popover .group-body.hidden,
     #tools-popover .subgroup-body.hidden,
     #tools-popover .tier-body.hidden { display: none; }
@@ -1410,6 +1416,13 @@
         const tierHeader = makeHeader('tier-header', tier.title, tierTools, 0);
         const tierBody = document.createElement('div');
         tierBody.className = 'tier-body';
+        // Default-collapsed: only expand automatically when a search
+        // query is present (so matched results are visible without an
+        // extra click).
+        if (!q) {
+          tierBody.classList.add('hidden');
+          tierHeader.classList.add('collapsed');
+        }
         tierHeader.addEventListener('click', () => {
           tierBody.classList.toggle('hidden');
           tierHeader.classList.toggle('collapsed');
@@ -1429,6 +1442,10 @@
           const groupHeader = makeHeader('group-header', group.title, groupTools, 1);
           const groupBody = document.createElement('div');
           groupBody.className = 'group-body';
+          if (!q) {
+            groupBody.classList.add('hidden');
+            groupHeader.classList.add('collapsed');
+          }
           groupHeader.addEventListener('click', () => {
             groupBody.classList.toggle('hidden');
             groupHeader.classList.toggle('collapsed');
@@ -1442,6 +1459,10 @@
             const subHeader = makeHeader('subgroup-header', sub.title, sub.tools, 2);
             const subBody = document.createElement('div');
             subBody.className = 'subgroup-body';
+            if (!q) {
+              subBody.classList.add('hidden');
+              subHeader.classList.add('collapsed');
+            }
             subHeader.addEventListener('click', () => {
               subBody.classList.toggle('hidden');
               subHeader.classList.toggle('collapsed');
@@ -1449,20 +1470,41 @@
             groupBody.appendChild(subHeader);
             groupBody.appendChild(subBody);
 
+            // Aggregate tools by their `<module>.<method>` prefix and
+            // render ONE row per module. The 620-tool registry boils down
+            // to ~150 module rows, which is browseable; per-method
+            // granularity stays available in the admin Tools tab. The
+            // module toggle is a master that flips every method beneath
+            // it via setMany().
+            const byModule = new Map();   // moduleName → [tool-names...]
             sub.tools.forEach(name => {
-              if (q && !name.toLowerCase().includes(q)) return;
+              const mod = (name.includes('.') ? name.split('.', 1)[0] : name);
+              if (!byModule.has(mod)) byModule.set(mod, []);
+              byModule.get(mod).push(name);
+            });
+            // Sort modules alphabetically by their pretty title.
+            const moduleEntries = [...byModule.entries()]
+              .sort((a, b) => prettyModule(a[0]).localeCompare(prettyModule(b[0])));
+
+            moduleEntries.forEach(([mod, names]) => {
+              if (q && !nodeMatches(names, q)) return;
               const row = document.createElement('div');
-              row.className = 'tool-row';
-              const enabled = !!toolState.get(name);
+              row.className = 'tool-row module-row';
+              const state = aggState(names);
+              const idSafe = cssId('mod-' + mod);
+              const title = prettyModule(mod);
+              const subtitle = names.length > 1
+                ? `<span class="module-count">${names.length}</span>` : '';
               row.innerHTML = `
-                <label for="tool-${cssId(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</label>
-                <span class="toggle"><input type="checkbox" id="tool-${cssId(name)}" ${enabled ? 'checked' : ''}><span class="slider"></span></span>
+                <label for="tool-${idSafe}" title="${escapeHtml(names.join(', '))}">${escapeHtml(title)}</label>
+                ${subtitle}
+                <span class="toggle"><input type="checkbox" id="tool-${idSafe}"><span class="slider"></span></span>
               `;
               const cb = row.querySelector('input');
+              cb.checked = state === 'all';
+              cb.indeterminate = state === 'some';
               cb.addEventListener('change', () => {
-                toolState.set(name, cb.checked);
-                renderTools();
-                persistToolPrefs();
+                setMany(names, cb.checked);
               });
               subBody.appendChild(row);
             });
@@ -1473,6 +1515,42 @@
       updateToolsCount();
     }
     function cssId(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+    // Friendly display name for a tool module. Special-cases the worst
+    // offenders, falls through to "Title Case With Spaces" for everything
+    // else. Keep this list short — admin panel shows raw module names.
+    const _MODULE_TITLES = {
+      'kicad': 'KiCad', 'kicad_author': 'KiCad (authoring)',
+      'fusion360': 'Fusion 360', 'fusion360_author': 'Fusion 360 (authoring)',
+      'fusion360_live_bridge': 'Fusion 360 (live bridge)',
+      'fl_studio': 'FL Studio', 'fl_studio_author': 'FL Studio (authoring)',
+      'synthv_author': 'Synthesizer V (authoring)',
+      'blender_author': 'Blender (authoring)',
+      'qbittorrent': 'qBittorrent',
+      'qobuz_dl': 'Qobuz DL',
+      'arr_stack': '*arr stack',
+      'musicbee': 'MusicBee',
+      'app_launcher': 'App launcher',
+      'free_films_tv': 'Free films & TV',
+      'free_lossless': 'Free lossless audio',
+      'free_music': 'Free music',
+      'free_games': 'Free games',
+      'annas_archive': "Anna's Archive",
+      'soulseek': 'Soulseek',
+      'project_workspace': 'Project workspace',
+      'code_troubleshoot': 'Code troubleshooting',
+      'dev_utils': 'Dev utilities',
+      'financial_calculator': 'Financial calculator',
+      'composition': 'Music composition',
+    };
+    function prettyModule(mod) {
+      if (_MODULE_TITLES[mod]) return _MODULE_TITLES[mod];
+      // Title Case + replace _/- with space; keep all-caps words upper.
+      return mod.split(/[_\-]/).map(w => {
+        if (!w) return w;
+        if (w === w.toUpperCase() && w.length <= 4) return w;
+        return w[0].toUpperCase() + w.slice(1);
+      }).join(' ');
+    }
     function updateToolsCount() {
       let n = 0; toolState.forEach(v => { if (v) n++; });
       toolsCount.textContent = n ? `(${n})` : '';
