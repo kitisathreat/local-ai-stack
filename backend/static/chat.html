@@ -1253,37 +1253,65 @@
     const toolState = new Map();   // name → enabled (boolean)
     let toolsTaxonomy = [];        // [{tier, title, groups: [{group, title, subgroups: [{subgroup, title, tools}]}]}]
 
+    // Tracks the loadTools() lifecycle so the popover can render a
+    // sensible "loading…" / "couldn't reach server" / actual content
+    // state instead of just sitting empty when something fails.
+    let _toolsLoadState = 'pending';   // 'pending' | 'ok' | 'error'
+    let _toolsLoadErr = '';
+    let _toolsLoadInFlight = null;
+
     async function loadTools() {
-      // Default every tool to OFF. Auto-enabling default-enabled tools
-      // pushes the request body past llama-server's per-slot context
-      // window once the registry has 200+ entries (28k+ tokens of
-      // schemas alone). The 🔧 popover is the explicit opt-in surface;
-      // the user toggles only what they need for that turn.
-      try {
-        const r = await api('/tools');
-        if (!r.ok) return;
-        const j = await r.json();
-        toolState.clear();
-        (j.data || []).forEach(t => {
-          toolState.set(t.name, false);
-        });
-        toolsTaxonomy = j.groups || [];
-        // Restore the user's persisted enabled-tool set from server-side
-        // preferences, so toggles survive page reloads / new chats /
-        // sign-out + sign-in. Falls through silently when not signed in.
+      // De-dupe concurrent calls (popover open + signin can both invoke).
+      if (_toolsLoadInFlight) return _toolsLoadInFlight;
+      _toolsLoadState = 'pending';
+      _toolsLoadErr = '';
+      renderTools();
+
+      _toolsLoadInFlight = (async () => {
+        // Default every tool to OFF. Auto-enabling default-enabled tools
+        // pushes the request body past llama-server's per-slot context
+        // window once the registry has 200+ entries (28k+ tokens of
+        // schemas alone). The 🔧 popover is the explicit opt-in surface;
+        // the user toggles only what they need for that turn.
         try {
-          const pr = await api('/me/preferences');
-          if (pr.ok) {
-            const data = await pr.json();
-            const enabled = (data.preferences && data.preferences.enabled_tools) || [];
-            enabled.forEach(name => {
-              if (toolState.has(name)) toolState.set(name, true);
-            });
+          const r = await api('/tools');
+          if (!r.ok) {
+            _toolsLoadState = 'error';
+            _toolsLoadErr = `Tool list unavailable (${r.status} ${r.statusText || ''}).`;
+            renderTools();
+            return;
           }
-        } catch (_) {}
-        updateToolsCount();
-        renderTools();
-      } catch (_) {}
+          const j = await r.json();
+          toolState.clear();
+          (j.data || []).forEach(t => {
+            toolState.set(t.name, false);
+          });
+          toolsTaxonomy = j.groups || [];
+          // Restore the user's persisted enabled-tool set from server-side
+          // preferences, so toggles survive page reloads / new chats /
+          // sign-out + sign-in. Falls through silently when not signed in.
+          try {
+            const pr = await api('/me/preferences');
+            if (pr.ok) {
+              const data = await pr.json();
+              const enabled = (data.preferences && data.preferences.enabled_tools) || [];
+              enabled.forEach(name => {
+                if (toolState.has(name)) toolState.set(name, true);
+              });
+            }
+          } catch (_) {}
+          _toolsLoadState = 'ok';
+          updateToolsCount();
+          renderTools();
+        } catch (e) {
+          _toolsLoadState = 'error';
+          _toolsLoadErr = (e && e.message) ? e.message : 'Network error fetching tools.';
+          renderTools();
+        }
+      })();
+
+      try { await _toolsLoadInFlight; }
+      finally { _toolsLoadInFlight = null; }
     }
 
     // Debounced PATCH to persist toggle state. Bounces rapid bulk-
@@ -1350,6 +1378,24 @@
       const q = (toolSearch.value || '').toLowerCase();
       toolsList.innerHTML = '';
 
+      // Loading / error / empty states — make absolutely sure the user
+      // sees what's happening when the popover would otherwise be blank.
+      if (_toolsLoadState === 'pending' && toolsTaxonomy.length === 0) {
+        toolsList.innerHTML = '<div class="tool-row" style="padding-left:2px;color:var(--muted);">Loading tools…</div>';
+        return;
+      }
+      if (_toolsLoadState === 'error') {
+        const msg = escapeHtml(_toolsLoadErr || 'Could not load tool list.');
+        toolsList.innerHTML =
+          '<div class="tool-row" style="padding-left:2px;color:var(--danger);">' + msg + '</div>'
+          + '<div class="tool-row" style="padding-left:2px;">'
+          + '<button id="tools-retry" style="background:#22252e;color:var(--fg);'
+          + 'border:1px solid var(--border);border-radius:4px;padding:4px 10px;'
+          + 'font:inherit;font-size:12px;cursor:pointer;">Retry</button></div>';
+        const retry = document.getElementById('tools-retry');
+        if (retry) retry.addEventListener('click', () => { loadTools(); });
+        return;
+      }
       if (toolsTaxonomy.length === 0) {
         toolsList.innerHTML = '<div class="tool-row" style="padding-left:2px;color:var(--muted);">No tools registered.</div>';
         return;
@@ -1430,6 +1476,14 @@
     toolsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       toolsPop.classList.toggle('hidden');
+      // Self-heal: if the popover is being opened and we have no tool
+      // taxonomy (initial load failed silently, race with cookie set,
+      // browser cached an old chat.html, etc.), kick a fresh load so
+      // the user doesn't see a permanently-blank popover.
+      const opening = !toolsPop.classList.contains('hidden');
+      if (opening && (toolsTaxonomy.length === 0 || _toolsLoadState === 'error')) {
+        loadTools();
+      }
     });
     toolSearch.addEventListener('input', renderTools);
     document.addEventListener('click', (e) => {
