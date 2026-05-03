@@ -118,9 +118,18 @@ $registered = $false
 foreach ($logonType in @('S4U', 'Interactive')) {
     $principal = New-ScheduledTaskPrincipal `
         -UserId $currentUser -LogonType $logonType -RunLevel Limited
+    # Register-ScheduledTask writes a non-terminating "Access denied"
+    # error to the error stream WITHOUT throwing in some cases (e.g.
+    # S4U registration without elevation), so we have to (a) force
+    # ErrorAction Stop and (b) verify Get-ScheduledTask returns a
+    # record before counting it as success. Same fix shape as the one
+    # applied to install-watchdog-task.ps1.
     try {
         Register-ScheduledTask -TaskName $TaskName -Force `
-            -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
+            -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
+            -ErrorAction Stop | Out-Null
+        $verify = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if (-not $verify) { throw "Get-ScheduledTask returned nothing after Register" }
         Write-Host "Registered scheduled task '$TaskName' (every $IntervalHours hr, LogonType=$logonType)." -ForegroundColor Green
         if ($logonType -eq 'Interactive') {
             Write-Host "Note: Interactive logon means the task only runs while you're signed in." -ForegroundColor DarkYellow
@@ -131,7 +140,7 @@ foreach ($logonType in @('S4U', 'Interactive')) {
     } catch [System.UnauthorizedAccessException] {
         continue
     } catch {
-        if ($_.Exception.Message -match 'denied|0x80070005') { continue }
+        if ($_.Exception.Message -match 'denied|0x80070005|Access') { continue }
         Write-Host "Register-ScheduledTask failed: $($_.Exception.Message)" -ForegroundColor Red
         exit 1
     }
