@@ -176,6 +176,18 @@ class VRAMScheduler:
         self._sweeper_task: asyncio.Task | None = None
         self._observed_path = Path(self.vram.observed_costs.persist_path)
         self._load_observed_costs()
+        # ── Eviction monitoring ──────────────────────────────────────────
+        # Counters + a small ring of recent events so /admin/vram/probe
+        # can prove the idle-evict policy is firing. Reset only on
+        # process restart; intentionally not persisted (op view, not
+        # billing). Bounded ring prevents the log from growing unbounded
+        # in long-running deployments.
+        self.evictions_total = 0
+        self.evictions_idle = 0
+        self.evictions_pressure = 0
+        self.evictions_make_room = 0
+        self._eviction_log: list[dict] = []
+        self._eviction_log_max = 50
 
     def _gate(self, tier_id: str) -> asyncio.Condition:
         g = self._gates.get(tier_id)
@@ -303,7 +315,7 @@ class VRAMScheduler:
                         # Config changed under us? Evict so we reload with
                         # the new slot count or variant.
                         if (m.loaded_slots != slot_cap or variant_mismatch) and m.refcount == 0:
-                            await self._unload(m)
+                            await self._unload(m, reason="dirty")
                             m = None
                         elif (
                             not variant_mismatch
@@ -527,7 +539,7 @@ class VRAMScheduler:
         async with self._lock:
             m = self.loaded.get(tier_id)
             if m and m.state == ModelState.RESIDENT and m.refcount == 0:
-                await self._unload(m)
+                await self._unload(m, reason="dirty")
         gate = self._gate(tier_id)
         async with gate:
             gate.notify_all()
@@ -604,7 +616,7 @@ class VRAMScheduler:
         for victim in candidates:
             if _fits(_current_projected()):
                 break
-            await self._unload(victim)
+            await self._unload(victim, reason="make_room")
 
         if _fits(_current_projected()):
             return
@@ -621,7 +633,7 @@ class VRAMScheduler:
         for victim in late_candidates:
             if _fits(_current_projected()):
                 break
-            await self._unload(victim)
+            await self._unload(victim, reason="make_room")
 
         if not _fits(_current_projected()):
             remaining = _current_projected()
@@ -646,10 +658,13 @@ class VRAMScheduler:
                 "POST /admin/vram/kill-orphans to reap them."
             ))
 
-    async def _unload(self, model: LoadedModel) -> None:
-        """Must be called with `self._lock` held."""
+    async def _unload(self, model: LoadedModel, *, reason: str = "unspecified") -> None:
+        """Must be called with `self._lock` held. ``reason`` is recorded
+        in the eviction log for /admin/vram/probe — one of
+        ``idle | pressure | make_room | dirty | manual``."""
         model.state = ModelState.EVICTING
         tier = self.tiers.get(model.tier_id)
+        idle_for = max(0.0, time.time() - model.last_used)
         if tier:
             unloader = self.unloaders.get(tier.backend)
             if unloader:
@@ -663,6 +678,28 @@ class VRAMScheduler:
                 except Exception as e:
                     logger.warning("Unload failed for %s: %s", model.tier_id, e)
         self.loaded.pop(model.tier_id, None)
+        # Bookkeeping for the monitoring surface.
+        self.evictions_total += 1
+        if reason == "idle":
+            self.evictions_idle += 1
+        elif reason == "pressure":
+            self.evictions_pressure += 1
+        elif reason == "make_room":
+            self.evictions_make_room += 1
+        entry = {
+            "ts": time.time(),
+            "tier_id": model.tier_id,
+            "reason": reason,
+            "idle_sec": round(idle_for, 1),
+            "vram_cost_gb": round(model.effective_cost(), 2),
+        }
+        self._eviction_log.append(entry)
+        if len(self._eviction_log) > self._eviction_log_max:
+            self._eviction_log = self._eviction_log[-self._eviction_log_max:]
+        logger.info(
+            "Evicted tier %s (reason=%s, idle=%.0fs, freed≈%.1fGB)",
+            model.tier_id, reason, idle_for, entry["vram_cost_gb"],
+        )
 
     # ── Background sweeper ──────────────────────────────────────────────
 
@@ -677,10 +714,40 @@ class VRAMScheduler:
                 logger.warning("Sweeper error: %s", e)
 
     async def _sweep_once(self) -> None:
+        # Pass 1 — proactive idle eviction. Drop any non-pinned, idle
+        # tier whose last_used is older than `idle_evict_after_sec`
+        # regardless of VRAM pressure. Frees the GPU for other workloads
+        # and forces a fresh observed-cost measurement on the next
+        # acquire (so a stale "18 GB observed" reading from a single
+        # multi-agent run can't pin the tier as un-fittable forever).
+        idle_after = int(getattr(self.vram.eviction, "idle_evict_after_sec", 0) or 0)
+        if idle_after > 0:
+            now = time.time()
+            async with self._lock:
+                idle_candidates = [
+                    m for m in self.loaded.values()
+                    if m.state == ModelState.RESIDENT
+                    and m.refcount == 0
+                    and not m.pinned
+                    and (now - m.last_used) >= idle_after
+                ]
+                if idle_candidates:
+                    idle_candidates.sort(key=lambda m: m.last_used)
+                    for victim in idle_candidates:
+                        idle_for = now - victim.last_used
+                        logger.info(
+                            "Idle-evict %s after %.0fs (threshold %ds)",
+                            victim.tier_id, idle_for, idle_after,
+                        )
+                        await self._unload(victim, reason="idle")
+
+        # Pass 2 — pressure eviction. NVML-driven; fires whenever actual
+        # free is below the headroom budget, even if no tier crossed
+        # the idle threshold.
         free = self.probe.free_gb(self.vram.total_vram_gb)
         if free >= self.vram.headroom_gb:
             return
-        logger.info("VRAM pressure: only %.2fGB free, evicting idle tiers", free)
+        logger.info("VRAM pressure: only %.2fGB free, evicting LRU tiers", free)
         async with self._lock:
             candidates = [
                 m for m in self.loaded.values()
@@ -690,7 +757,7 @@ class VRAMScheduler:
             ]
             candidates.sort(key=lambda m: m.last_used)
             for victim in candidates:
-                await self._unload(victim)
+                await self._unload(victim, reason="pressure")
                 free = self.probe.free_gb(self.vram.total_vram_gb)
                 if free >= self.vram.headroom_gb:
                     break
@@ -720,6 +787,19 @@ class VRAMScheduler:
             )
             queue_snapshot = dict(self._waiters)
         actual_free = self.probe.free_gb(self.vram.total_vram_gb)
+        eviction_stats = {
+            "total": self.evictions_total,
+            "by_reason": {
+                "idle": self.evictions_idle,
+                "pressure": self.evictions_pressure,
+                "make_room": self.evictions_make_room,
+                "other": self.evictions_total - (
+                    self.evictions_idle + self.evictions_pressure + self.evictions_make_room
+                ),
+            },
+            "idle_evict_after_sec": int(getattr(self.vram.eviction, "idle_evict_after_sec", 0) or 0),
+            "recent": list(self._eviction_log[-10:]),
+        }
         return {
             "total_vram_gb": self.vram.total_vram_gb,
             "free_vram_gb_actual": actual_free,
@@ -727,4 +807,5 @@ class VRAMScheduler:
             "headroom_gb": self.vram.headroom_gb,
             "loaded": loaded_list,
             "waiters_by_tier": queue_snapshot,
+            "evictions": eviction_stats,
         }
