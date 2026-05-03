@@ -497,7 +497,38 @@ def pull_missing_hf_files(
             target_root / f"{tier}.mmproj.gguf" if r.mmproj_filename else None
         )
 
+        # Sharded-aware "is this tier already pulled?" check. The previous
+        # logic (`not target_gguf.exists()`) returned False as soon as
+        # the symlink existed, even when only the tiny first manifest
+        # shard was on disk and shards 2..N were still .incomplete.
+        # That broke the watchdog's auto-resume loop: watchdog detects
+        # the partial-shard state, kills + respawns the resolver, the
+        # respawned resolver sees the symlink and exits without doing
+        # anything, watchdog respawns again — infinite loop with no
+        # progress.
+        #
+        # Now: if the resolved filename matches the shard naming
+        # pattern, additionally check that EVERY companion shard
+        # exists at its expected path under target_root. Any gap
+        # forces need_gguf=True so the pull resumes the missing ones.
         need_gguf = not target_gguf.exists()
+        if (not need_gguf) and r.filename:
+            try:
+                shard_companions = _list_shard_companions(
+                    r.repo, r.filename, r.revision or "main",
+                )
+            except Exception:
+                shard_companions = [r.filename]
+            for sh in shard_companions:
+                shard_path = target_root / sh
+                if not shard_path.exists():
+                    logger.info(
+                        "tier %s: symlink exists but shard %s missing — re-pulling",
+                        tier, sh,
+                    )
+                    need_gguf = True
+                    break
+
         need_mmproj = bool(target_mmproj) and not target_mmproj.exists()
         if not (need_gguf or need_mmproj):
             continue
