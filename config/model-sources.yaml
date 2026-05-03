@@ -105,12 +105,16 @@ tiers:
   # Default tier remains the 30B; users opt into the 80B per turn.
   coding_80b:
     source: huggingface
-    repo: "unsloth/Qwen3-Coder-Next-80B-A3B-Instruct-GGUF"
-    file: "*UD-Q4_K_XL.gguf"
+    # Was unsloth/Qwen3-Coder-Next-80B-A3B-Instruct-GGUF — that repo
+    # never existed; pulls 404'd silently every time. The actual unsloth
+    # Qwen3-Coder-Next quants ship under a single repo without the size
+    # suffix in the name (213K+ downloads at time of switch).
+    repo: "unsloth/Qwen3-Coder-Next-GGUF"
+    file: "*UD-Q4_K_XL*.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-Coder-Next-80B-A3B-Instruct-UD-Q4_K_XL.gguf"
+      file: "Qwen3-Coder-Next-UD-Q4_K_XL.gguf"
 
   # Qwen3.6 35B + mmproj — images / charts. Same base weights as the
   # versatile tier (Unsloth UD-Q4_K_XL); the runtime spawns a separate
