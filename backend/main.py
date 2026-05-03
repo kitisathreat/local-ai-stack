@@ -326,7 +326,51 @@ from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 _static_dir = Path(__file__).resolve().parent / "static"
+
+
+def _build_id() -> str:
+    """Short identifier that changes on every pull / restart so browsers
+    re-fetch chat.html after a deploy without us forcing no-store. Tries
+    in order:
+      1. git rev-parse --short HEAD (the natural choice on a checked-out repo)
+      2. content hash of chat.html (when git isn't available, e.g. a frozen
+         install copy)
+      3. process start time (last-resort uniqueness so at minimum every
+         backend restart busts the cache)
+    Computed once at module import; changes when the process is restarted —
+    which is exactly what `.githooks/post-merge` → `refresh-backend.ps1`
+    triggers after every `git pull`.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except (OSError, ValueError):
+        pass
+    try:
+        import hashlib
+        chat_html = _static_dir / "chat.html"
+        if chat_html.exists():
+            return hashlib.sha1(chat_html.read_bytes()).hexdigest()[:10]
+    except OSError:
+        pass
+    return f"t{int(time.time())}"
+
+
+_BUILD_ID = _build_id()
+logger.info("Build ID for cache-busting chat UI: %s", _BUILD_ID)
+
+
 if _static_dir.exists():
+    # Default StaticFiles caching is fine for everything under /static —
+    # the cache-bust comes from the ?v=<build-id> query string baked into
+    # the redirect from "/" below, which makes the URL unique per commit.
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
     @app.get("/", include_in_schema=False)
@@ -334,7 +378,20 @@ if _static_dir.exists():
         path = _static_dir / "chat.html"
         if not path.exists():
             return Response(status_code=404)
-        return FileResponse(str(path))
+        # Redirect to the versioned URL so browsers re-fetch after every
+        # `git pull` -> `refresh-backend.ps1` cycle (which restarts the
+        # process and recomputes _BUILD_ID), but normal cache continues
+        # to work between deploys. Using 302 (not 301) so the redirect
+        # itself isn't permanently cached against a future build-id.
+        # Also send Cache-Control: no-store on the redirect so a browser
+        # that DID cache an older 302 doesn't keep pinning to a stale
+        # build-id.
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(
+            url=f"/static/chat.html?v={_BUILD_ID}",
+            status_code=302,
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 # CORS — restrict to ALLOWED_ORIGINS (comma-separated). In production the
