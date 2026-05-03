@@ -340,6 +340,32 @@
     .conv-item.active { background: #2a2d36; border-left: 2px solid var(--accent); padding-left: 8px; }
     .conv-item .conv-title { font-weight: 500; }
     .conv-item .conv-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    /* Per-row archive / delete buttons. Hidden until hover so the
+       sidebar stays clean; click event bubbles are captured to avoid
+       opening the chat when the user clicks the action. */
+    .conv-item { position: relative; padding-right: 56px; }
+    .conv-item .conv-actions {
+      position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+      display: none; gap: 2px;
+    }
+    .conv-item:hover .conv-actions { display: flex; }
+    .conv-item .conv-actions button {
+      background: transparent; color: var(--muted); border: none;
+      cursor: pointer; padding: 2px 4px; font-size: 13px; line-height: 1;
+      border-radius: 3px;
+    }
+    .conv-item .conv-actions button:hover { background: #2f323b; color: #fff; }
+    .conv-item .conv-actions button.delete:hover { color: var(--danger); }
+    /* Archived view marker on conv items */
+    .conv-item.archived .conv-title { font-style: italic; color: var(--muted); }
+    /* Archived-view toggle button */
+    #archived-toggle {
+      width: 100%; background: transparent; color: var(--muted); border: none;
+      cursor: pointer; padding: 6px 10px; font-size: 12px; text-align: left;
+      border-top: 1px solid var(--border);
+    }
+    #archived-toggle:hover { color: #fff; background: #22252e; }
+    #archived-toggle.active { color: var(--accent); }
     #new-conv-btn {
       margin: 6px; padding: 8px;
       background: var(--accent); color: white; border: 0;
@@ -462,6 +488,7 @@
     <aside id="sidebar">
       <button id="new-conv-btn">+ New chat</button>
       <div id="conv-list"></div>
+      <button id="archived-toggle" type="button" title="Show archived chats">📦 Show archived</button>
     </aside>
     <div style="display:flex; flex-direction:column; flex:1; min-width:0;">
       <header>
@@ -711,32 +738,104 @@
     let currentConversationId = null;
     const convListEl = $('conv-list');
 
+    // Sidebar mode: 'active' = non-archived only (default), 'archived'
+    // = archived only. Toggled via the 📦 button at the bottom of the
+    // sidebar.
+    let convViewMode = 'active';
+
     async function loadConversations() {
       try {
-        const r = await api('/chats');
+        const path = convViewMode === 'archived'
+          ? '/chats?archived_only=true'
+          : '/chats';
+        const r = await api(path);
         if (!r.ok) return;
         const j = await r.json();
         const items = j.data || [];
         convListEl.innerHTML = '';
-        items.forEach(c => {
-          const div = document.createElement('div');
-          div.className = 'conv-item' + (c.id === currentConversationId ? ' active' : '');
-          div.dataset.id = c.id;
-          const title = c.title || 'Untitled';
-          const ts = c.updated_at || c.created_at;
-          const when = ts ? new Date(ts * 1000).toLocaleString(undefined, {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-          }) : '';
-          div.innerHTML = `<div class="conv-title">${escapeHtml(title)}</div>`
-            + (when ? `<div class="conv-meta">${escapeHtml(when)}${c.tier ? ' • ' + escapeHtml(c.tier) : ''}</div>` : '');
-          div.addEventListener('click', () => loadConversation(c.id));
-          convListEl.appendChild(div);
-        });
+        items.forEach(c => renderConvItem(c));
         if (items.length === 0) {
-          convListEl.innerHTML = '<div style="padding:10px; color:var(--muted); font-size:12px;">No previous chats.</div>';
+          const msg = convViewMode === 'archived'
+            ? 'No archived chats.'
+            : 'No previous chats.';
+          convListEl.innerHTML =
+            `<div style="padding:10px; color:var(--muted); font-size:12px;">${msg}</div>`;
         }
       } catch (_) {}
     }
+
+    function renderConvItem(c) {
+      const div = document.createElement('div');
+      div.className = 'conv-item'
+        + (c.id === currentConversationId ? ' active' : '')
+        + (c.archived ? ' archived' : '');
+      div.dataset.id = c.id;
+      const title = c.title || 'Untitled';
+      const ts = c.updated_at || c.created_at;
+      const when = ts ? new Date(ts * 1000).toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      }) : '';
+      const archiveLabel = c.archived ? '↩' : '📦';
+      const archiveTitle = c.archived ? 'Unarchive' : 'Archive';
+      div.innerHTML =
+        `<div class="conv-title">${escapeHtml(title)}</div>`
+        + (when ? `<div class="conv-meta">${escapeHtml(when)}${c.tier ? ' • ' + escapeHtml(c.tier) : ''}</div>` : '')
+        + `<div class="conv-actions">`
+        + `  <button class="archive" title="${archiveTitle}">${archiveLabel}</button>`
+        + `  <button class="delete" title="Delete (keeps a memory summary)">🗑</button>`
+        + `</div>`;
+      div.addEventListener('click', (ev) => {
+        // Action buttons handle their own clicks; ignore bubbles.
+        if (ev.target.closest('.conv-actions')) return;
+        loadConversation(c.id);
+      });
+      div.querySelector('.archive').addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        await api('/chats/' + c.id, {
+          method: 'PATCH',
+          body: JSON.stringify({ archived: !c.archived }),
+        });
+        if (c.id === currentConversationId && !c.archived) {
+          // Archiving the open chat — return to a fresh blank state.
+          currentConversationId = null;
+          history.length = 0;
+          logEl.innerHTML = '';
+        }
+        loadConversations();
+      });
+      div.querySelector('.delete').addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (!confirm(
+          `Delete "${title}"?\n\n`
+          + 'A short summary of this conversation will be kept in your '
+          + "memory so the model still remembers the gist. The full chat "
+          + 'transcript will be removed and cannot be recovered.'
+        )) return;
+        await api('/chats/' + c.id + '?keep_summary=true', { method: 'DELETE' });
+        if (c.id === currentConversationId) {
+          currentConversationId = null;
+          history.length = 0;
+          logEl.innerHTML = '';
+        }
+        loadConversations();
+      });
+      convListEl.appendChild(div);
+    }
+
+    // Wire the archived-view toggle once the page is set up.
+    function _wireArchivedToggle() {
+      const btn = document.getElementById('archived-toggle');
+      if (!btn) return;
+      btn.addEventListener('click', () => {
+        convViewMode = convViewMode === 'archived' ? 'active' : 'archived';
+        btn.classList.toggle('active', convViewMode === 'archived');
+        btn.textContent = convViewMode === 'archived'
+          ? '↩ Back to active'
+          : '📦 Show archived';
+        loadConversations();
+      });
+    }
+    _wireArchivedToggle();
 
     async function loadConversation(convId) {
       // Pull the full message history for this conversation and

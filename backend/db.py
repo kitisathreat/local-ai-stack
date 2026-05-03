@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     -- variant, and it is hidden from conversation listings unless the
     -- server is currently in the same airgap state.
     airgap          INTEGER NOT NULL DEFAULT 0,
+    -- When 1, this chat is hidden from the default sidebar listing.
+    -- Distinct from delete: messages are preserved, the conv is just
+    -- archived. The user can list archived chats explicitly via
+    -- GET /chats?include_archived=true to unarchive or delete them.
+    archived        INTEGER NOT NULL DEFAULT 0,
     created_at      REAL NOT NULL,
     updated_at      REAL NOT NULL
 );
@@ -205,6 +210,10 @@ async def init_db() -> None:
         # Per-user UI preferences blob (tool toggles, future settings).
         await _migrate_add_column(
             c, "users", "preferences", "TEXT NOT NULL DEFAULT '{}'",
+        )
+        # Archive flag for conversations — distinct from delete.
+        await _migrate_add_column(
+            c, "conversations", "archived", "INTEGER NOT NULL DEFAULT 0",
         )
         await c.execute("DROP TABLE IF EXISTS magic_links")
         # Safe to create the username index now — the column exists
@@ -363,19 +372,25 @@ async def delete_user(user_id: int) -> bool:
 # ── Conversations ─────────────────────────────────────────────────────────
 
 async def list_conversations(
-    user_id: int, limit: int = 100, *, airgap: bool | None = None,
+    user_id: int, limit: int = 100, *,
+    airgap: bool | None = None,
+    archived: bool | None = False,
 ) -> list[dict]:
     """List a user's conversations. `airgap=True|False` filters strictly
-    by mode so the UI only ever sees chats from the mode it's currently
-    rendering; `airgap=None` returns both (admin-only use)."""
+    by mode; `airgap=None` returns both (admin-only use). `archived`
+    defaults to False so the sidebar hides archived chats — pass True
+    to list only archived, or None to list both."""
     sql = (
-        "SELECT id, title, tier, memory_enabled, airgap, created_at, updated_at "
-        "FROM conversations WHERE user_id = ?"
+        "SELECT id, title, tier, memory_enabled, airgap, archived, "
+        "created_at, updated_at FROM conversations WHERE user_id = ?"
     )
     params: list[Any] = [user_id]
     if airgap is not None:
         sql += " AND airgap = ?"
         params.append(1 if airgap else 0)
+    if archived is not None:
+        sql += " AND archived = ?"
+        params.append(1 if archived else 0)
     sql += " ORDER BY updated_at DESC LIMIT ?"
     params.append(limit)
     async with get_conn() as c:
@@ -411,8 +426,9 @@ async def create_conversation(
 async def get_conversation(conv_id: int, user_id: int) -> dict | None:
     async with get_conn() as c:
         row = await (await c.execute(
-            "SELECT id, title, tier, memory_enabled, airgap, created_at, updated_at "
-            "FROM conversations WHERE id = ? AND user_id = ?",
+            "SELECT id, title, tier, memory_enabled, airgap, archived, "
+            "created_at, updated_at FROM conversations "
+            "WHERE id = ? AND user_id = ?",
             (conv_id, user_id),
         )).fetchone()
         return _conv_row(row) if row else None
@@ -425,6 +441,7 @@ async def update_conversation(
     title: str | None = None,
     tier: str | None = None,
     memory_enabled: bool | None = None,
+    archived: bool | None = None,
 ) -> bool:
     now = time.time()
     sets, params = [], []
@@ -434,6 +451,8 @@ async def update_conversation(
         sets.append("tier = ?"); params.append(tier)
     if memory_enabled is not None:
         sets.append("memory_enabled = ?"); params.append(1 if memory_enabled else 0)
+    if archived is not None:
+        sets.append("archived = ?"); params.append(1 if archived else 0)
     sets.append("updated_at = ?"); params.append(now)
     params.extend([conv_id, user_id])
     async with get_conn() as c:
@@ -452,6 +471,8 @@ def _conv_row(row: aiosqlite.Row) -> dict:
         d["memory_enabled"] = bool(d["memory_enabled"])
     if "airgap" in d:
         d["airgap"] = bool(d["airgap"])
+    if "archived" in d:
+        d["archived"] = bool(d["archived"])
     return d
 
 

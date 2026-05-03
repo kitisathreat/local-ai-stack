@@ -250,6 +250,9 @@ class ConversationSummary(BaseModel):
     # surfaces chats matching the current mode, so the client shouldn't
     # normally see a mix, but the flag is exposed so the UI can label.
     airgap: bool = False
+    # When True the conv is hidden from the default sidebar listing.
+    # Clients fetch archived ones explicitly via ?include_archived=true.
+    archived: bool = False
     created_at: float
     updated_at: float
 
@@ -275,6 +278,7 @@ class ConversationWithMessages(BaseModel):
     tier: str | None = None
     memory_enabled: bool = True
     airgap: bool = False
+    archived: bool = False
     created_at: float
     updated_at: float
     messages: list[MessageOut]
@@ -284,3 +288,4 @@ class ConversationUpdate(BaseModel):
     title: str | None = None
     tier: str | None = None
     memory_enabled: bool | None = None
+    archived: bool | None = None

@@ -1765,11 +1765,24 @@ async def patch_preferences(
 # ── Conversations ───────────────────────────────────────────────────────
 
 @app.get("/chats", response_model=ConversationListResponse)
-async def list_chats(user: dict = Depends(auth.current_user)):
-    """Return only conversations that match the current airgap mode so a
-    user in airgap mode never sees normal chats in the sidebar (and vice
-    versa). Switching modes reveals/hides the other set."""
-    rows = await db.list_conversations(user["id"], airgap=airgap.is_enabled())
+async def list_chats(
+    user: dict = Depends(auth.current_user),
+    include_archived: bool = False,
+    archived_only: bool = False,
+):
+    """Return conversations matching the current airgap mode.
+    By default archived chats are hidden from the sidebar. Pass
+    `?archived_only=true` to list only archived (used by the
+    "Archived" view) or `?include_archived=true` to list both."""
+    if archived_only:
+        archived_filter: bool | None = True
+    elif include_archived:
+        archived_filter = None
+    else:
+        archived_filter = False
+    rows = await db.list_conversations(
+        user["id"], airgap=airgap.is_enabled(), archived=archived_filter,
+    )
     return ConversationListResponse(data=[ConversationSummary(**r) for r in rows])
 
 
@@ -1821,6 +1834,7 @@ async def update_chat(
         conv_id, user["id"],
         title=body.title, tier=body.tier,
         memory_enabled=body.memory_enabled,
+        archived=body.archived,
     )
     if not ok:
         raise HTTPException(404, "Conversation not found")
@@ -1829,11 +1843,35 @@ async def update_chat(
 
 
 @app.delete("/chats/{conv_id}")
-async def delete_chat(conv_id: int, user: dict = Depends(auth.current_user)):
-    ok = await db.delete_conversation(conv_id, user["id"])
-    if not ok:
+async def delete_chat(
+    conv_id: int,
+    user: dict = Depends(auth.current_user),
+    keep_summary: bool = True,
+):
+    """Delete a conversation. By default, distill it into a memory entry
+    first (`?keep_summary=true`, default) so the user keeps the gist
+    without the verbatim transcript. Pass `?keep_summary=false` to
+    skip distillation (e.g., for accidental chats with nothing worth
+    remembering)."""
+    conv = await db.get_conversation(conv_id, user["id"])
+    if not conv:
         raise HTTPException(404, "Conversation not found")
-    return {"ok": True}
+    if bool(conv.get("airgap")) != airgap.is_enabled():
+        raise HTTPException(404, "Conversation not found (other airgap mode)")
+    if keep_summary and conv.get("memory_enabled", True):
+        # Best-effort summary — never let memory failure block delete.
+        try:
+            versatile_tier = state.config.models.tiers.get("versatile")
+            if versatile_tier is not None:
+                await memory.distill_and_store(
+                    user["id"], conv_id, state.llama_cpp, versatile_tier,
+                    airgap=bool(conv.get("airgap")),
+                )
+                logger.info("Pre-delete summary stored for conv %d", conv_id)
+        except Exception as e:
+            logger.warning("Pre-delete summary failed for conv %d: %s", conv_id, e)
+    ok = await db.delete_conversation(conv_id, user["id"])
+    return {"ok": True, "summarized": keep_summary, "deleted": ok}
 
 
 # ── RAG ─────────────────────────────────────────────────────────────────
