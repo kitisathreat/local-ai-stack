@@ -553,14 +553,33 @@ class VRAMScheduler:
         headroom = self.vram.headroom_gb
         total = self.vram.total_vram_gb
 
+        # NVML cross-check guards against orphan llama-server processes
+        # (left from a previous crash / backend bounce / external VRAM
+        # consumer) that reduce real free without touching `self.loaded`.
+        # Trusting projection alone there causes a false "fits", spawn
+        # proceeds, llama-server OOMs, scheduler thinks the tier loaded,
+        # every chat thereafter 503s. We re-poll inside `_fits` so that
+        # successful evictions (which the loop below performs) update
+        # the actual-free reading — otherwise we'd spuriously raise
+        # VRAMExhausted after evicting plenty.
         def _fits(projected: float) -> bool:
-            # If the incoming tier is alone (no coexisting models), headroom
-            # is not enforced — just need <= total. With coexisting models,
-            # projected + need + headroom must fit.
+            # If the incoming tier is alone in our registry (no coexisting
+            # models we manage), headroom is not enforced — just need <= total.
+            # With coexisting models, projected + need + headroom must fit.
             other_used = max(0.0, projected)
             if other_used == 0:
-                return need <= total
-            return other_used + need + headroom <= total
+                projection_ok = need <= total
+            else:
+                projection_ok = (other_used + need + headroom <= total)
+            if not projection_ok:
+                return False
+            # NVML cross-check — only meaningful when pynvml is available
+            # (free_gb returns the `total` sentinel when it isn't, which
+            # makes this check trivially pass).
+            actual_free = self.probe.free_gb(total)
+            if actual_free >= total:
+                return True
+            return need + headroom <= actual_free
 
         def _current_projected() -> float:
             return sum(

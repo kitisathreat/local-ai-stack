@@ -326,6 +326,78 @@ async def vram_status(request: Request, _: dict = Depends(require_admin)):
     return await backend_main.state.scheduler.status()
 
 
+@router.get("/vram/probe")
+async def vram_probe(_: dict = Depends(require_admin)):
+    """Diagnostic snapshot comparing the scheduler's VRAM bookkeeping
+    with the GPU's actual allocation. The interesting field is
+    ``orphan_drift_gb``: if it's > 0.5 GB on a quiet system, something
+    other than this backend is holding VRAM (orphan llama-server, an
+    external process, a leaked allocation). The startup orphan-sweep
+    handles the common case; this endpoint is what you hit when the
+    scheduler's "won't fit" decision disagrees with what nvidia-smi
+    shows."""
+    from . import main as backend_main
+    sched = backend_main.state.scheduler
+    total = sched.vram.total_vram_gb
+    actual_free = sched.probe.free_gb(total)
+    actual_used = max(0.0, total - actual_free) if actual_free <= total else 0.0
+    async with sched._lock:
+        tracked_used = sum(
+            m.effective_cost() for m in sched.loaded.values()
+            if m.state.value != "evicting"
+        )
+        loaded_summary = [
+            {
+                "tier_id": m.tier_id,
+                "state": m.state.value,
+                "refcount": m.refcount,
+                "estimate_gb": m.vram_estimate_gb,
+                "observed_gb": m.observed_cost_gb,
+            }
+            for m in sched.loaded.values()
+        ]
+    drift = round(actual_used - tracked_used, 3)
+    # Best-effort orphan listing — purely diagnostic, never kills.
+    try:
+        from .backends.llama_cpp import _list_llama_server_pids
+        all_llama = await _list_llama_server_pids()
+        tracked_pids = {
+            p.popen.pid for p in backend_main.state.llama_cpp.processes.values()
+            if p.popen is not None and p.popen.poll() is None
+        }
+        orphans = [
+            {"pid": pid, "port": port}
+            for pid, port in all_llama if pid not in tracked_pids
+        ]
+    except Exception:
+        orphans = []
+    return {
+        "total_vram_gb": total,
+        "nvml_free_gb": round(actual_free, 3),
+        "nvml_used_gb": round(actual_used, 3),
+        "scheduler_tracked_used_gb": round(tracked_used, 3),
+        "orphan_drift_gb": drift,
+        "loaded": loaded_summary,
+        "orphan_llama_server_pids": orphans,
+        "headroom_gb": sched.vram.headroom_gb,
+    }
+
+
+@router.post("/vram/kill-orphans")
+async def vram_kill_orphans(_: dict = Depends(require_admin)):
+    """Force a sweep of orphan llama-server processes. Same logic that
+    runs at startup, exposed for after-the-fact cleanup when you can
+    see drift in /admin/vram/probe but the backend hasn't bounced."""
+    from . import main as backend_main
+    preserve = set()
+    for tier in backend_main.state.config.models.tiers.values():
+        if getattr(tier, "pinned", False) and getattr(tier, "port", None):
+            preserve.add(int(tier.port))
+    preserve.add(8091)
+    killed = await backend_main.state.llama_cpp.kill_orphans(preserve_ports=preserve)
+    return {"killed_pids": killed, "preserved_ports": sorted(preserve)}
+
+
 @router.get("/tools")
 async def list_tools(_: dict = Depends(require_admin)):
     from . import main as backend_main

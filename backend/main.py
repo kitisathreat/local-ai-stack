@@ -203,6 +203,29 @@ async def lifespan(app: FastAPI):
     # ensure_loaded).
     state.llama_cpp = LlamaCppClient()
 
+    # Sweep stale llama-server processes left from a previous backend run.
+    # The launcher's pre-spawned vision/embedding/reranker may also be
+    # alive on their configured ports — we adopt those by port rather
+    # than killing them. Anything else (a previous backend's chat tier
+    # subprocess that was orphaned by a crash or refresh) is fair game.
+    try:
+        preserve_ports: set[int] = set()
+        for tier in state.config.models.tiers.values():
+            if getattr(tier, "pinned", False) and getattr(tier, "port", None):
+                preserve_ports.add(int(tier.port))
+        # Reranker/embedding launcher ports — covered by the pinned check
+        # above when configured, but include explicit fallbacks for the
+        # default reranker port the launcher uses.
+        preserve_ports.add(8091)
+        killed = await state.llama_cpp.kill_orphans(preserve_ports=preserve_ports)
+        if killed:
+            logger.warning(
+                "Reaped %d orphan llama-server process(es) at startup: %s",
+                len(killed), killed,
+            )
+    except Exception as exc:
+        logger.warning("Orphan sweep at startup failed: %s", exc)
+
     clients = {"llama_cpp": state.llama_cpp}
 
     async def _llama_load(tier, free_vram_gb=None, variant=None, live_user_text=""):
@@ -1677,19 +1700,20 @@ def httpx_module():
 # can call it on page-mount and visibility-change too (existing sessions
 # don't fire /auth/login). Idempotent — fast no-op when already loaded.
 
-# Default chat tier to pre-warm on user connect. Versatile is the
-# orchestrator + default tier and covers the dominant first-message
-# path. We tried warming both `versatile` + `fast` together — even
-# sequentially, even with vision dropped from pre-spawn — and the
-# observed-cost EMA + transient cold-spawn peaks cause the 24 GB
-# card's scheduler to evict versatile to make room for fast. Net:
-# only one chat tier stays resident at a time on this hardware.
-# Versatile alone is the right pick: fast cold-spawns in ~5–7 s on
-# first multi-agent dispatch (worst case), and that's a smaller wait
-# than evicting+reloading versatile on every alternation. Operators
-# with more VRAM headroom can override per-request via POST /api/warm
-# with `{"tiers": ["versatile", "fast"]}`.
-_DEFAULT_WARM_TIERS = ("versatile",)
+# Default chat tiers to pre-warm into VRAM on user connect. Loaded
+# SEQUENTIALLY (see `_warm_chat_tiers`) so cold-spawn peaks don't
+# collide. On a 24 GB card with vision+embedding pinned, both may not
+# fit at full context; the scheduler will evict the LRU one as needed
+# (versatile first, since fast is the most-recently-warmed). The
+# residency planner / dynamic-context work shrinks ctx at spawn time
+# to give them a better chance of coexisting — see
+# backend/model_residency.py.
+#
+# `highest_quality` is intentionally NOT pre-warmed into VRAM: it's
+# 14.5 GB on its own and would evict everything. It's pre-warmed into
+# the OS page cache by `scripts/warm-page-cache.ps1` instead, so the
+# first request that needs it pays GPU-upload time but no disk read.
+_DEFAULT_WARM_TIERS = ("versatile", "fast")
 
 
 async def _warm_chat_tiers(tier_ids: tuple[str, ...] | list[str]) -> dict[str, str]:
@@ -1930,12 +1954,62 @@ async def get_chat(conv_id: int, user: dict = Depends(auth.current_user)):
     )
 
 
+async def _maybe_evict_unused_tier(tier_name: str | None) -> None:
+    """If no other live (non-archived) conversation across any user is
+    pinned to ``tier_name`` and the scheduler shows the tier idle
+    (refcount == 0, not pinned, not in the auto-warm set), unload it.
+
+    Called from update_chat (when archived=True flips on) and
+    delete_chat — together with the no-eager-load policy this enforces
+    "models loaded only during active sessions". The auto-warm set
+    (``_DEFAULT_WARM_TIERS``) is treated as always-active so a freshly
+    archived chat doesn't immediately tear down versatile/fast.
+    """
+    if not tier_name:
+        return
+    if tier_name in _DEFAULT_WARM_TIERS:
+        return
+    try:
+        # Cheap DB existence check — any user, any non-archived conv on
+        # this tier keeps it warm. Memory-distillation eligibility and
+        # airgap mode aren't load-bearing here; we just want "is anyone
+        # else still talking to this model?"
+        async with db.get_conn() as c:
+            cur = await c.execute(
+                "SELECT 1 FROM conversations WHERE tier = ? "
+                "AND archived = 0 LIMIT 1",
+                (tier_name,),
+            )
+            row = await cur.fetchone()
+        if row is not None:
+            return
+        sched = getattr(state, "scheduler", None)
+        if sched is None:
+            return
+        async with sched._lock:
+            m = sched.loaded.get(tier_name)
+            if m is None:
+                return
+            if m.pinned or m.refcount > 0:
+                return
+            if m.state.value != "resident":
+                return
+            await sched._unload(m)
+        logger.info(
+            "Evicted tier %r — last active conversation closed/archived",
+            tier_name,
+        )
+    except Exception as exc:
+        logger.debug("Idle-evict skipped for tier %r: %s", tier_name, exc)
+
+
 @app.patch("/chats/{conv_id}", response_model=ConversationSummary)
 async def update_chat(
     conv_id: int,
     body: ConversationUpdate,
     user: dict = Depends(auth.current_user),
 ):
+    prev = await db.get_conversation(conv_id, user["id"])
     ok = await db.update_conversation(
         conv_id, user["id"],
         title=body.title, tier=body.tier,
@@ -1945,6 +2019,9 @@ async def update_chat(
     if not ok:
         raise HTTPException(404, "Conversation not found")
     conv = await db.get_conversation(conv_id, user["id"])
+    # Archive flipped on → maybe evict the model if nothing else uses it.
+    if body.archived and prev and not prev.get("archived"):
+        await _maybe_evict_unused_tier(prev.get("tier"))
     return ConversationSummary(**conv)
 
 
@@ -1977,6 +2054,8 @@ async def delete_chat(
         except Exception as e:
             logger.warning("Pre-delete summary failed for conv %d: %s", conv_id, e)
     ok = await db.delete_conversation(conv_id, user["id"])
+    if ok:
+        await _maybe_evict_unused_tier(conv.get("tier"))
     return {"ok": True, "summarized": keep_summary, "deleted": ok}
 
 
