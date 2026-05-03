@@ -559,7 +559,7 @@ throughput.
 | `highest_quality`  | Qwen3-Next 80B-A3B Thinking                 | 25.2 | 89.62| **18.7** | post-#214 with `vram_estimate_gb` lowered 16 → 13 to accept the actual cost (kv_offload pushes most KV to CPU). Cold spawn occasionally needs a retry — backend's auto-restart kicks in. |
 | `reasoning_max`    | OpenAI GPT-OSS-120B (Q4_K_M sharded ×2)     | 33.7 | 26.16|  **9.7** | sharded-spawn fix from [#210](https://github.com/kitisathreat/local-ai-stack/pull/210) + kv_offload |
 | `reasoning_xl`     | Qwen3.5 397B-A17B (UD-IQ2_M sharded ×4)     | 90.6 | 13.10|  **3.3** | `--no-warmup` from [#211](https://github.com/kitisathreat/local-ai-stack/pull/211) skips the OOM-prone graph warmup; 17 B active + KV-on-CPU pegs throughput in low single digits |
-| `frontier`         | DeepSeek V3.2 (UD-IQ1_S sharded ×4)         | —    | —    |  pagefile-gated | 171 GB GGUF on 125 GB RAM + 8 GB pagefile = 133 GB commit limit. Run [`scripts/grow-pagefile.ps1`](scripts/grow-pagefile.ps1) **as Administrator** (220 GB default) and reboot — the existing `--cpu-moe` config then spawns at ~0.5–2 t/s. |
+| `frontier`         | DeepSeek V3.2 (UD-IQ1_S sharded ×4)         | —    | —    |  pagefile-gated | 171 GB GGUF on 125 GB RAM + 8 GB pagefile = 133 GB commit limit. Run [`scripts/operator/grow-pagefile.ps1`](scripts/operator/grow-pagefile.ps1) **as Administrator** (220 GB default) and reboot — the existing `--cpu-moe` config then spawns at ~0.5–2 t/s. |
 
 **Clean-slate methodology matters.** The first-pass numbers we
 captured earlier (versatile 9.0, coding 10.4, fast 12.7) were
@@ -585,7 +585,7 @@ the row above came from a hand-rolled stream-counter.
 - **`frontier` pagefile-gated** — pending operator action. Three llama.cpp configs (`-ot`, pure-CPU, `--cpu-moe`) all crash during tensor load because the 171 GB sharded GGUF can't fit the 125 GB RAM + 8 GB pagefile = 133 GB commit limit. The fix is one PowerShell script + a reboot:
   ```powershell
   # Run from an elevated PowerShell prompt
-  pwsh .\scripts\grow-pagefile.ps1   # default: 220 GB on the largest free drive
+  pwsh .\scripts\operator\grow-pagefile.ps1   # default: 220 GB on the largest free drive
   # …reboot…
   # then in any chat: pick "Reasoning · 671B · frontier (hardware-gated)" and send a request
   ```
@@ -673,8 +673,9 @@ config/               YAML-driven runtime configuration
 tools/                Discoverable tools (one file per tool, 90+)
 scripts/
   steps/              Dot-sourced helpers (prereqs, downloads, venvs, CUDA)
-  prompts/            Prompt templates
-  code_assist.py      Repo helper utilities
+  operator/           Manually-invoked operator tools (page-file grow, VRAM
+                      free, eviction probe, gsm8k eval, chrome-bench check,
+                      code_assist CLI + prompts/)
 installer/            Inno Setup script + PyInstaller spec
 tests/
   local_health.py     Operator-facing health check + fix hooks

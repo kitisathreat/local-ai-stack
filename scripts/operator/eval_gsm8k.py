@@ -7,8 +7,8 @@ quality changes (new quants, embedder swaps, model upgrades) get a
 comparable baseline.
 
 Usage:
-    python scripts/eval_gsm8k.py --tier fast --limit 50
-    python scripts/eval_gsm8k.py --tier versatile --limit 100 --out data/eval/v.json
+    python scripts/operator/eval_gsm8k.py --tier fast --limit 50
+    python scripts/operator/eval_gsm8k.py --tier versatile --limit 100 --out data/eval/v.json
 
 The dataset is downloaded from HF (gsm8k, "main" split, "test" rows).
 Scoring: extract the final number from the model response and compare

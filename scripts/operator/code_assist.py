@@ -6,9 +6,9 @@ an interactive coding session. Supports five modes, parallel multi-agent tasks,
 automatic task difficulty routing, conversation compaction, and Jupyter execution.
 
 Usage:
-    python scripts/code_assist.py --mode explain
-    python scripts/code_assist.py --mode review --profile coding
-    python scripts/code_assist.py --help
+    python scripts/operator/code_assist.py --mode explain
+    python scripts/operator/code_assist.py --mode review --profile coding
+    python scripts/operator/code_assist.py --help
 
 Install dependencies first:
     pip install openai websocket-client

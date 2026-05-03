@@ -33,9 +33,9 @@
   whole run is invisible.
 
 .EXAMPLE
-  pwsh .\scripts\free-vram.ps1                 # report + reap
-  pwsh .\scripts\free-vram.ps1 -EvictAll       # also force-evict
-  pwsh .\scripts\free-vram.ps1 -Quiet          # silent
+  pwsh .\scripts\operator\free-vram.ps1                 # report + reap
+  pwsh .\scripts\operator\free-vram.ps1 -EvictAll       # also force-evict
+  pwsh .\scripts\operator\free-vram.ps1 -Quiet          # silent
 #>
 
 [CmdletBinding()]

@@ -45,15 +45,15 @@
   any manual entry on the chosen drive.
 
 .EXAMPLE
-  pwsh .\scripts\grow-pagefile.ps1
+  pwsh .\scripts\operator\grow-pagefile.ps1
   # 220 GB max on the largest free drive
 
 .EXAMPLE
-  pwsh .\scripts\grow-pagefile.ps1 -SizeGB 300 -Drive D
+  pwsh .\scripts\operator\grow-pagefile.ps1 -SizeGB 300 -Drive D
   # 300 GB max on D:
 
 .EXAMPLE
-  pwsh .\scripts\grow-pagefile.ps1 -RevertToManaged
+  pwsh .\scripts\operator\grow-pagefile.ps1 -RevertToManaged
   # back to defaults
 #>
 
