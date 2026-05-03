@@ -495,6 +495,7 @@
         <button id="menu-btn" type="button" aria-label="Open conversations" title="Conversations">☰</button>
         <span class="brand">Local AI Stack</span>
         <select id="model"></select>
+        <select id="model-variant" title="Model variant" style="display:none;"></select>
         <label><input type="checkbox" id="think"> Think</label>
         <span class="spacer"></span>
         <span id="vram-stat" class="stat" title="GPU VRAM free / total (polled every 15s)">
@@ -976,6 +977,48 @@
       setStatLevel(ctxStatEl, used / ctx);
     }
 
+    // Per-tier variant info from /v1/models, keyed by tier_id like "tier.coding".
+    // Each value: {variants: [{id, name, available, vram_estimate_gb}], default: "30b"}.
+    // Used by the variant selector beside the model dropdown.
+    const tierVariants = new Map();
+    const variantEl = $('model-variant');
+    // User's chosen variant per tier (sticky across tier switches).
+    // tier_id → variant_id. Undefined means "use the tier's default".
+    const variantPick = new Map();
+
+    function applyVariantSelector(tierId) {
+      const meta = tierVariants.get(tierId);
+      if (!meta || !meta.variants || meta.variants.length === 0) {
+        variantEl.style.display = 'none';
+        variantEl.innerHTML = '';
+        return;
+      }
+      const previous = variantPick.get(tierId) || meta.default || meta.variants[0].id;
+      variantEl.innerHTML = '';
+      meta.variants.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v.id;
+        const label = v.name || v.id;
+        if (v.available === false) {
+          o.textContent = `${label} (downloading…)`;
+          o.disabled = true;
+        } else {
+          o.textContent = label;
+        }
+        if (v.id === previous && !o.disabled) {
+          o.selected = true;
+        }
+        variantEl.appendChild(o);
+      });
+      variantEl.style.display = '';
+      variantPick.set(tierId, variantEl.value);
+    }
+
+    variantEl.addEventListener('change', () => {
+      const tierId = modelEl.value;
+      if (tierId) variantPick.set(tierId, variantEl.value);
+    });
+
     async function loadModels() {
       // Fetch /v1/models for the available tier list and /resolved-models
       // for the per-tier specific model name + on-disk availability.
@@ -1003,12 +1046,20 @@
         let firstAvailableValue = null;
         let previousIsAvailable = false;
         tierContext.clear();
+        tierVariants.clear();
         (data || []).forEach(m => {
           const o = document.createElement('option');
           o.value = m.id;
           // Stash per-tier context window so the CTX indicator can
           // show the right "X / Y" denominator even after a tier swap.
           if (m.context_window) tierContext.set(m.id, m.context_window);
+          // Stash per-tier variant choices for the secondary dropdown.
+          if (Array.isArray(m.variants) && m.variants.length > 0) {
+            tierVariants.set(m.id, {
+              variants: m.variants,
+              default: m.default_variant || (m.variants[0] && m.variants[0].id),
+            });
+          }
           const key = m.id.replace(/^tier\./, '');
           const info = resolved[key] || resolved[m.id] || {};
           const cat = tierLabel(key);
@@ -1036,6 +1087,7 @@
           modelEl.value = firstAvailableValue;
         }
         lastSelectedModel = modelEl.value;
+        applyVariantSelector(modelEl.value);
         updateCtxIndicator();
       } catch (_) {}
     }
@@ -1064,6 +1116,8 @@
         }
       }
       lastSelectedModel = newVal;
+      // Re-render the variant sub-selector for the newly-picked tier.
+      applyVariantSelector(newVal);
     });
 
     // Refresh the tier list every 30 s so download-completed tiers
@@ -1494,6 +1548,15 @@
         // about it yet.
         if (toolState.size > 0) body.enabled_tools = toolNames;
         if (attachmentIds.length) body.attachment_ids = attachmentIds;
+        // Variant sub-selector: only forward when a non-default value
+        // is picked AND the variant select is visible for the current
+        // tier (otherwise the field is meaningless and would be a no-op
+        // on the backend anyway).
+        const variantsForTier = tierVariants.get(modelEl.value);
+        if (variantsForTier && variantEl.value && variantEl.style.display !== 'none') {
+          const def = variantsForTier.default;
+          if (variantEl.value !== def) body.variant = variantEl.value;
+        }
 
         const r = await fetch('/v1/chat/completions', {
           method: 'POST',

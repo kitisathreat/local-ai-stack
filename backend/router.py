@@ -256,9 +256,13 @@ def route(
 
     # Variant override: only honored when the resolved tier declares the
     # named variant. Silently dropped otherwise so a stray /coder on a
-    # non-coding tier doesn't error.
+    # non-coding tier doesn't error. Resolution order:
+    #   1. explicit ChatRequest.variant field (UI's variant sub-selector)
+    #   2. /coder big | small slash command in the user message
     variant: str | None = None
-    if parsed.set_variant and parsed.set_variant in tier.variants:
+    if req.variant and req.variant in tier.variants:
+        variant = req.variant
+    elif parsed.set_variant and parsed.set_variant in tier.variants:
         variant = parsed.set_variant
 
     decision = RouteDecision(
