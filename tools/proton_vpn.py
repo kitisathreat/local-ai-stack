@@ -40,12 +40,48 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
+import sys
 import time
 from typing import Any, Callable, Optional
 
 import httpx
 from pydantic import BaseModel, Field
+
+
+# RFC-1123 hostname regex. Matches the subset we let into PowerShell
+# command strings — letters, digits, dots, hyphens. Anything else
+# (single-quote, semicolon, backtick, …) is rejected to prevent the
+# valve-driven PS-injection path that the auto_recover_dns hostname
+# probe used to be vulnerable to.
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$", re.IGNORECASE)
+
+
+def _is_elevated() -> bool:
+    """Return True if the current process has Windows admin rights.
+
+    `Restart-Service` and `Disable-/Enable-NetAdapter` both require an
+    elevated token; without one they fail with cryptic SCM errors. We
+    surface that as a clean message instead.
+    """
+    if sys.platform != "win32":
+        # Non-Windows: tool is a no-op anyway, but answer truthfully.
+        try:
+            return os.geteuid() == 0  # type: ignore[attr-defined]
+        except AttributeError:
+            return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except (OSError, AttributeError):
+        return False
+
+
+_ELEVATION_HINT = (
+    "Relaunch LocalAIStack as Administrator (right-click → Run as administrator) "
+    "so the tool can drive Restart-Service / Disable-NetAdapter."
+)
 
 
 # All powershell calls go through this so we can centralise the
@@ -72,6 +108,29 @@ def _run_ps(script: str, timeout: int = 15) -> tuple[int, str, str]:
     try:
         r = subprocess.run(
             [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return r.returncode, r.stdout or "", r.stderr or ""
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timed out after {timeout}s"
+    except OSError as exc:
+        return 127, "", str(exc)
+
+
+def _run_ps_args(script: str, args: list[str], timeout: int = 15) -> tuple[int, str, str]:
+    """Run a PowerShell `param(...)` script with positional args.
+
+    The args travel as separate argv entries — PowerShell never sees
+    them as command text, so they can't break out of quoting. Use this
+    (not `_run_ps` with f-string interpolation) any time you're passing
+    a value derived from a valve, a tool argument, or anything else
+    not under our static control.
+    """
+    exe = _powershell_exe()
+    try:
+        r = subprocess.run(
+            [exe, "-NoProfile", "-NonInteractive", "-Command", script, *args],
             capture_output=True, text=True, timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -140,7 +199,7 @@ class Tools:
                     Select-Object Name, InterfaceDescription, Status, MacAddress
         @{ services = @($svc); adapters = @($adapters) } | ConvertTo-Json -Depth 4 -Compress
         """
-        rc, out, err = _run_ps(services_script)
+        rc, out, err = await asyncio.to_thread(_run_ps, services_script)
         if rc != 0:
             return f"[proton_vpn.status] ERROR: {err.strip() or out.strip()}"
         try:
@@ -187,6 +246,8 @@ class Tools:
 
         :return: One-line per service: 'Name: RESTARTED' / 'failed: <reason>'.
         """
+        if not _is_elevated():
+            return f"[proton_vpn.restart_service] requires admin. {_ELEVATION_HINT}"
         script = r"""
         $results = @()
         foreach ($svc in (Get-Service | Where-Object { $_.Name -match 'Proton' })) {
@@ -200,12 +261,12 @@ class Tools:
         if (-not $results) { $results = @('(no Proton services found)') }
         $results -join "`n"
         """
-        rc, out, err = _run_ps(script, timeout=30)
+        rc, out, err = await asyncio.to_thread(_run_ps, script, 30)
         if rc != 0:
             return f"[proton_vpn.restart_service] ERROR\n{err.strip() or out.strip()}"
         # Give the DNS proxy a moment to come back up, then flush local cache.
         await asyncio.sleep(3)
-        _run_ps("Clear-DnsClientCache", timeout=5)
+        await asyncio.to_thread(_run_ps, "Clear-DnsClientCache", 5)
         return f"## restart_service\n```\n{out.strip()}\n```"
 
     async def cycle_adapter(
@@ -224,6 +285,8 @@ class Tools:
 
         :return: Adapter cycle log + before/after public IP comparison.
         """
+        if not _is_elevated():
+            return f"[proton_vpn.cycle_adapter] requires admin. {_ELEVATION_HINT}"
         async with httpx.AsyncClient() as c:
             ip_before, cc_before = await _public_ip(c)
         script = r"""
@@ -242,7 +305,7 @@ class Tools:
             }
         }
         """
-        rc, out, err = _run_ps(script, timeout=30)
+        rc, out, err = await asyncio.to_thread(_run_ps, script, 30)
         if rc != 0:
             return f"[proton_vpn.cycle_adapter] ERROR\n{err.strip() or out.strip()}"
         if "NO_PROTON_ADAPTER" in out:
@@ -273,18 +336,37 @@ class Tools:
 
         :return: Result + final DNS state (resolved | unresolved).
         """
-        host = self.valves.recovery_test_host
+        host = (self.valves.recovery_test_host or "").strip()
+        # Strict validation: the hostname is interpolated into a
+        # PowerShell single-quoted string further down. A value like
+        # `evil.com'; Remove-Item -Recurse C:\; #` would otherwise break
+        # out and run arbitrary PS in a process that may be elevated
+        # (this whole tool requires admin). Reject anything that doesn't
+        # match RFC-1123 hostname syntax.
+        if not _HOSTNAME_RE.match(host):
+            return (
+                f"[proton_vpn.auto_recover_dns] refusing to probe — "
+                f"`recovery_test_host` valve {host!r} is not a valid hostname. "
+                f"Set it to something like `cas-bridge.xethub.hf.co`."
+            )
         attempts = max(1, int(self.valves.max_recovery_attempts))
         log: list[str] = []
 
-        def _dns_ok() -> bool:
-            rc, out, _ = _run_ps(
-                f"try {{ Resolve-DnsName -Name '{host}' -DnsOnly -QuickTimeout -Type A -ErrorAction Stop | Out-Null; 'OK' }} catch {{ 'FAIL' }}",
-                timeout=10,
-            )
+        # Pass the validated host via -Args so PowerShell never sees it
+        # as part of the command text. Belt-and-suspenders with the
+        # regex check above; either alone would close the injection
+        # path, but together they survive a future regex regression.
+        probe_script = (
+            "param($h) "
+            "try { Resolve-DnsName -Name $h -DnsOnly -QuickTimeout -Type A "
+            "-ErrorAction Stop | Out-Null; 'OK' } catch { 'FAIL' }"
+        )
+
+        async def _dns_ok() -> bool:
+            rc, out, _ = await asyncio.to_thread(_run_ps_args, probe_script, [host], 10)
             return "OK" in (out or "")
 
-        if _dns_ok():
+        if await _dns_ok():
             return f"[proton_vpn.auto_recover_dns] DNS for `{host}` already healthy — no action taken."
 
         for attempt in range(1, attempts + 1):
@@ -292,13 +374,13 @@ class Tools:
             log.append("- Restart-Service ProtonVPN*")
             await self.restart_service()
             await asyncio.sleep(2)
-            if _dns_ok():
+            if await _dns_ok():
                 log.append(f"- ✓ DNS recovered after restart_service")
                 return "## auto_recover_dns: SUCCESS\n" + "\n".join(log)
             log.append("- ✗ DNS still broken — escalating to cycle_adapter")
             await self.cycle_adapter()
             await asyncio.sleep(2)
-            if _dns_ok():
+            if await _dns_ok():
                 log.append("- ✓ DNS recovered after cycle_adapter")
                 return "## auto_recover_dns: SUCCESS\n" + "\n".join(log)
             log.append("- ✗ DNS still broken after both")

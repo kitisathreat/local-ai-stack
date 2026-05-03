@@ -193,14 +193,37 @@ function Invoke-ProtonAutoRecover {
     # venv. That method walks the full Restart-Service → cycle-adapter
     # ladder and reports back. Falls back to Restart-ProtonVPN
     # (above) if Python invocation fails for any reason.
+    #
+    # Path-passing notes:
+    #   - $RepoRoot travels as argv[1], NOT as f-string interpolation
+    #     into the Python source, so a path containing a single quote
+    #     (e.g. C:\repos\kit's stuff\local-ai-stack) can't break the
+    #     `r'...'` raw string and inject code.
+    #   - $LASTEXITCODE is checked; a non-zero exit from the Python
+    #     side falls back to the simpler Restart-ProtonVPN path.
     $py = Join-Path $RepoRoot 'vendor\venv-backend\Scripts\python.exe'
     if (-not (Test-Path $py)) {
         Log "    proton_vpn tool unavailable (no backend venv) — falling back to service restart"
         return (Restart-ProtonVPN)
     }
     try {
-        $script = "import asyncio, sys; sys.path.insert(0, r'$RepoRoot'); from tools.proton_vpn import Tools; print(asyncio.run(Tools().auto_recover_dns()))"
-        $out = & $py -c $script 2>&1
+        $pyScript = @'
+import asyncio
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from tools.proton_vpn import Tools
+
+print(asyncio.run(Tools().auto_recover_dns()))
+'@
+        $out = & $py -c $pyScript $RepoRoot 2>&1
+        $exit = $LASTEXITCODE
+        if ($exit -ne 0) {
+            Log "    proton_vpn.auto_recover_dns exited $exit — falling back to service restart"
+            $tail = ($out -split "`n" | Select-Object -Last 6) -join '; '
+            Log "      stderr/stdout tail: $tail"
+            return (Restart-ProtonVPN)
+        }
         $tail = ($out -split "`n" | Select-Object -Last 6) -join '; '
         Log "    proton_vpn.auto_recover_dns: $tail"
         return $true
