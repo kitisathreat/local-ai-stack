@@ -553,14 +553,33 @@ class VRAMScheduler:
         headroom = self.vram.headroom_gb
         total = self.vram.total_vram_gb
 
+        # Pull NVML once up-front. If pynvml is wired the fit decision must
+        # honour what the GPU actually shows free, not just our registry's
+        # projection — orphan llama-server processes (left from a previous
+        # crash / backend bounce / external VRAM consumer) reduce real free
+        # without ever touching `self.loaded`. Trusting projection alone
+        # there causes a false "fits", spawn proceeds, llama-server OOMs,
+        # the scheduler thinks the tier loaded, and every chat thereafter
+        # 503s. Cross-check with NVML closes that hole.
+        actual_free = self.probe.free_gb(total)
+
         def _fits(projected: float) -> bool:
-            # If the incoming tier is alone (no coexisting models), headroom
-            # is not enforced — just need <= total. With coexisting models,
-            # projected + need + headroom must fit.
+            # If the incoming tier is alone in our registry (no coexisting
+            # models we manage), headroom is not enforced — just need <= total.
+            # With coexisting models, projected + need + headroom must fit.
             other_used = max(0.0, projected)
             if other_used == 0:
-                return need <= total
-            return other_used + need + headroom <= total
+                projection_ok = need <= total
+            else:
+                projection_ok = (other_used + need + headroom <= total)
+            if not projection_ok:
+                return False
+            # NVML cross-check — only meaningful when pynvml is available
+            # (free_gb returns the `total` sentinel when it isn't, which
+            # makes this check trivially pass).
+            if actual_free >= total:
+                return True
+            return need + headroom <= actual_free
 
         def _current_projected() -> float:
             return sum(
