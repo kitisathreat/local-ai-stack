@@ -163,14 +163,27 @@ tiers:
   # higher peak quality on hard reasoning. No speculative draft because
   # GPT-OSS uses OpenAI's o200k_harmony tokenizer which is incompatible
   # with the Qwen3 family draft.
+  # NOTE: this tier is currently UNAVAILABLE on Windows-native builds.
+  # Every gpt-oss-120b GGUF on HF is sharded across 2+ files (the
+  # smallest Q4_K_M is 37.2 + 21.3 GB = 58.5 GB, larger than HF's 50 GB
+  # single-file limit). Our resolver can only pull a single file per
+  # tier today; sharded support is a separate follow-up. Keeping the
+  # entry here (commented `disabled`) so the YAML is self-documenting
+  # and so re-enabling is a one-line change once shard pull lands.
+  #
+  # Until then the resolver short-circuits this tier with a clear
+  # error instead of 404'ing the un-sharded filename in a tight retry
+  # loop.
   reasoning_max:
     source: huggingface
+    disabled: true
+    disabled_reason: "Awaiting sharded-GGUF pull support — see follow-up issue"
     repo: "bartowski/openai_gpt-oss-120b-GGUF"
-    file: "*Q4_K_M.gguf"
+    file: "openai_gpt-oss-120b-Q4_K_M/openai_gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "openai_gpt-oss-120b-Q4_K_M.gguf"
+      file: "openai_gpt-oss-120b-Q4_K_M/openai_gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"
 
   # Qwen3-0.6B-Instruct — universal speculative-decode draft for every
   # Qwen3-family chat tier (highest_quality, versatile, fast, coding, vision).

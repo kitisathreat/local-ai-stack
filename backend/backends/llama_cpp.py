@@ -264,7 +264,15 @@ class LlamaServerProcess:
         creationflags = 0
         if os.name == "nt":
             # CREATE_NEW_PROCESS_GROUP so terminate() works on Windows.
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            # CREATE_NO_WINDOW hides the conhost flash that would
+            # otherwise pop on every chat-tier cold-spawn — visible to
+            # the user even when the launcher itself is hidden, because
+            # conhost.exe is a foreground UI window the OS opens for any
+            # console subprocess spawned without this flag.
+            creationflags = (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
         logger.info("Starting llama-server for %s: %s", self.tier_id, " ".join(self.argv))
         try:
             self.popen = subprocess.Popen(
