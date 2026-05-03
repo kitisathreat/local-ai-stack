@@ -467,14 +467,29 @@ across quant swaps, llama.cpp version bumps, hardware changes, etc.
 
 Reference numbers from the RTX Pro 4000 SFF (24 GB) reference rig,
 post-merge of [#169](https://github.com/kitisathreat/local-ai-stack/pull/169) +
-[#170](https://github.com/kitisathreat/local-ai-stack/pull/170)
-(NVML-aware probe + residency cascade), warm OS page cache:
+[#170](https://github.com/kitisathreat/local-ai-stack/pull/170) +
+[#173](https://github.com/kitisathreat/local-ai-stack/pull/173)
+(NVML-aware probe + residency cascade + method-scope hotfix), warm OS
+page cache:
 
 | tier | cold-load (s) | warm-first-token (s) | tok/s @ slot=1 | notes |
 |---|---:|---:|---:|---|
-| `versatile` | 12.0 | 1.76 | 8.6 | Qwen3.6 35B-A3B MoE, expert offload, spec-decode |
-| `fast`      | 8.4  | 0.56 | 23.0 | Qwen3.5 9B dense, spec-decode |
-| `coding`    | 12.3 | 1.07 | 9.5  | Qwen3-Coder-30B-A3B, expert offload, spec-decode |
+| `versatile` | 12.85 | 1.81 | **12.3** | Qwen3.6 35B-A3B MoE, expert offload, spec-decode (+43% tok/s vs pre-merge) |
+| `fast`      |  8.93 | 0.58 | 22.0 | Qwen3.5 9B dense, spec-decode |
+| `coding`    | 11.05 | 1.03 |  9.7 | Qwen3-Coder-30B-A3B, expert offload, spec-decode |
+
+The cascade-driven KV→CPU spillover frees the equivalent of ~5 GB of
+VRAM at full ctx for `versatile` (3 slots, q4_0 KV), which keeps the
+attention path on GPU in the partial-residency regime that previously
+forced a layer downscale. Cold-load latency is roughly stable —
+weights still page in from the warm OS cache in similar wall time.
+
+`highest_quality` (Qwen3-Next 80B-A3B Thinking, ~50 GB GGUF) and
+`coding_80b` (Qwen3-Coder-Next 80B, ~50 GB GGUF) bench numbers will
+be added once the resolver pull completes; the resolver auto-resumes
+from the partial blob in `data/models/.cache/huggingface/download/`
+across CDN drops, so an interrupted multi-hour pull continues
+where it left off on the next `-Start`.
 
 Reproduce with:
 
