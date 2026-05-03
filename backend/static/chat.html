@@ -502,12 +502,12 @@
         <span class="brand">Local AI Stack</span>
         <select id="model"></select>
         <select id="model-variant" title="Model variant" style="display:none;"></select>
-        <span id="team-config" title="Multi-agent team configuration" style="display:none; gap:6px; align-items:center;">
+        <span id="team-config" title="Multi-agent team configuration" style="display:none; gap:6px; align-items:center; flex-wrap:wrap;">
           <label style="display:flex; gap:4px; align-items:center;" title="Orchestrator decomposes the task and synthesises worker outputs">
             <span style="color:var(--muted); font-size:0.85em;">Orch</span>
             <select id="team-orchestrator"></select>
           </label>
-          <label style="display:flex; gap:4px; align-items:center;" title="Tier each worker runs on (all workers share this tier)">
+          <label id="team-worker-label" style="display:flex; gap:4px; align-items:center;" title="Tier each worker runs on (all workers share this tier)">
             <span style="color:var(--muted); font-size:0.85em;">Workers</span>
             <select id="team-worker"></select>
           </label>
@@ -515,6 +515,11 @@
             <span style="color:var(--muted); font-size:0.85em;">N</span>
             <input id="team-n" type="number" min="1" max="8" step="1" value="3" style="width:3em;">
           </label>
+          <label style="display:flex; gap:4px; align-items:center;" title="Pick a different tier for each agent individually">
+            <input id="team-per-agent" type="checkbox">
+            <span style="color:var(--muted); font-size:0.85em;">Per-agent</span>
+          </label>
+          <span id="team-per-agent-rows" style="display:none; gap:4px; align-items:center; flex-wrap:wrap;"></span>
         </span>
         <label><input type="checkbox" id="think"> Think</label>
         <span class="spacer"></span>
@@ -1074,10 +1079,23 @@
     // (id === "tier.multi_agent"). When visible, the chat-completions
     // request body grows a `multi_agent_options` block populated from
     // these controls.
-    const teamConfigEl = $('team-config');
-    const teamOrchEl   = $('team-orchestrator');
-    const teamWorkerEl = $('team-worker');
-    const teamNEl      = $('team-n');
+    const teamConfigEl       = $('team-config');
+    const teamOrchEl         = $('team-orchestrator');
+    const teamWorkerEl       = $('team-worker');
+    const teamWorkerLabelEl  = $('team-worker-label');
+    const teamNEl            = $('team-n');
+    const teamPerAgentEl     = $('team-per-agent');
+    const teamPerAgentRowsEl = $('team-per-agent-rows');
+    // Eligible tiers for orch/worker/per-agent dropdowns (excludes the
+    // multi_agent virtual tier itself + downloading tiers). Cached
+    // between loadModels() refreshes so a per-agent rebuild doesn't
+    // re-hit /v1/models.
+    let teamEligibleTiers = [];
+    // Per-agent picks: array of tier names (length = teamN). Initialised
+    // from the global Workers selection on first per-agent toggle, then
+    // mutated as the user picks per-row. Persists across N changes
+    // (truncate / pad with the global Workers tier).
+    let teamPerAgentPicks = [];
 
     function populateTeamDropdowns(modelsList) {
       // Eligible orchestrator + worker tiers: any chat tier that
@@ -1089,12 +1107,14 @@
       const prevWorker = teamWorkerEl.value;
       teamOrchEl.innerHTML   = '';
       teamWorkerEl.innerHTML = '';
+      teamEligibleTiers = [];
       (modelsList || []).forEach(m => {
         if (m.id === 'tier.multi_agent') return;
         // Skip "downloading…" tiers — picking them would 404 the spawn.
         if (m.context_window === undefined && m.available === false) return;
         const key = m.id.replace(/^tier\./, '');
         const label = m.name || key;
+        teamEligibleTiers.push({ key, label });
         const o1 = document.createElement('option');
         o1.value = key;
         o1.textContent = label;
@@ -1110,12 +1130,74 @@
       if (!teamWorkerEl.value && [...teamWorkerEl.options].some(o => o.value === 'fast')) {
         teamWorkerEl.value = 'fast';
       }
+      // Per-agent rows: re-render against the new eligible-tier list
+      // (the user might have selected a tier that just became available
+      // or unavailable).
+      if (teamPerAgentEl.checked) rebuildTeamPerAgentRows();
     }
 
     function applyTeamPanelVisibility() {
       const isTeamTier = (modelEl.value === 'tier.multi_agent');
       teamConfigEl.style.display = isTeamTier ? 'inline-flex' : 'none';
     }
+
+    // Rebuild the per-agent row dropdowns based on the current N
+    // input + the eligible tier list. Picks persist across N changes
+    // (truncate when N shrinks, pad with the global Workers tier when
+    // N grows). Called whenever the user toggles per-agent on, changes
+    // N while per-agent is on, or the eligible-tier list refreshes.
+    function rebuildTeamPerAgentRows() {
+      const n = Math.max(1, Math.min(8, parseInt(teamNEl.value, 10) || 3));
+      const fallback = teamWorkerEl.value || (teamEligibleTiers[0] && teamEligibleTiers[0].key) || 'fast';
+      // Truncate to N; pad with fallback.
+      while (teamPerAgentPicks.length > n) teamPerAgentPicks.pop();
+      while (teamPerAgentPicks.length < n) teamPerAgentPicks.push(fallback);
+      teamPerAgentRowsEl.innerHTML = '';
+      for (let i = 0; i < n; i++) {
+        const wrap = document.createElement('label');
+        wrap.style.cssText = 'display:flex; gap:3px; align-items:center;';
+        wrap.title = `Tier for agent ${i + 1}`;
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'color:var(--muted); font-size:0.8em;';
+        lbl.textContent = `#${i + 1}`;
+        const sel = document.createElement('select');
+        teamEligibleTiers.forEach(t => {
+          const o = document.createElement('option');
+          o.value = t.key;
+          o.textContent = t.label;
+          sel.appendChild(o);
+        });
+        // If the persisted pick isn't in the eligible list (tier became
+        // unavailable), fall back rather than silently keeping a 404'ing value.
+        const wanted = teamPerAgentPicks[i];
+        if (wanted && [...sel.options].some(o => o.value === wanted)) {
+          sel.value = wanted;
+        } else {
+          sel.value = fallback;
+          teamPerAgentPicks[i] = fallback;
+        }
+        sel.addEventListener('change', () => {
+          teamPerAgentPicks[i] = sel.value;
+        });
+        wrap.appendChild(lbl);
+        wrap.appendChild(sel);
+        teamPerAgentRowsEl.appendChild(wrap);
+      }
+    }
+
+    function applyPerAgentMode() {
+      const on = teamPerAgentEl.checked;
+      // Hide the single Workers dropdown when per-agent is on; show
+      // the row container instead. Both are inside the team panel,
+      // visible only when the multi_agent tier is selected.
+      teamWorkerLabelEl.style.display   = on ? 'none'        : 'flex';
+      teamPerAgentRowsEl.style.display  = on ? 'inline-flex' : 'none';
+      if (on) rebuildTeamPerAgentRows();
+    }
+    teamPerAgentEl.addEventListener('change', applyPerAgentMode);
+    teamNEl.addEventListener('change', () => {
+      if (teamPerAgentEl.checked) rebuildTeamPerAgentRows();
+    });
 
     async function loadModels() {
       // Fetch /v1/models for the available tier list and /resolved-models
@@ -1964,12 +2046,23 @@
         // role check).
         if (modelEl.value === 'tier.multi_agent') {
           const n = Math.max(1, Math.min(8, parseInt(teamNEl.value, 10) || 3));
-          body.multi_agent_options = {
+          const opts = {
             enabled: true,
             orchestrator_tier: teamOrchEl.value || undefined,
-            worker_tier: teamWorkerEl.value || undefined,
-            num_workers: n,
           };
+          if (teamPerAgentEl.checked && teamPerAgentPicks.length > 0) {
+            // Per-agent mode: send the explicit list. The backend
+            // pins worker count to len(worker_tiers) and assigns each
+            // subtask to its position-indexed tier (overrides
+            // specialist routing, which is the user's intent — they
+            // explicitly picked these tiers).
+            opts.worker_tiers = teamPerAgentPicks.slice(0, n);
+          } else {
+            // Uniform-worker mode: single worker_tier × N.
+            opts.worker_tier = teamWorkerEl.value || undefined;
+            opts.num_workers = n;
+          }
+          body.multi_agent_options = opts;
         }
 
         const r = await fetch('/v1/chat/completions', {
