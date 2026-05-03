@@ -117,17 +117,29 @@ function Spawn-Resolver([string]$tier) {
         } catch { }
         $activePids.Remove($tier) | Out-Null
     }
-    $logFile = Join-Path $RepoRoot "data\pull-$tier-watchdog.log"
-    $args = @(
+    # Start-Process refuses the same path for both stdout + stderr, so
+    # split them. The .err.log surfaces resolver bailouts (CDN drops,
+    # 404s, etc.); .out.log is the resolver's normal progress.
+    $logOut = Join-Path $RepoRoot "data\pull-$tier-watchdog.out.log"
+    $logErr = Join-Path $RepoRoot "data\pull-$tier-watchdog.err.log"
+    $argv = @(
         '-m', 'backend.model_resolver',
         'resolve', '--force', '--pull', '--tier', $tier
     )
-    $proc = Start-Process -FilePath $Py -ArgumentList $args `
-        -WorkingDirectory $RepoRoot `
-        -RedirectStandardOutput $logFile -RedirectStandardError $logFile `
-        -PassThru -WindowStyle Hidden
-    $activePids[$tier] = $proc.Id
-    Log "  $tier : spawned resolver (PID=$($proc.Id), log=$logFile)"
+    # Wrap in try/catch so a transient Start-Process failure (e.g. file
+    # lock contention on the log path) doesn't kill the whole watchdog —
+    # the next poll cycle will retry. ErrorAction explicitly Continue
+    # because the script's top-level $ErrorActionPreference is Stop.
+    try {
+        $proc = Start-Process -FilePath $Py -ArgumentList $argv `
+            -WorkingDirectory $RepoRoot `
+            -RedirectStandardOutput $logOut -RedirectStandardError $logErr `
+            -PassThru -WindowStyle Hidden -ErrorAction Stop
+        $activePids[$tier] = $proc.Id
+        Log "  $tier : spawned resolver (PID=$($proc.Id))"
+    } catch {
+        Log "  $tier : spawn FAILED ($($_.Exception.Message)) — will retry next poll"
+    }
 }
 
 # ── Main loop ───────────────────────────────────────────────────────────────
@@ -136,22 +148,28 @@ $deadline = $start.AddHours($MaxHours)
 Log "=== watchdog start: tiers=$($Tiers -join ',') poll=${PollSeconds}s cap=${MaxHours}h ==="
 
 while ((Get-Date) -lt $deadline) {
-    $pending = @($Tiers | Where-Object { -not (Has-CompletedTier $_) })
-    if ($pending.Count -eq 0) {
-        Log "all tiers complete — exiting"
-        exit 0
-    }
-
-    if (Test-XethubDns) {
-        Log "xethub.hf.co reachable — checking $($pending.Count) pending tier(s): $($pending -join ', ')"
-        foreach ($t in $pending) { Spawn-Resolver $t }
-    } else {
-        # Don't log every poll while DNS is down — would flood the log.
-        # Only log every 10 minutes.
-        $minutesSinceStart = ((Get-Date) - $start).TotalMinutes
-        if ([int]$minutesSinceStart % 10 -eq 0) {
-            Log "xethub.hf.co STILL unreachable (pending: $($pending -join ', '))"
+    # Wrap the body so one bad iteration doesn't kill the watchdog —
+    # any uncaught error gets logged and we continue polling.
+    try {
+        $pending = @($Tiers | Where-Object { -not (Has-CompletedTier $_) })
+        if ($pending.Count -eq 0) {
+            Log "all tiers complete — exiting"
+            exit 0
         }
+
+        if (Test-XethubDns) {
+            Log "xethub.hf.co reachable — checking $($pending.Count) pending tier(s): $($pending -join ', ')"
+            foreach ($t in $pending) { Spawn-Resolver $t }
+        } else {
+            # Don't log every poll while DNS is down — would flood the
+            # log. Only log every 10 minutes.
+            $minutesSinceStart = ((Get-Date) - $start).TotalMinutes
+            if ([int]$minutesSinceStart % 10 -eq 0) {
+                Log "xethub.hf.co STILL unreachable (pending: $($pending -join ', '))"
+            }
+        }
+    } catch {
+        Log "iteration error: $($_.Exception.Message) — continuing"
     }
 
     Start-Sleep -Seconds $PollSeconds
