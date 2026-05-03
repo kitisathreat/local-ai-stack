@@ -543,21 +543,20 @@ are written to `data/eval/tier-bench-<ts>.json` for A/B tracking
 across quant swaps, llama.cpp version bumps, hardware changes, etc.
 
 Reference numbers from the RTX Pro 4000 SFF (24 GB) reference rig,
-post-merge of [#169](https://github.com/kitisathreat/local-ai-stack/pull/169) +
-[#170](https://github.com/kitisathreat/local-ai-stack/pull/170) +
-[#173](https://github.com/kitisathreat/local-ai-stack/pull/173)
-(NVML-aware probe + residency cascade + method-scope hotfix), warm OS
-page cache:
+post-merge of [#199](https://github.com/kitisathreat/local-ai-stack/pull/199)
++ [#200](https://github.com/kitisathreat/local-ai-stack/pull/200)
+(hf_transfer default-off + ProtonVPN tool hardening). 2026-05-03 run,
+warm OS page cache, `--tokens 220 --warmup-tokens 8`, ~16 GB GPU free
+(non-stack apps closed):
 
-| tier | cold-load (s) | warm-first-token (s) | tok/s @ slot=1 | notes |
-|---|---:|---:|---:|---|
-| `versatile` | 12.85 | 1.81 | **12.3** | Qwen3.6 35B-A3B MoE, expert offload, spec-decode (+43% tok/s vs pre-merge) |
-| `fast`      |  8.93 | 0.58 | 22.0 | Qwen3.5 9B dense, spec-decode |
-| `coding`    | 11.05 | 1.03 |  9.7 |
-| `versatile` | 14.5 | 1.66 | **11** | +27.9% vs pre-merge baseline |
-| `fast` | 9.03 | 0.57 | **21.3** | -7.4% vs pre-merge baseline |
-| `coding` | 13.15 | 0.97 | **9.1** | -4.2% vs pre-merge baseline |
-| `highest_quality` | 0.78 | 0.02 | **0** | Auto-bench 2026-05-03 | Qwen3-Coder-30B-A3B, expert offload, spec-decode |
+| tier | model | cold-load (s) | warm-first (s) | tok/s @ slot=1 | notes |
+|---|---|---:|---:|---:|---|
+| `fast`             | Qwen3.5 9B (dense + spec-decode)              |  0.7 | 0.61 | **20.5** | small, fully GPU-resident |
+| `versatile`        | Qwen3.6 35B-A3B MoE (expert offload + spec)   | 11.6 | 1.67 | **14.0** | default chat tier |
+| `coding`           | Qwen3-Coder 30B-A3B (expert offload + spec)   | 15.3 | 1.07 |  **9.3** | default coder |
+| `coding_80b`       | Qwen3-Coder-Next 80B-A3B (`/coder big`)       | ~30  | 2.66 |  **7.4** | bench via API `variant: "80b"` field |
+| `highest_quality`  | Qwen3-Next 80B-A3B Thinking                   | —    | —    |  blocked | needs ≥21 GB free; current 16 GB after non-stack apps closed isn't enough — see follow-up notes below |
+| `reasoning_max`    | OpenAI GPT-OSS-120B (Q4_K_M sharded ×2)       | —    | —    |  blocked | spawn fails: `invalid split file name: reasoning_max.gguf` — llama.cpp follows `<base>-NNNNN-of-MMMMM` for shard 2..M and the canonical symlink doesn't match the pattern; needs the spawn path to pass the resolved first-shard path |
 
 The cascade-driven KV→CPU spillover frees the equivalent of ~5 GB of
 VRAM at full ctx for `versatile` (3 slots, q4_0 KV), which keeps the
@@ -565,24 +564,42 @@ attention path on GPU in the partial-residency regime that previously
 forced a layer downscale. Cold-load latency is roughly stable —
 weights still page in from the warm OS cache in similar wall time.
 
-`coding_80b` is a variant of `coding` (selected via `/coder big`) and
-isn't bench-able as a standalone tier in `bench_tiers.py` today —
-follow-up work to add `--variant` support to the bench script.
+`coding_80b` doesn't have a `tier.coding_80b` model id in `/v1/models`
+— it's selected through the `coding` tier with `variant: "80b"` in the
+chat request body (or `/coder big` from the chat input). The bench
+script grew a `--variant` follow-up after this run; for now the row
+above came from a hand-rolled stream-counter against the same prompt.
 
-`highest_quality` (Qwen3-Next 80B-A3B Thinking, 43 GB GGUF) is now
-on disk — the bench picks it up automatically once the running
-backend is bounced via `pwsh .\LocalAIStack.ps1 -Stop -Start` (the
-in-process EMA observed-cost cache from prior loads needs to clear so
-the scheduler tries the YAML estimate first instead of an inflated
-historical value). Same applies to `reasoning_max`, `reasoning_xl`,
-and `frontier` once their downloads complete — the auto-bench Task
-Scheduler job from PR #174 picks them up on its next 6 h tick.
+#### Follow-ups blocked at this snapshot
+
+- **`reasoning_max` sharded-spawn bug.** llama.cpp errors with
+  `invalid split file name: reasoning_max.gguf` because shard 2..M
+  discovery walks `<basename>-NNNNN-of-MMMMM.gguf` literally — the
+  canonical `<tier>.gguf` symlink doesn't match that template, even
+  though it resolves to the proper first shard. Two fix paths: pass
+  the resolved target path to llama-server, or add a sibling-shard
+  symlink set in `data/models/` so the pattern walk finds shard 2.
+  Same bug will hit `frontier` and `reasoning_xl` once those pulls
+  finalise.
+- **`highest_quality` VRAM gate.** Scheduler reports `needing 20.6 GB`
+  even with `pinned/in-use=0.0 GB`, so the inflation is real cost
+  (weights + KV @ 8010 ctx + 0.6B draft + spec-decode overhead) not
+  a stale EMA. With ~16 GB GPU free after closing non-stack apps,
+  the gate refuses correctly. Either bump the YAML
+  `vram_estimate_gb` past today's 14.5, drop the spec-decode draft
+  for this tier, or run on a 32 GB+ card.
+- **VRAM scheduler accuracy.** A separate issue surfaced during this
+  run: pre-cleanup, the scheduler reported 14.6 GB needed for `fast`
+  (model is 5.3 GB Q4 + KV) because of an inflated in-memory
+  `observed_cost_gb` learned during an earlier orphan-llama-server
+  episode. Backend bounce + `kill-orphans` clears it.
 
 Reproduce with:
 
 ```powershell
-python scripts/bench_tiers.py --tiers versatile,fast,coding
-python scripts/bench_tiers.py --tiers versatile,fast,coding,highest_quality
+python scripts/bench_tiers.py --tiers fast,versatile,coding
+# coding_80b until --variant lands:
+python -c "import json,urllib.request,time; b={'model':'tier.coding','variant':'80b','stream':True,'max_tokens':220,'messages':[{'role':'user','content':'Count from 1 to 50, single comma+space separator, one line, no other text.'}]}; ..."
 ```
 
 ## Tools, RAG, memory
