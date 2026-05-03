@@ -245,11 +245,13 @@ tiers:
   # because ~25 GB of cold expert pages spill to NVMe via mmap (see
   # `requires_nvme_spillover: true`).
   #
-  # Quant: Unsloth Dynamic TQ1_0. 1-bit ternary (3 values per weight,
-  # packed; ~1.6 bpw effective). The "UD" line keeps attention,
-  # embedding, and output layers at much higher bpw inside the 1-bit
-  # quant — that's what makes ternary actually work on a reasoning
-  # workload. 150.2 GB on disk, single file (no sharding).
+  # Quant: Unsloth Dynamic IQ1_S. Importance-aware 1-bit (~1.6 bpw
+  # effective). The "UD" line keeps attention, embedding, and output
+  # layers at much higher bpw inside the 1-bit quant — that's what
+  # makes 1-bit actually work on a reasoning workload. 171.5 GB on
+  # disk across 4 shards (the resolver's parallel-shard pull from
+  # PR #185 streams all 4 concurrently, ~3× faster wall-clock than
+  # the equivalent single-file UD-TQ1_0 quant).
   #
   # Why it's opt-in:
   #   - Tokenizer is DeepSeek-V3-family — incompatible with the
