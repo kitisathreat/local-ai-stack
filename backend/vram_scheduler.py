@@ -230,10 +230,43 @@ class VRAMScheduler:
         except OSError as e:
             logger.warning("Failed to persist observed VRAM costs: %s", e)
 
-    def _update_observed(self, tier_id: str, measured_gb: float) -> float:
+    # Cap on how far an EMA observation is allowed to drift above the
+    # YAML-declared `vram_estimate_gb`. Without this, a single bad
+    # measurement taken during transient pressure (orphan llama-server
+    # holding GPU, browser tab opening a hardware-accelerated canvas,
+    # another tier mid-load) gets attributed to the loading tier and
+    # poisons the EMA — every subsequent acquire of that tier then
+    # uses the inflated value as the cost projection, producing false
+    # "Cannot fit" 503s even on an otherwise-empty card. 1.5× is
+    # generous enough to absorb legitimate quant/KV variation while
+    # still catching the orphan-attribution failure mode.
+    _OBSERVED_COST_INFLATION_CAP = 1.5
+
+    def _update_observed(
+        self, tier_id: str, measured_gb: float,
+        *, ceiling_gb: float | None = None,
+    ) -> float:
+        # Clamp the raw measurement to a sane multiple of the YAML
+        # estimate before feeding the EMA. We still emit a warning so
+        # the operator can see the pattern in logs (recurring clamp
+        # warnings → either the YAML estimate is too low for current
+        # quant/ctx, or there's a chronic orphan reaper).
+        capped = measured_gb
+        if ceiling_gb is not None and ceiling_gb > 0:
+            limit = ceiling_gb * self._OBSERVED_COST_INFLATION_CAP
+            if measured_gb > limit:
+                logger.warning(
+                    "Observed VRAM cost for tier %s clamped: %.2f GB > %.2f GB "
+                    "(=%.1f× yaml estimate %.2f GB). Likely cause: orphan "
+                    "llama-server / external GPU consumer attributed to this "
+                    "load. Skipping; YAML estimate retained.",
+                    tier_id, measured_gb, limit,
+                    self._OBSERVED_COST_INFLATION_CAP, ceiling_gb,
+                )
+                capped = limit
         prior = self._observed.get(tier_id)
         lr = self.vram.observed_costs.learning_rate
-        new_val = measured_gb if prior is None else (prior * (1 - lr) + measured_gb * lr)
+        new_val = capped if prior is None else (prior * (1 - lr) + capped * lr)
         self._observed[tier_id] = new_val
         self._persist_observed_costs()
         return new_val
@@ -462,6 +495,7 @@ class VRAMScheduler:
                     if measured > 0:
                         new_entry.observed_cost_gb = self._update_observed(
                             tier_id, measured,
+                            ceiling_gb=effective_tier.vram_estimate_gb,
                         )
                     async with self._lock:
                         new_entry.state = ModelState.RESIDENT
