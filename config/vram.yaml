@@ -17,6 +17,11 @@ eviction:
   pin_orchestrator: false               # orchestrator CAN be evicted while workers run
   pin_vision: true                      # vision tier is pinned — pre-spawned by the
                                         # launcher and never evicted
+  # Proactive idle eviction. Drop any non-pinned, idle (refcount==0)
+  # tier whose `last_used` is older than this, even with no VRAM
+  # pressure. Frees the GPU and forces a fresh observed-cost
+  # measurement on the next acquire. Set to 0 to disable.
+  idle_evict_after_sec: 1800            # 30 minutes
 
 # ── Multi-agent coordination ────────────────────────────────────────────────
 multi_agent:
@@ -33,7 +38,12 @@ multi_agent:
 # successful load, the scheduler reads delta via pynvml and caches the
 # observed cost. On next start, eviction math uses max(estimate, observed).
 observed_costs:
-  persist_path: /app/data/vram_observed.json
+  # persist_path was /app/data/vram_observed.json (Docker-era default),
+  # which silently never wrote on Windows-native — the EMA cache reset
+  # on every restart. The key is now omitted so the Pydantic default
+  # from backend/config.py::_default_observed_path applies; that respects
+  # LAI_DATA_DIR and falls back to <repo>/data/vram_observed.json. Set
+  # an explicit absolute path here only if you want a custom location.
   learning_rate: 0.1                    # EMA smoothing for observed values
 
 # ── Wait queue for concurrent requests beyond slot capacity ─────────────────

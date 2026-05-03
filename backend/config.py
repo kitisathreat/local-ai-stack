@@ -257,6 +257,15 @@ class EvictionPolicy(BaseModel):
     min_residency_sec: int = 30
     pin_orchestrator: bool = False
     pin_vision: bool = True
+    # Proactive idle eviction. The sweeper drops any non-pinned, idle
+    # (refcount == 0) tier whose `last_used` is older than this, even
+    # when there is no VRAM pressure. Frees the GPU for other workloads
+    # (other apps, headless tests, eventual second-user scenarios) and
+    # forces a fresh observed-cost measurement on the next acquire,
+    # which neutralises the "stale 18 GB observed clings forever in
+    # process memory" failure mode. Set to 0 to disable proactive
+    # eviction (legacy behaviour: only evict under VRAM pressure).
+    idle_evict_after_sec: int = 1800       # 30 min
 
 
 class VRAMMultiAgent(BaseModel):
@@ -264,8 +273,19 @@ class VRAMMultiAgent(BaseModel):
     synthesis_reload_timeout_sec: int = 60
 
 
+def _default_observed_path() -> str:
+    """Resolve ``data/vram_observed.json`` relative to the repo root,
+    honouring ``LAI_DATA_DIR`` when set. The previous hardcoded
+    ``/app/data/...`` default was a dead Docker-era path on Windows-
+    native, so the EMA observed-cost cache silently never persisted."""
+    import os as _os
+    env = _os.getenv("LAI_DATA_DIR")
+    base = Path(env) if env else (Path(__file__).resolve().parent.parent / "data")
+    return str(base / "vram_observed.json")
+
+
 class ObservedCosts(BaseModel):
-    persist_path: str = "/app/data/vram_observed.json"
+    persist_path: str = Field(default_factory=_default_observed_path)
     learning_rate: float = 0.1
 
 

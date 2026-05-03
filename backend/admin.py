@@ -371,6 +371,24 @@ async def vram_probe(_: dict = Depends(require_admin)):
         ]
     except Exception:
         orphans = []
+    # Eviction monitoring — surfaces whether the proactive idle-evict
+    # policy is firing. `recent` is a small ring of the last few
+    # evictions with timestamps + reason + freed-bytes estimate so an
+    # operator can confirm the 30-min idle threshold (or whatever's
+    # configured) is actually engaging without grepping logs.
+    evictions = {
+        "total": sched.evictions_total,
+        "by_reason": {
+            "idle": sched.evictions_idle,
+            "pressure": sched.evictions_pressure,
+            "make_room": sched.evictions_make_room,
+            "other": sched.evictions_total - (
+                sched.evictions_idle + sched.evictions_pressure + sched.evictions_make_room
+            ),
+        },
+        "idle_evict_after_sec": int(getattr(sched.vram.eviction, "idle_evict_after_sec", 0) or 0),
+        "recent": list(sched._eviction_log[-10:]),
+    }
     return {
         "total_vram_gb": total,
         "nvml_free_gb": round(actual_free, 3),
@@ -380,6 +398,9 @@ async def vram_probe(_: dict = Depends(require_admin)):
         "loaded": loaded_summary,
         "orphan_llama_server_pids": orphans,
         "headroom_gb": sched.vram.headroom_gb,
+        "evictions": evictions,
+        "observed_costs_persist_path": str(sched._observed_path),
+        "observed_costs_loaded": dict(getattr(sched, "_observed", {})),
     }
 
 
