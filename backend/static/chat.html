@@ -1535,15 +1535,59 @@
     const toolState = new Map();   // name → enabled (boolean)
     let toolsTaxonomy = [];        // [{tier, title, groups: [{group, title, subgroups: [{subgroup, title, tools}]}]}]
 
-    async function loadTools() {
+    // Surfaces a human-readable error inside the tools popover instead
+    // of leaving it visually empty when /tools fails. The previous
+    // behaviour ("silent return on !r.ok") looked identical to a real
+    // empty registry on the user's side, so the dropdown just looked
+    // broken on every host where /tools was 403'd or 500'd.
+    function renderToolsError(msg) {
+      toolsList.innerHTML =
+        '<div class="tool-row" style="padding-left:8px;color:var(--danger);'
+        + 'white-space:normal;line-height:1.4;">'
+        + escapeHtml(msg) + '</div>';
+    }
+
+    let _toolsRetryTimer = null;
+
+    async function loadTools(attempt = 0) {
       // Default every tool to OFF. Auto-enabling default-enabled tools
       // pushes the request body past llama-server's per-slot context
       // window once the registry has 200+ entries (28k+ tokens of
       // schemas alone). The 🔧 popover is the explicit opt-in surface;
       // the user toggles only what they need for that turn.
+      let r;
       try {
-        const r = await api('/tools');
-        if (!r.ok) return;
+        r = await api('/tools');
+      } catch (e) {
+        // Network-level failure (offline, DNS, CORS preflight reject).
+        // Schedule one retry — the chat UI's first paint can race the
+        // backend lifespan during a refresh-after-pull.
+        renderToolsError('Could not reach /tools: ' + String(e)
+          + (attempt < 2 ? ' — retrying…' : ''));
+        if (attempt < 2) {
+          clearTimeout(_toolsRetryTimer);
+          _toolsRetryTimer = setTimeout(() => loadTools(attempt + 1),
+            (attempt + 1) * 2000);
+        }
+        return;
+      }
+      if (!r.ok) {
+        // Most common cases: 403 from HostGate (CHAT_HOSTNAME mismatch)
+        // and 500 from a not-yet-initialised state.tools (lifespan
+        // race). Surface the status so the user can self-diagnose
+        // instead of staring at a blank popover.
+        let detail = '';
+        try { detail = (await r.text()).slice(0, 200); } catch (_) {}
+        renderToolsError(`Failed to load tools (${r.status}): ${detail}`
+          + (attempt < 2 ? ' — retrying…' : ''));
+        if (r.status >= 500 && attempt < 2) {
+          clearTimeout(_toolsRetryTimer);
+          _toolsRetryTimer = setTimeout(() => loadTools(attempt + 1),
+            (attempt + 1) * 2000);
+        }
+        return;
+      }
+      try {
         const j = await r.json();
         toolState.clear();
         (j.data || []).forEach(t => {
@@ -1565,7 +1609,9 @@
         } catch (_) {}
         updateToolsCount();
         renderTools();
-      } catch (_) {}
+      } catch (e) {
+        renderToolsError('Tool registry response was malformed: ' + String(e));
+      }
     }
 
     // Debounced PATCH to persist toggle state. Bounces rapid bulk-

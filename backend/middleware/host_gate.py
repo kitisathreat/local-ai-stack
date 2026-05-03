@@ -42,6 +42,7 @@ _ALWAYS_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/static/",
     "/resolved-models",
     "/vram",
+    "/tools",
     "/docs",
     "/openapi.json",
 )
