@@ -23,6 +23,16 @@ eviction:
   # measurement on the next acquire. Set to 0 to disable.
   idle_evict_after_sec: 1800            # 30 minutes
 
+  # Single-chat-tier cap. When true, acquiring a new chat tier evicts
+  # any other resident chat tier (refcount==0, non-pinned) immediately
+  # — no "try to fit both, fall back to evict" cycle. Trades cold-
+  # spawn latency on tier switches (~5-15 s off OS page cache) for
+  # predictable VRAM headroom. Pinned tiers (vision, embedding, the
+  # always-on RAG services) are never touched. Off by default; flip
+  # on for 24 GB cards where tier-coexistence is mostly aspirational
+  # anyway.
+  single_tier_cap: false
+
 # ── Multi-agent coordination ────────────────────────────────────────────────
 multi_agent:
   release_orchestrator_during_workers: true

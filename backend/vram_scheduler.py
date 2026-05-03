@@ -610,6 +610,35 @@ class VRAMScheduler:
             (tid for tid, t in self.tiers.items() if t is tier),
             None,
         )
+
+        # Single-chat-tier-cap (vram.eviction.single_tier_cap). When on,
+        # any resident chat tier with refcount==0 + non-pinned + ≠ self
+        # gets evicted before the fit check runs. Trades cold-spawn
+        # latency on tier switches for predictable VRAM headroom on
+        # 24 GB cards where coexistence is mostly aspirational.
+        # Effective only when the *incoming* tier is itself a chat tier
+        # — pinned/embedding/reranker acquires don't trigger the cap.
+        incoming_is_chat = (getattr(tier, "role", None) is None
+                             and not getattr(tier, "pinned", False))
+        if (getattr(self.vram.eviction, "single_tier_cap", False)
+                and incoming_is_chat):
+            now = time.time()
+            others = [
+                m for m in list(self.loaded.values())
+                if m.tier_id != tier_id
+                and m.state == ModelState.RESIDENT
+                and m.refcount == 0
+                and not m.pinned
+                and getattr(self.tiers.get(m.tier_id), "role", None) is None
+                and (now - m.last_used) >= self.vram.eviction.min_residency_sec
+            ]
+            for victim in others:
+                logger.info(
+                    "single_tier_cap: evicting %s to make exclusive room for %s",
+                    victim.tier_id, tier_id,
+                )
+                await self._unload(victim, reason="single_tier_cap")
+
         observed = self._observed.get(tier_id) if tier_id else None
         need = max(tier.vram_estimate_gb, observed or 0.0)
         headroom = self.vram.headroom_gb
