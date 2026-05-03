@@ -163,21 +163,30 @@ tiers:
   # higher peak quality on hard reasoning. No speculative draft because
   # GPT-OSS uses OpenAI's o200k_harmony tokenizer which is incompatible
   # with the Qwen3 family draft.
-  # NOTE: this tier is currently UNAVAILABLE on Windows-native builds.
-  # Every gpt-oss-120b GGUF on HF is sharded across 2+ files (the
-  # smallest Q4_K_M is 37.2 + 21.3 GB = 58.5 GB, larger than HF's 50 GB
-  # single-file limit). Our resolver can only pull a single file per
-  # tier today; sharded support is a separate follow-up. Keeping the
-  # entry here (commented `disabled`) so the YAML is self-documenting
-  # and so re-enabling is a one-line change once shard pull lands.
+  # gpt-oss-120b in Q4_K_M is the highest-quality 4-bit reasoning tier
+  # we can run on a 24 GB card (with -ot expert offload putting most of
+  # the 117 B parameters in CPU RAM). HF's 50 GB single-file limit
+  # forces every uploader to shard this — bartowski's release splits
+  # Q4_K_M into 37.2 + 21.3 GB across two files in a subdirectory.
+  # The resolver's sharded-GGUF pull (see _list_shard_companions in
+  # backend/model_resolver.py) handles this transparently: point at
+  # the first shard and it pulls every companion, lays them side-by-
+  # side in data/models/, and symlinks data/models/reasoning_max.gguf
+  # to shard 1 (llama-server walks the same directory for shards 2..M
+  # by the canonical -NNNNN-of-MMMMM.gguf naming).
   #
-  # Until then the resolver short-circuits this tier with a clear
-  # error instead of 404'ing the un-sharded filename in a tight retry
-  # loop.
+  # Why bartowski over alternatives:
+  #   - unsloth/gpt-oss-120b-GGUF: only F16 (60.9 GB single file) at
+  #     repo root — too big for VRAM + spillover budget.
+  #   - ggml-org/gpt-oss-120b-GGUF: native MXFP4 (~60 GB sharded).
+  #     llama.cpp b8992 has incomplete MXFP4 support — Q4_K_M is the
+  #     safer + better-tested 4-bit choice today.
+  #   - lmstudio-community/gpt-oss-120b-GGUF: MXFP4-only too.
+  # Q4_K_M is the canonical performant 4-bit (the same llama-server
+  # --hf-repo default), well-supported across versions, and lossless
+  # enough for the reasoning workload.
   reasoning_max:
     source: huggingface
-    disabled: true
-    disabled_reason: "Awaiting sharded-GGUF pull support — see follow-up issue"
     repo: "bartowski/openai_gpt-oss-120b-GGUF"
     file: "openai_gpt-oss-120b-Q4_K_M/openai_gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"
     tracking: latest

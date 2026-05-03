@@ -30,6 +30,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -354,6 +355,67 @@ def pull_missing_hf_files(
     target_root = _models_dir()
     token = os.getenv("HF_TOKEN") or None
 
+    # ── Sharded-GGUF support ─────────────────────────────────────────────
+    # llama.cpp loads sharded models by following the
+    # `<base>-NNNNN-of-MMMMM.gguf` naming convention: point it at the
+    # FIRST shard and it walks the same directory for shards 2..M. So
+    # to support sharded HF releases (e.g. gpt-oss-120b at 58.5 GB
+    # split into 2 files because of HF's 50 GB single-file limit) we
+    # need to:
+    #   1. detect that the resolved filename matches the shard pattern
+    #   2. enumerate every companion shard via the HF API
+    #   3. download all of them into target_root (preserving subdir
+    #      paths so the side-by-side discovery works)
+    #   4. symlink ONLY the first shard to <tier>.gguf — the rest are
+    #      found by their original filenames in the same directory
+    _SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+
+    def _list_shard_companions(repo: str, first_filename: str, revision: str) -> list[str]:
+        """Return every shard for the file group containing
+        ``first_filename`` (including ``first_filename`` itself), sorted
+        by shard index. When ``first_filename`` doesn't look sharded,
+        returns ``[first_filename]`` unchanged."""
+        # Subdirectory and base-name handled separately so the regex
+        # only has to match on the basename.
+        head, sep, base = first_filename.rpartition("/")
+        m = _SHARD_RE.match(base)
+        if not m:
+            return [first_filename]
+        prefix, _, total = m.group(1), m.group(2), m.group(3)
+        try:
+            from huggingface_hub import HfApi
+            info = HfApi().model_info(
+                repo, files_metadata=False, revision=revision or "main",
+            )
+            siblings = list(info.siblings or [])
+        except Exception as exc:
+            logger.warning(
+                "Could not enumerate shards for %s/%s: %s — falling back to single-file pull",
+                repo, first_filename, exc,
+            )
+            return [first_filename]
+        prefix_full = f"{head}/{prefix}" if head else prefix
+        pat = re.compile(
+            rf"^{re.escape(prefix_full)}-(\d{{5}})-of-{total}\.gguf$"
+        )
+        shards = []
+        for s in siblings:
+            n = getattr(s, "rfilename", "")
+            if pat.match(n):
+                shards.append(n)
+        # Strict sanity: the count must match the `MMMMM` in the names.
+        # If a shard is missing on HF (mid-upload), fall back to the
+        # single first-shard pull so we at least don't crash here —
+        # llama.cpp will fail more loudly if shards are actually missing.
+        shards.sort()
+        if len(shards) != int(total):
+            logger.warning(
+                "Shard count mismatch for %s/%s: found %d shards, manifest says %s. "
+                "Pulling what's listed; llama-server will report any actual gap.",
+                repo, prefix_full, len(shards), total,
+            )
+        return shards or [first_filename]
+
     def _download_with_retry(**kwargs) -> Path:
         """hf_hub_download wrapper with hf_transfer fallback + N retries.
 
@@ -442,14 +504,32 @@ def pull_missing_hf_files(
         revision = r.revision or "main"
         try:
             if need_gguf:
-                downloaded = _download_with_retry(
-                    repo_id=r.repo,
-                    filename=r.filename,
-                    revision=revision,
-                    local_dir=str(target_root),
-                    token=token,
-                )
-                _link_or_copy(downloaded, target_gguf)
+                # Sharded GGUF? Pull every companion shard into the
+                # same directory so llama.cpp finds them by walking
+                # `<base>-NNNNN-of-MMMMM.gguf`. The symlink to
+                # data/models/<tier>.gguf points at the FIRST shard;
+                # llama-server resolves it, then looks side-by-side
+                # for the rest.
+                shards = _list_shard_companions(r.repo, r.filename, revision)
+                if len(shards) > 1:
+                    logger.info(
+                        "Pulling %d shards for tier %s: %s + %d more",
+                        len(shards), tier, shards[0], len(shards) - 1,
+                    )
+                first_shard_path: Path | None = None
+                for shard_filename in shards:
+                    downloaded = _download_with_retry(
+                        repo_id=r.repo,
+                        filename=shard_filename,
+                        revision=revision,
+                        local_dir=str(target_root),
+                        token=token,
+                    )
+                    if shard_filename == shards[0]:
+                        first_shard_path = downloaded
+                # Symlink the canonical <tier>.gguf to the first shard
+                # (or to the only file when not sharded — same code path).
+                _link_or_copy(first_shard_path, target_gguf)
                 r.gguf_path = str(target_gguf)
             if need_mmproj:
                 downloaded = Path(hf_hub_download(
