@@ -260,6 +260,14 @@ tiers:
                                          # every attention layer GPU-resident,
                                          # spills the 110 GB of routed experts
                                          # to system RAM.
+    # Skip llama-server's "empty run" warmup. With Gated DeltaNet hybrid
+    # attention + 60 layers + kv_offload, the warmup graph compiles to
+    # 575 splits and OOMs the scratch buffers before any real request
+    # runs. --no-warmup defers the compile to the first chat turn —
+    # one user pays a longer first-token latency, the tier actually
+    # spawns. Pre-#211, this tier failed to bench at all.
+    extra_args:
+      - "--no-warmup"
 
   # ── Frontier — DeepSeek V3.2-Speciale at UD-TQ1_0 ───────────────────────────
   # The "aspirational" tier — V3.2-Speciale-class reasoning that's in
@@ -297,10 +305,13 @@ tiers:
     backend: llama_cpp
     port: 8016
     model_tag: "deepseek-v3.2"
-    context_window: 65536                # Stay below the q4_0 KV-cache budget
-                                         # at parallel=1; native context is much
-                                         # higher but irrelevant when each token
-                                         # already costs disk I/O.
+    # Was 65 536. Halved to 32 768 because the larger ctx blew up the
+    # llama.cpp compute graph during tensor load (warning: "tensor
+    # overrides to CPU are used with mmap enabled" → exit). 32k is
+    # plenty for a tier whose use case is "burn one slow request on a
+    # hard reasoning prompt"; long-doc work belongs on `reasoning_xl`
+    # or `highest_quality` anyway.
+    context_window: 32768
     think_default: true                  # Reasoning tier — thinking on by default.
     think_supported: true
     preserve_thinking: true
@@ -331,7 +342,7 @@ tiers:
     # KV to CPU RAM. Frontier already pays NVMe-spillover latency on
     # cold expert pages, so adding CPU↔GPU traffic for KV is a
     # marginal cost on a tier that's "5–10 t/s aspirational" anyway.
-    # Frees ~1-2 GB of VRAM at 65k q4_0 — meaningful when we're trying
+    # Frees ~1-2 GB of VRAM at 32k q4_0 — meaningful when we're trying
     # to fit attention + spec scratch within the GPU envelope.
     kv_offload: true
     override_tensors:
@@ -339,6 +350,13 @@ tiers:
                                          # attention stays on GPU, experts
                                          # spill to RAM and (when RAM is full)
                                          # NVMe via OS page cache.
+    # Skip llama-server's "empty-run" warmup. The compute graph for a
+    # 1.6-bpw 671 B MoE with kv_offload + expert offload has too many
+    # splits to warm up cleanly; defer compilation to the first real
+    # request. First-token latency is already long with NVMe spillover,
+    # so the extra cost is hidden in the noise.
+    extra_args:
+      - "--no-warmup"
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
   versatile:
