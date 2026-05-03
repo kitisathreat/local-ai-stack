@@ -301,47 +301,68 @@ tiers:
     category: "Reasoning"
     requires_nvme_spillover: true
     name: "Frontier (DeepSeek V3.2-Speciale)"
-    description: "DeepSeek V3.2 at 1.6 bpw, pure-CPU + NVMe-paged. GPT-5-class reasoning at ~0.5–2 t/s. Opt-in only — fire-and-forget for one hard question, not interactive."
+    description: "DeepSeek V3.2 at 1.6 bpw — currently blocked on this hardware. See operator note below."
+    # ── BLOCKED on this hardware ─────────────────────────────────────
+    # frontier doesn't load on this 24 GB GPU + 125 GB RAM box with
+    # llama.cpp b8992. Three configs were tried, all crash during
+    # tensor load:
+    #   1. GPU-hybrid + `-ot ".ffn_.*_exps.=CPU"` — same warning then
+    #      exit during tensor load.
+    #   2. Pure CPU (n_gpu_layers: 0, no -ot) — crashes during
+    #      metadata parse around `expert_gating_func` line.
+    #   3. GPU-attention + `--cpu-moe` (this config) — same exit
+    #      pattern as (1); --cpu-moe internally generates the same
+    #      "tensor overrides to CPU" path.
+    #
+    # Root cause: 171 GB sharded GGUF can't fit (125 GB RAM + 8 GB
+    # pagefile = 133 GB commit limit). With mmap, llama.cpp's tensor-
+    # load enumerator pre-allocates more than the OS pager can satisfy.
+    # Without mmap, llama.cpp tries to commit all 171 GB upfront and
+    # fails the OS commit-charge check.
+    #
+    # Two paths to unblock:
+    #   A) Grow Windows pagefile to 100+ GB (System Properties →
+    #      Performance → Advanced → Virtual Memory → Custom). Then
+    #      switch this config to use_mmap: false. The model will load
+    #      backed by pagefile + RAM; throughput will be ~0.5 tok/s
+    #      with NVMe paging, but it'll RUN.
+    #   B) Hardware: add RAM to 192 GB+, then revert to the
+    #      GPU-attention + `--cpu-moe` config and expect ~5–10 tok/s.
+    #
+    # The config below is option (3) — the cleanest "try again after
+    # hardware change" config. It crashes today but is the right
+    # shape for the moment more RAM/pagefile lands.
     backend: llama_cpp
     port: 8016
     model_tag: "deepseek-v3.2"
     # ── Frontier-only config ─────────────────────────────────────────
-    # Frontier is the only tier that runs PURE CPU. Three reasons the
-    # GPU-offload + -ot pattern used by every other heavy tier breaks
-    # here:
-    #   1. 171 GB sharded GGUF on a 125 GB-RAM box. mmap'd pages
-    #      that the GPU registry tries to enumerate at load time blow
-    #      past committable memory before tensor-load completes.
-    #   2. The 1.6-bpw IQ1_S quant uses tensor types that interact
-    #      poorly with `-ot` overrides on this llama.cpp build —
-    #      llama-server logs "tensor overrides to CPU are used with
-    #      mmap enabled" then exits during tensor load, before
-    #      warmup gets a chance.
-    #   3. Even with KV offloaded, the GPU has to track every
-    #      attention layer's tensor metadata, which on this card-size
-    #      pushes the DeepSeek-V3 layer count + expert metadata over
-    #      the GPU's allocation budget.
+    # Two earlier configs both crashed during model load:
+    #   - GPU-hybrid w/ `-ot ".ffn_.*_exps.=CPU"`: warned about
+    #     "tensor overrides to CPU are used with mmap enabled" then
+    #     exited during tensor-load. -ot regex routing seems unstable
+    #     on this build for IQ1_S quant.
+    #   - Pure-CPU with `n_gpu_layers: 0` + no -ot: also crashed,
+    #     this time during metadata parse (after `expert_gating_func`
+    #     line). Build supports DeepSeek-V3.2 in principle (b8992 is
+    #     post-V3.2-release) but the IQ1_S quant + the pure-CPU code
+    #     path together hit some issue.
     #
-    # The fix: drop GPU entirely. mmap the model from NVMe, run pure
-    # CPU. With ~256 experts at top-k=2, each token's working set is
-    # ~5–10 GB of hot pages (active experts + attention) — plenty of
-    # room in 125 GB RAM, and cold expert pages stream from NVMe via
-    # the OS pager. NO `-ot` (no GPU/CPU split needed when there's
-    # no GPU), NO `kv_offload` (no GPU KV to offload), NO
-    # `flash_attention` (FA needs GPU layers).
+    # This config uses the modern `--cpu-moe` flag instead of the
+    # `-ot` regex. `--cpu-moe` keeps every MoE expert tensor in RAM
+    # while attention/embedding/output stay on GPU — same intent as
+    # the regex but different code path inside llama.cpp. Combined
+    # with `n_gpu_layers: -1` for the non-expert tensors, this gives
+    # us:
+    #   - GPU: attention + embed + output + KV cache (~5–8 GB)
+    #   - RAM: ~110 GB of expert tensors mmap'd from NVMe
+    #   - NVMe: pages back the experts when RAM is tight (~46 GB
+    #          of cold experts page in/out via the OS pager)
     #
-    # Realistic throughput: 0.5–2 tok/s. Slow but functional. Cold
-    # load on the first request: ~30–60 s as the OS warm-pages the
-    # attention/embedding tensors.
-    #
-    # If the operator later upgrades to 192 GB+ RAM, the GPU-hybrid
-    # config can come back — just revert this comment block to the
-    # pre-#213 version.
-    context_window: 32768                # 32k is plenty for one-shot
-                                         # reasoning prompts. Larger ctx
-                                         # makes the KV (which lives in
-                                         # RAM here) eat into the budget
-                                         # available for hot expert pages.
+    # Realistic throughput: 5–10 tok/s when the active experts are
+    # already in RAM page cache, dropping to 1–3 tok/s on cold expert
+    # pages. Use case is "burn one slow request on a hard reasoning
+    # prompt"; not interactive.
+    context_window: 32768
     think_default: true
     think_supported: true
     preserve_thinking: true
@@ -352,38 +373,35 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    # No GPU residency at all. The scheduler's accounting still uses
-    # this number for "fits on card" math, but the actual GPU use is
-    # ~0 GB once spawned. Set to 0.5 GB to keep the scheduler from
-    # treating frontier as costless (which would let it coexist with
-    # any other chat tier and confuse the LRU). Real cost is system
-    # RAM, which the scheduler doesn't currently track per-tier.
-    vram_estimate_gb: 0.5
+    # ~5–8 GB GPU residency (attention + embed + output + KV q4_0
+    # at 32k ctx). Use 7 to give some headroom for the activation
+    # scratch buffers without lying to the scheduler. Bumped from
+    # the 0.5 placeholder used in the pure-CPU config attempt.
+    vram_estimate_gb: 7
     parallel_slots: 1
     # NO speculative decoding: DeepSeek-V3 tokenizer ≠ Qwen3-0.6B.
-    # NO GPU offload — pure CPU.
-    n_gpu_layers: 0
-    flash_attention: false               # FA requires GPU layers.
-    use_mmap: true                       # Critical — the OS pager is
-                                         # what makes the model usable
-                                         # at all. Cold expert pages
-                                         # stream from NVMe on demand.
-    use_mlock: false                     # Don't pin — let cold experts
-                                         # page back out under memory
-                                         # pressure from other tiers.
-    cache_type_k: q4_0                   # KV in RAM (no GPU). q4_0
-    cache_type_v: q4_0                   # halves the KV RAM footprint
-                                         # vs q8_0; 32k ctx q4_0 is
-                                         # ~1 GB and frees that much
-                                         # for hot expert pages.
-    # NO override_tensors. Without GPU layers there's no GPU/CPU split
-    # to express; everything is on CPU by default.
-    override_tensors: []
-    # NO kv_offload (no GPU KV to offload from).
-    # --no-warmup is still defensive: the empty-run warmup at this
-    # scale touches a lot of cold pages. Skipping it lets the first
-    # real request do the page-in lazily.
+    n_gpu_layers: -1                     # Non-expert tensors to GPU;
+                                         # experts handled by --cpu-moe
+                                         # below.
+    flash_attention: true                # GPU has attention layers,
+                                         # FA stays correct.
+    use_mmap: true                       # NVMe spillover backbone.
+    use_mlock: false
+    cache_type_k: q4_0                   # KV on GPU at 32k q4_0 ≈ 1 GB.
+    cache_type_v: q4_0
+    override_tensors: []                 # No -ot — using --cpu-moe instead.
+    # KV stays on GPU (no kv_offload). With only attention layers on
+    # GPU, KV is small enough at 32k q4_0 (~1 GB) to fit alongside
+    # them.
+    # extra_args:
+    #   --cpu-moe   → keep all MoE expert tensors on CPU (the
+    #                 official llama.cpp flag for MoE expert
+    #                 offload; cleaner than the -ot regex pattern
+    #                 and works on this build where -ot did not).
+    #   --no-warmup → skip the empty-run warmup; defer graph
+    #                 compilation to the first real request.
     extra_args:
+      - "--cpu-moe"
       - "--no-warmup"
 
   # ── Versatile — Qwen3.6 35B-A3B MoE, default + orchestrator ─────────────────
