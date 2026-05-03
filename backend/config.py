@@ -178,7 +178,7 @@ class TierConfig(BaseModel):
         for field in (
             "model_tag", "gguf_path", "vram_estimate_gb",
             "draft_model_tag", "draft_gguf_path", "draft_max", "draft_min",
-            "context_window", "override_tensors",
+            "context_window", "rope_scaling", "override_tensors",
         ):
             value = getattr(v, field, None)
             if value is not None and value != [] and value != {}:
@@ -199,6 +199,9 @@ class TierVariant(BaseModel):
     plumbing.
     """
 
+    # Display label used by the chat UI's variant sub-selector. Falls
+    # back to model_tag / id when None.
+    name: str | None = None
     source: str | None = None
     model_tag: str | None = None
     gguf_path: str | None = None
@@ -208,6 +211,12 @@ class TierVariant(BaseModel):
     draft_max: int | None = None
     draft_min: int | None = None
     context_window: int | None = None
+    # YaRN / rope-scaling override. When the variant changes
+    # context_window, the rope scaling factor must move with it
+    # (factor = ctx / orig_ctx). Without this field a long-context
+    # variant would use the parent tier's factor and produce garbled
+    # output past the parent's ctx.
+    rope_scaling: RopeScaling | None = None
     override_tensors: list[str] = Field(default_factory=list)
 
 
@@ -285,6 +294,12 @@ class EvictionPolicy(BaseModel):
     # process memory" failure mode. Set to 0 to disable proactive
     # eviction (legacy behaviour: only evict under VRAM pressure).
     idle_evict_after_sec: int = 1800       # 30 min
+
+    # Single-chat-tier cap. When true, acquiring a new chat tier
+    # evicts any other resident chat tier (refcount==0, non-pinned)
+    # immediately. Pinned tiers (vision, embedding, reranker) are
+    # always preserved. See vram.yaml for the operator-facing prose.
+    single_tier_cap: bool = False
 
 
 class VRAMMultiAgent(BaseModel):

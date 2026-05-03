@@ -519,7 +519,12 @@ async def list_models():
         for vid, vcfg in (tier.variants or {}).items():
             variants.append(TierVariantInfo(
                 id=vid,
-                name=getattr(vcfg, "model_tag", None) or vid,
+                # Prefer the explicit display label; fall back to model_tag
+                # then to the variant id. Lets versatile show
+                # "Standard" / "Long context (131k)" instead of model_tag.
+                name=(getattr(vcfg, "name", None)
+                      or getattr(vcfg, "model_tag", None)
+                      or vid),
                 vram_estimate_gb=getattr(vcfg, "vram_estimate_gb", None),
                 available=_variant_available(name, vid),
             ))
