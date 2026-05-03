@@ -208,6 +208,16 @@ tools:
     default_enabled: false
     api_key_required: false
 
+  proton_vpn:
+    file: tools/proton_vpn.py
+    group: desktop
+    subgroup: system
+    title: "ProtonVPN Control — Status / Reconnect / Rotate IP"
+    description: "Inspect the ProtonVPN service + adapter, restart it to recover from stuck local DNS proxies, or cycle the adapter to acquire a new exit server (bypass IP rate limits + geo blocks). Auto-used by the watchdog when DNS goes stale."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
   kicad:
     file: tools/kicad.py
     group: desktop
