@@ -60,6 +60,7 @@ from .schemas import (
     MessageOut,
     ModelsListResponse,
     TierInfo,
+    TierVariantInfo,
     UpdateUserRequest,
 )
 from .diagnostics import run_startup_diagnostics
@@ -379,8 +380,32 @@ async def list_models():
     keeps the GUI's tier dropdown clean.
     """
     tiers = state.config.models.tiers
-    return ModelsListResponse(data=[
-        TierInfo(
+
+    # Variant on-disk check: a variant is `available` only when its
+    # gguf_path resolves to an actual file. Lets the UI grey-out
+    # variants that haven't been pulled yet (e.g. coding_80b before
+    # the user runs -CheckUpdates).
+    def _variant_available(tier_name: str, variant_id: str) -> bool:
+        try:
+            t = tiers[tier_name].resolve_variant(variant_id)
+            p = getattr(t, "gguf_path", None)
+            return bool(p and Path(p).exists())
+        except Exception:
+            return False
+
+    out: list[TierInfo] = []
+    for name, tier in tiers.items():
+        if tier.role == "embedding":
+            continue
+        variants: list[TierVariantInfo] = []
+        for vid, vcfg in (tier.variants or {}).items():
+            variants.append(TierVariantInfo(
+                id=vid,
+                name=getattr(vcfg, "model_tag", None) or vid,
+                vram_estimate_gb=getattr(vcfg, "vram_estimate_gb", None),
+                available=_variant_available(name, vid),
+            ))
+        out.append(TierInfo(
             id=f"tier.{name}",
             name=tier.name,
             description=tier.description,
@@ -388,10 +413,10 @@ async def list_models():
             context_window=tier.context_window,
             think_supported=tier.think_supported,
             vram_estimate_gb=tier.vram_estimate_gb,
-        )
-        for name, tier in tiers.items()
-        if tier.role != "embedding"
-    ])
+            variants=variants,
+            default_variant=tier.default_variant if variants else None,
+        ))
+    return ModelsListResponse(data=out)
 
 
 @app.get("/vram")

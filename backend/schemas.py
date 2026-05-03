@@ -87,6 +87,13 @@ class ChatRequest(BaseModel):
     # Extensions beyond the OpenAI shape
     think: bool | None = None              # explicit user override for reasoning
     multi_agent: bool | None = None        # explicit user override for orchestration
+    # Per-request variant override for tiers that declare `variants:` in
+    # models.yaml (e.g. coding 30b vs coding 80b). The chat UI's variant
+    # sub-selector populates this; the router applies it to the routing
+    # decision and the VRAM scheduler spawns the variant-specific GGUF.
+    # Silently ignored when the resolved tier doesn't have the named
+    # variant.
+    variant: str | None = None
     multi_agent_options: MultiAgentOptions | None = None  # per-chat tweaks
     user_id: str | None = None             # injected by auth middleware
 
@@ -122,6 +129,17 @@ class ChatRequest(BaseModel):
     plan_text: str | None = None
 
 
+class TierVariantInfo(BaseModel):
+    """One per-tier variant. Surfaced by GET /v1/models so the chat UI
+    can render a sub-selector when a tier has multiple swap-in models
+    (e.g. coding 30B vs coding 80B)."""
+
+    id: str                                # "30b" | "80b" | ...
+    name: str | None = None                # display label (falls back to id)
+    vram_estimate_gb: float | None = None
+    available: bool = True                 # gguf on disk + resolver entry exists
+
+
 class TierInfo(BaseModel):
     """Returned by GET /v1/models — one entry per tier."""
 
@@ -132,6 +150,11 @@ class TierInfo(BaseModel):
     context_window: int
     think_supported: bool
     vram_estimate_gb: float
+    # Variants for tiers like coding (30B vs 80B). Empty for tiers
+    # with no variant choice. `default_variant` is the one used when
+    # the request doesn't specify one (e.g. plain `tier.coding`).
+    variants: list[TierVariantInfo] = Field(default_factory=list)
+    default_variant: str | None = None
 
 
 class ModelsListResponse(BaseModel):
