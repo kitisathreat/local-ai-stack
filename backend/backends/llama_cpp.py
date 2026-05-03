@@ -113,6 +113,34 @@ def _draft_flag_names() -> tuple[str, str]:
     return ("--draft-max", "--draft-min")
 
 
+def _resolve_for_llama(gguf_path: str) -> str:
+    """Resolve symlinks before passing to llama-server.
+
+    For sharded GGUFs (`<base>-NNNNN-of-MMMMM.gguf`), llama.cpp walks
+    the directory of the first shard to discover shards 2..M by
+    matching the filename pattern. The canonical `<tier>.gguf` symlink
+    we maintain in `data/models/` doesn't match that pattern, so
+    passing the symlink path as-is makes llama.cpp error with
+    `invalid split file name: <tier>.gguf`. Resolving to the symlink
+    target (which IS named `<base>-00001-of-MMMMM.gguf`) makes the
+    pattern walk succeed for all sharded tiers (reasoning_max,
+    reasoning_xl, frontier, coding_80b when sharded). Single-file
+    GGUFs are unaffected — the resolution is a no-op when the path
+    isn't a symlink.
+    """
+    try:
+        # Path.resolve() follows symlinks transitively; on Windows this
+        # works for both NTFS symlinks and reparse points.
+        from pathlib import Path
+        target = Path(gguf_path).resolve(strict=False)
+        return str(target)
+    except (OSError, RuntimeError):
+        # If resolution fails (race, missing file), fall through to the
+        # original path so llama-server's own error surfacing kicks in
+        # with the actual filesystem error (rather than silent breakage).
+        return gguf_path
+
+
 def build_argv(tier: TierConfig) -> list[str]:
     """Produce the llama-server argv for `tier`."""
     if not tier.gguf_path:
@@ -126,7 +154,7 @@ def build_argv(tier: TierConfig) -> list[str]:
         llama_server_binary(),
         "--host", "127.0.0.1",
         "--port", str(tier.port),
-        "-m", tier.gguf_path,
+        "-m", _resolve_for_llama(tier.gguf_path),
         "--ctx-size", str(tier.context_window),
         "--parallel", str(max(1, tier.parallel_slots)),
         "-ngl", str(tier.n_gpu_layers),
@@ -193,7 +221,7 @@ def build_argv(tier: TierConfig) -> list[str]:
             # the server before it even loads weights.
             max_flag, min_flag = _draft_flag_names()
             argv += [
-                "-md", tier.draft_gguf_path,
+                "-md", _resolve_for_llama(tier.draft_gguf_path),
                 "-ngld", str(tier.draft_n_gpu_layers),
                 max_flag, str(tier.draft_max),
                 min_flag, str(tier.draft_min),
