@@ -534,6 +534,7 @@ async def list_models():
             variants=variants,
             default_variant=tier.default_variant if variants else None,
             category=getattr(tier, "category", "") or "",
+            requires_nvme_spillover=bool(getattr(tier, "requires_nvme_spillover", False)),
         ))
     return ModelsListResponse(data=out)
 

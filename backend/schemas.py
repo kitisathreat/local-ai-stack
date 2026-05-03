@@ -159,6 +159,11 @@ class TierInfo(BaseModel):
     # means top-level (no group). Multiple tiers sharing the same
     # category render under one <optgroup>.
     category: str = ""
+    # True when the tier's working set is expected to exceed system
+    # RAM and therefore relies on NVMe-backed mmap spillover. UI uses
+    # this to badge the tier so operators see the disk-throughput
+    # requirement before they pick it.
+    requires_nvme_spillover: bool = False
 
 
 class ModelsListResponse(BaseModel):
