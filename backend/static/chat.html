@@ -116,6 +116,10 @@
     .composer-tools {
       display: flex; align-items: center; gap: 4px;
       padding: 0 6px 6px 6px;
+      /* Anchor for #tools-popover (position: absolute). Without this
+         the popover escapes to <body> and renders off-screen / behind
+         other UI — symptom: "no tools dropdown" on desktop AND mobile. */
+      position: relative;
     }
     .icon-btn {
       background: transparent; color: var(--muted);
