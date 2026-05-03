@@ -84,14 +84,49 @@ $env:HF_HUB_DISABLE_PROGRESS_BARS = '1'
 $activePids = @{}
 
 function Has-CompletedTier([string]$tier) {
+    # Two checks. Either alone isn't sufficient:
+    #   (a) The symlink at data/models/<tier>.gguf must exist and
+    #       resolve to a real file.
+    #   (b) No `.incomplete` blobs may remain in the HF download cache
+    #       for any companion shard. With sharded GGUFs (e.g. reasoning_xl
+    #       has a tiny 11 MB manifest shard 1 that finishes instantly +
+    #       three 40 GB bulk shards), a symlink-only check would
+    #       incorrectly mark the tier "done" while shards 2..N are still
+    #       streaming. Pre-PR-#185 resolvers also created the symlink
+    #       eagerly; old half-finished pulls show up here.
     $link = Join-Path $RepoRoot "data\models\$tier.gguf"
-    if (-not (Test-Path $link)) { return $false }
-    try {
-        $resolved = (Get-Item $link).ResolveLinkTarget($true)
-        return $resolved -and (Test-Path $resolved.FullName)
-    } catch {
-        return ((Get-Item $link).Length -gt 100MB)
+    $linkOk = $false
+    if (Test-Path $link) {
+        try {
+            $resolved = (Get-Item $link).ResolveLinkTarget($true)
+            $linkOk = ($resolved -and (Test-Path $resolved.FullName))
+        } catch {
+            $linkOk = ((Get-Item $link).Length -gt 100MB)
+        }
     }
+    if (-not $linkOk) { return $false }
+
+    # Walk the HF cache for any in-flight blob whose name suggests
+    # it's a shard of this tier's GGUF. Different tiers store under
+    # different subdirectories (UD-IQ2_M/, UD-IQ1_S/,
+    # openai_gpt-oss-120b-Q4_K_M/, etc.) so we just walk recursively
+    # under the cache and check basenames for the model identifier.
+    $cacheRoot = Join-Path $RepoRoot 'data\models\.cache\huggingface\download'
+    if (-not (Test-Path $cacheRoot)) { return $true }
+    # Map tier → a basename fragment unique to that tier's GGUFs.
+    # Anything more complex would re-implement the resolver's manifest
+    # logic; this is good enough for the watchdog's purpose.
+    $needle = switch ($tier) {
+        'reasoning_max' { 'openai_gpt-oss-120b' }
+        'reasoning_xl'  { 'Qwen3.5-397B-A17B' }
+        'frontier'      { 'DeepSeek-V3.2' }
+        'highest_quality' { 'Qwen3-Next-80B' }
+        'coding_80b'    { 'Qwen3-Coder-Next' }
+        default         { $tier }
+    }
+    $stillPending = @(Get-ChildItem $cacheRoot -Recurse -Filter '*.incomplete' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match [regex]::Escape($needle) })
+    return ($stillPending.Count -eq 0)
 }
 
 function Test-XethubDns {
