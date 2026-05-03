@@ -236,20 +236,21 @@ async def lifespan(app: FastAPI):
     # alive on their configured ports — we adopt those by port rather
     # than killing them. Anything else (a previous backend's chat tier
     # subprocess that was orphaned by a crash or refresh) is fair game.
+    def _preserve_ports() -> set[int]:
+        ports: set[int] = set()
+        for t in state.config.models.tiers.values():
+            if getattr(t, "pinned", False) and getattr(t, "port", None):
+                ports.add(int(t.port))
+        # Reranker port — not always in models.yaml but spawned by the launcher.
+        ports.add(8091)
+        return ports
+
     try:
-        preserve_ports: set[int] = set()
-        for tier in state.config.models.tiers.values():
-            if getattr(tier, "pinned", False) and getattr(tier, "port", None):
-                preserve_ports.add(int(tier.port))
-        # Reranker/embedding launcher ports — covered by the pinned check
-        # above when configured, but include explicit fallbacks for the
-        # default reranker port the launcher uses.
-        preserve_ports.add(8091)
-        killed = await state.llama_cpp.kill_orphans(preserve_ports=preserve_ports)
-        if killed:
+        startup_killed = await state.llama_cpp.kill_orphans(preserve_ports=_preserve_ports())
+        if startup_killed:
             logger.warning(
                 "Reaped %d orphan llama-server process(es) at startup: %s",
-                len(killed), killed,
+                len(startup_killed), startup_killed,
             )
     except Exception as exc:
         logger.warning("Orphan sweep at startup failed: %s", exc)
@@ -273,6 +274,15 @@ async def lifespan(app: FastAPI):
         config=state.config,
         loaders={"llama_cpp": _llama_load},
         unloaders={"llama_cpp": _llama_unload},
+    )
+    # Wire the periodic orphan-reap callback into the sweeper so the
+    # scheduler self-heals from leaked llama-server processes without
+    # the operator having to hit POST /admin/vram/kill-orphans manually.
+    # Runs every ~30s by default (orphan_reap_every_n_polls=6 *
+    # poll_interval_sec=5). Cheap on Windows: tasklist + netstat take
+    # ~10ms total. preserve_ports excludes the launcher's pinned tiers.
+    state.scheduler.set_orphan_reaper(
+        lambda: state.llama_cpp.kill_orphans(preserve_ports=_preserve_ports())
     )
     await state.scheduler.start()
 

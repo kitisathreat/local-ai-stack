@@ -255,6 +255,21 @@ def resolve(
 
     resolved: dict[str, Resolved] = {}
     for tier, spec in sources.items():
+        # Skip tiers explicitly marked `disabled: true` in
+        # model-sources.yaml. Useful for tiers we know we can't pull yet
+        # (e.g. sharded GGUFs we don't support stitching for) so we
+        # don't burn 500 retries 404'ing the wrong filename. Surfaced
+        # as a clear `error` in the resolved record so the operator
+        # sees why the tier is unavailable.
+        if (spec or {}).get("disabled"):
+            reason = (spec or {}).get("disabled_reason") or "marked disabled"
+            resolved[tier] = Resolved(
+                source=spec.get("source", "huggingface"),
+                origin="disabled",
+                repo=spec.get("repo", ""),
+                error=f"DISABLED: {reason}",
+            )
+            continue
         resolved[tier] = _resolve_tier(tier, spec or {}, offline=offline)
 
     # Predict the on-disk path for each tier even before pull.
@@ -398,6 +413,11 @@ def pull_missing_hf_files(
 
     for tier, r in result.resolved.items():
         if r.source != "huggingface" or not r.repo or not r.filename:
+            continue
+        # Defence-in-depth: even if a disabled tier slipped through
+        # `resolve()` (e.g. cached pre-disable), don't try to pull it.
+        if (r.error or "").startswith("DISABLED:"):
+            logger.info("Skipping pull for disabled tier %s: %s", tier, r.error)
             continue
 
         target_gguf = target_root / f"{tier}.gguf"

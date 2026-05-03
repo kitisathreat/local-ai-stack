@@ -68,7 +68,7 @@ if (-not $pwsh) {
 
 $action = New-ScheduledTaskAction `
     -Execute $pwsh.Source `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$pollScript`" -LogQuiet" `
+    -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$pollScript`" -LogQuiet" `
     -WorkingDirectory $RepoRoot
 
 # Repeat indefinitely starting 30s from now. Using -Once + -RepetitionInterval

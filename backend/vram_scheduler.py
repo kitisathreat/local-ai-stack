@@ -188,6 +188,22 @@ class VRAMScheduler:
         self.evictions_make_room = 0
         self._eviction_log: list[dict] = []
         self._eviction_log_max = 50
+        # Periodic orphan-reaper hook. backend/main.py wires this to
+        # LlamaCppClient.kill_orphans(preserve_ports=...) at lifespan
+        # startup. The sweeper invokes it every `orphan_reap_every_n_polls`
+        # poll cycles (cheap on Windows: tasklist + netstat take ~10ms).
+        self._orphan_reaper: Callable[[], Awaitable[list[int]]] | None = None
+        self._orphan_reap_every_n_polls = 6   # ~30s at default poll_interval=5
+        self._sweeper_tick = 0
+        self.orphans_reaped_total = 0
+        self._orphan_reap_log: list[dict] = []
+        self._orphan_reap_log_max = 20
+
+    def set_orphan_reaper(self, fn: Callable[[], Awaitable[list[int]]]) -> None:
+        """Wire the periodic orphan-reaper. Pass an async callable that
+        returns the list of PIDs killed (empty when none). Called every
+        ~30 s by the sweeper. Safe no-op when unset."""
+        self._orphan_reaper = fn
 
     def _gate(self, tier_id: str) -> asyncio.Condition:
         g = self._gates.get(tier_id)
@@ -714,6 +730,35 @@ class VRAMScheduler:
                 logger.warning("Sweeper error: %s", e)
 
     async def _sweep_once(self) -> None:
+        self._sweeper_tick += 1
+
+        # Pass 0 — periodic orphan reap. Untracked llama-server processes
+        # (left from a backend crash, an unclean refresh, or a manual
+        # `taskkill` of the wrong PID) can hold GPU memory the scheduler
+        # can never see in its registry, breaking the NVML cross-check
+        # and producing false "Cannot fit" errors. Reap them on a slow
+        # cadence so steady-state operation self-heals without anyone
+        # hitting POST /admin/vram/kill-orphans manually.
+        if (
+            self._orphan_reaper is not None
+            and self._sweeper_tick % self._orphan_reap_every_n_polls == 0
+        ):
+            try:
+                killed = await self._orphan_reaper()
+            except Exception as exc:
+                logger.warning("Periodic orphan reap raised: %s", exc)
+                killed = []
+            if killed:
+                self.orphans_reaped_total += len(killed)
+                entry = {"ts": time.time(), "pids": list(killed)}
+                self._orphan_reap_log.append(entry)
+                if len(self._orphan_reap_log) > self._orphan_reap_log_max:
+                    self._orphan_reap_log = self._orphan_reap_log[-self._orphan_reap_log_max:]
+                logger.warning(
+                    "Periodic orphan-reap killed %d llama-server PID(s): %s",
+                    len(killed), killed,
+                )
+
         # Pass 1 — proactive idle eviction. Drop any non-pinned, idle
         # tier whose last_used is older than `idle_evict_after_sec`
         # regardless of VRAM pressure. Frees the GPU for other workloads

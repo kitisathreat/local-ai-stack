@@ -371,6 +371,13 @@ async def vram_probe(_: dict = Depends(require_admin)):
         ]
     except Exception:
         orphans = []
+    # NOTE: every value in this response is a LIVE read — no caching.
+    # NVML is polled per request, scheduler state is read under-lock
+    # per request, the orphan PID list is computed via fresh tasklist +
+    # netstat per request. If you ever introduce caching here, gate it
+    # on "last live poll older than vram.poll_interval_sec" so we never
+    # serve a stale value to monitoring/dashboards.
+
     # Eviction monitoring — surfaces whether the proactive idle-evict
     # policy is firing. `recent` is a small ring of the last few
     # evictions with timestamps + reason + freed-bytes estimate so an
@@ -401,6 +408,12 @@ async def vram_probe(_: dict = Depends(require_admin)):
         "evictions": evictions,
         "observed_costs_persist_path": str(sched._observed_path),
         "observed_costs_loaded": dict(getattr(sched, "_observed", {})),
+        "orphan_reaper": {
+            "enabled": sched._orphan_reaper is not None,
+            "tick_interval_sec": sched.vram.poll_interval_sec * sched._orphan_reap_every_n_polls,
+            "total_killed": sched.orphans_reaped_total,
+            "recent": list(sched._orphan_reap_log[-10:]),
+        },
     }
 
 
