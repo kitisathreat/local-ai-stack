@@ -437,3 +437,72 @@ async def test_acquire_forwards_live_user_text_to_loader(cfg):
     assert captured["live_user_text"] == "prove the chain rule for partial derivatives"
     assert captured["free_vram_gb"] is not None  # also forwarded
     assert captured["variant"] is None           # default for non-variant tier
+
+
+def _make_clamp_test_scheduler(persist_path: Path) -> VRAMScheduler:
+    """Build a scheduler that persists observed costs to a caller-given
+    path, so a clamping unit-test doesn't depend on pytest's tmp_path
+    fixture (the AppData tmp dir is sometimes locked down on Windows)."""
+    cfg = AppConfig.load(config_dir=ROOT / "config")
+    cfg.vram.observed_costs.persist_path = str(persist_path)
+    cfg.vram.eviction.min_residency_sec = 0
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+
+    async def loader(tier):
+        probe._loaded_costs[tier.model_tag] = tier.vram_estimate_gb
+
+    async def unloader(tier):
+        probe._loaded_costs.pop(tier.model_tag, None)
+
+    return VRAMScheduler(
+        config=cfg,
+        loaders={"llama_cpp": loader},
+        unloaders={"llama_cpp": unloader},
+        probe=probe,
+    )
+
+
+def test_update_observed_clamps_inflated_measurement(tmp_path_factory):
+    """A measurement vastly larger than the YAML estimate (e.g. an
+    orphan llama-server's VRAM got attributed to this load) is clamped
+    to 1.5× the estimate so the EMA doesn't poison subsequent fits."""
+    # Use repo-relative tmp to avoid the tmp_path-fixture lockdown on
+    # Windows where AppData\Local\Temp\pytest-of-* is sometimes ACL'd.
+    p = ROOT / "data" / ".pytest-tmp" / "vram_observed_clamp.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        p.unlink()
+    sched = _make_clamp_test_scheduler(p)
+
+    # YAML estimate for fast is 7.5 GB. Cap therefore = 11.25 GB.
+    inflated = 18.0   # would happen if a 10 GB orphan was wrongly attributed
+    new_val = sched._update_observed("fast", inflated, ceiling_gb=7.5)
+    assert new_val <= 7.5 * 1.5 + 1e-6, (
+        f"observed cost not clamped: got {new_val:.2f} GB, expected ≤ 11.25"
+    )
+    # And a sane measurement passes through untouched (no prior; LR=1).
+    p2 = ROOT / "data" / ".pytest-tmp" / "vram_observed_clamp_2.json"
+    if p2.exists():
+        p2.unlink()
+    sched2 = _make_clamp_test_scheduler(p2)
+    new_val = sched2._update_observed("fast", 8.0, ceiling_gb=7.5)
+    assert abs(new_val - 8.0) < 1e-6, (
+        f"sane measurement got modified: 8.0 -> {new_val}"
+    )
+
+
+def test_update_observed_no_ceiling_unchanged_behaviour():
+    """When called without a ceiling (legacy path), the EMA update
+    behaves exactly as it did before this patch — no clamping."""
+    p = ROOT / "data" / ".pytest-tmp" / "vram_observed_legacy.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        p.unlink()
+    sched = _make_clamp_test_scheduler(p)
+    # Simulate a series of measurements without ceiling; EMA should
+    # converge toward the input.
+    for _ in range(20):
+        sched._update_observed("fast", 14.0)
+    # With first-write at 14.0 and subsequent identical inputs at 14.0,
+    # EMA stays at 14.0.
+    assert abs(sched._observed["fast"] - 14.0) < 0.5
