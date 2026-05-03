@@ -1099,8 +1099,40 @@
           toolState.set(t.name, false);
         });
         toolsTaxonomy = j.groups || [];
+        // Restore the user's persisted enabled-tool set from server-side
+        // preferences, so toggles survive page reloads / new chats /
+        // sign-out + sign-in. Falls through silently when not signed in.
+        try {
+          const pr = await api('/me/preferences');
+          if (pr.ok) {
+            const data = await pr.json();
+            const enabled = (data.preferences && data.preferences.enabled_tools) || [];
+            enabled.forEach(name => {
+              if (toolState.has(name)) toolState.set(name, true);
+            });
+          }
+        } catch (_) {}
+        updateToolsCount();
         renderTools();
       } catch (_) {}
+    }
+
+    // Debounced PATCH to persist toggle state. Bounces rapid bulk-
+    // toggles (group/tier headers flip many at once) into one round
+    // trip rather than hammering the API.
+    let _prefSaveTimer = null;
+    function persistToolPrefs() {
+      clearTimeout(_prefSaveTimer);
+      _prefSaveTimer = setTimeout(async () => {
+        const enabled = [];
+        toolState.forEach((on, name) => { if (on) enabled.push(name); });
+        try {
+          await api('/me/preferences', {
+            method: 'PATCH',
+            body: JSON.stringify({ enabled_tools: enabled }),
+          });
+        } catch (_) {}
+      }, 400);
     }
 
     // True if any descendant tool name passes the current search filter.
@@ -1122,6 +1154,7 @@
       names.forEach(n => toolState.set(n, enabled));
       updateToolsCount();
       renderTools();   // Re-render so master toggles update.
+      persistToolPrefs();
     }
 
     function makeHeader(cls, title, toolNames, level) {
@@ -1209,6 +1242,7 @@
               cb.addEventListener('change', () => {
                 toolState.set(name, cb.checked);
                 renderTools();
+                persistToolPrefs();
               });
               subBody.appendChild(row);
             });

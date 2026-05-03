@@ -50,7 +50,12 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL DEFAULT '',
     is_admin      INTEGER NOT NULL DEFAULT 0,
     created_at    REAL NOT NULL,
-    last_login_at REAL
+    last_login_at REAL,
+    -- JSON blob of per-user UI preferences. Schema is intentionally
+    -- loose (read/written as opaque JSON dict) so adding a new client
+    -- preference doesn't require a migration. Currently used for
+    -- {enabled_tools: [...], think_default: bool, ...}.
+    preferences   TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -196,6 +201,10 @@ async def init_db() -> None:
         )
         await _migrate_add_column(
             c, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0",
+        )
+        # Per-user UI preferences blob (tool toggles, future settings).
+        await _migrate_add_column(
+            c, "users", "preferences", "TEXT NOT NULL DEFAULT '{}'",
         )
         await c.execute("DROP TABLE IF EXISTS magic_links")
         # Safe to create the username index now — the column exists
