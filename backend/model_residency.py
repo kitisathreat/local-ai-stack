@@ -86,15 +86,23 @@ class ResidencyPlan:
     use_mlock: bool                      # pin mapped pages in RAM
     reason: str                          # short human-readable justification
     projected_vram_gb: float             # estimated VRAM cost at this offload ratio
+    # Cascade outputs — only populated when the layer-offload plan
+    # alone wasn't enough to fit. See `_tighten_for_fit`.
+    kv_offload: bool = False             # llama-server --no-kv-offload (KV → CPU RAM)
+    context_window: int | None = None    # override for tier.context_window when shrunk
 
     def to_backend_options(self) -> dict[str, Any]:
         """Spawn-time argv contributions consumed by
         ``backends/llama_cpp.py`` when launching a per-tier llama-server."""
-        return {
+        opts: dict[str, Any] = {
             "n_gpu_layers": self.num_gpu_layers,
             "use_mmap": self.use_mmap,
             "use_mlock": self.use_mlock,
+            "kv_offload": self.kv_offload,
         }
+        if self.context_window is not None:
+            opts["context_window"] = self.context_window
+        return opts
 
 
 # ── Signals ─────────────────────────────────────────────────────────────────
@@ -142,6 +150,131 @@ class ResidencyPolicy:
     # trades RAM residency for eliminated page faults.
     mlock_full_mode: bool = True
     mlock_partial_mode: bool = False
+    # Fitting cascade — applied AFTER the layer-offload decision when
+    # the resulting plan still doesn't fit free VRAM.
+    enable_kv_offload: bool = True
+    enable_ctx_shrink: bool = True
+    min_context_window: int = 4096
+
+
+# Per-element bytes for the supported KV cache quantizations. q4/q5/q8
+# include a small per-block scale + zero-point so they're slightly
+# heavier than the raw type bits / 8 would suggest.
+_KV_BYTES_PER_ELEM = {
+    "q4_0": 0.625, "q4_1": 0.75, "q5_0": 0.75, "q5_1": 0.875,
+    "q8_0": 1.125, "f16": 2.0, "f32": 4.0, "bf16": 2.0,
+}
+
+
+def _kv_per_token_gb(tier: TierConfig) -> float:
+    """Rough VRAM-per-token-of-KV-cache estimate, intentionally a small
+    overestimate for plan-cascade ordering. Capped by `_projected_kv_gb`
+    against the tier's reported vram_estimate so hybrid-attention models
+    (where most layers don't carry KV) don't get a wildly wrong figure."""
+    bytes_k = _KV_BYTES_PER_ELEM.get((tier.cache_type_k or "f16").lower(), 2.0)
+    bytes_v = _KV_BYTES_PER_ELEM.get((tier.cache_type_v or "f16").lower(), 2.0)
+    layers = _layer_hint(tier)
+    # Generic dense Qwen3-class shape — 32 attn heads × 128 head_dim.
+    # Hybrid Qwen3-Next would be much smaller; the cap below corrects.
+    elements_per_layer = 32 * 128
+    bytes_per_token = layers * elements_per_layer * (bytes_k + bytes_v)
+    return bytes_per_token / (1024 ** 3)
+
+
+def _projected_kv_gb(tier: TierConfig, ctx: int) -> float:
+    """Estimate VRAM held by the KV cache at `ctx` tokens, capped by the
+    tier's reported full-load vram_estimate.
+
+    Why the cap: the dense-model heuristic in `_kv_per_token_gb`
+    assumes every layer carries KV, which over-counts hybrid-attention
+    families (Qwen3-Next has ~25% full-attn layers, the rest are GDN
+    / Mamba which don't allocate KV). The YAML's vram_estimate at
+    native context already encodes the real shape; treating it as a
+    ceiling for KV-at-native-ctx prevents the cascade from making a
+    wrong "won't fit" call on those models.
+    """
+    naive = ctx * _kv_per_token_gb(tier) * max(1, tier.parallel_slots)
+    native = tier.context_window or 0
+    if native <= 0 or tier.vram_estimate_gb <= 0:
+        return naive
+    # At native ctx, assume KV is at most ~80% of the tier's reported
+    # vram_estimate (the rest is weights + activations + embeddings +
+    # overhead). Scale linearly with ctx from that anchor.
+    ceiling_at_native = tier.vram_estimate_gb * 0.8
+    scaled = ceiling_at_native * (ctx / native)
+    return min(naive, scaled)
+
+
+def _tighten_for_fit(
+    plan: ResidencyPlan,
+    tier: TierConfig,
+    free_vram_gb: float,
+    pol: ResidencyPolicy,
+) -> ResidencyPlan:
+    """Apply the cascade: KV→CPU first, ctx shrink last.
+
+    The user policy is "shrink ctx by offloading as much as possible to
+    system RAM without degrading performance, then shrink overall ctx".
+    Layer offload is already done by the caller (it's the lowest-impact
+    step on throughput for MoE / partial-attention models). KV→CPU is
+    next: a measurable but tolerable hit to attention bandwidth that
+    typically frees several GB. Only when that's still not enough do we
+    shrink the context window — and we shrink in halving steps so we
+    don't gratuitously cut the user's working memory in half when 30%
+    would have done.
+    """
+    ctx = plan.context_window or tier.context_window
+    layer_vram = plan.projected_vram_gb
+    kv_vram = _projected_kv_gb(tier, ctx)
+    total = layer_vram + kv_vram
+
+    # Already fits with everything on GPU at full ctx? Done.
+    if total <= free_vram_gb:
+        plan.projected_vram_gb = total
+        return plan
+
+    reasons: list[str] = [plan.reason] if plan.reason else []
+
+    # Step 2: KV → CPU.
+    if pol.enable_kv_offload:
+        plan.kv_offload = True
+        kv_vram = 0.0
+        reasons.append("kv→cpu")
+        total = layer_vram + kv_vram
+        if total <= free_vram_gb:
+            plan.projected_vram_gb = total
+            plan.reason = "+".join(reasons)
+            return plan
+
+    # Step 3: shrink ctx in halving steps until it fits.
+    if pol.enable_ctx_shrink:
+        candidate = ctx
+        while candidate > pol.min_context_window:
+            candidate = max(pol.min_context_window, candidate // 2)
+            kv_vram = (
+                0.0 if plan.kv_offload
+                else _projected_kv_gb(tier, candidate)
+            )
+            if layer_vram + kv_vram <= free_vram_gb:
+                plan.context_window = candidate
+                plan.projected_vram_gb = layer_vram + kv_vram
+                reasons.append(f"ctx→{candidate}")
+                plan.reason = "+".join(reasons)
+                return plan
+            if candidate <= pol.min_context_window:
+                break
+        # Fell out at the floor — record the smallest ctx and live with it.
+        plan.context_window = pol.min_context_window
+        plan.projected_vram_gb = (
+            layer_vram + (
+                0.0 if plan.kv_offload
+                else _projected_kv_gb(tier, pol.min_context_window)
+            )
+        )
+        reasons.append(f"ctx→{pol.min_context_window}(floor)")
+
+    plan.reason = "+".join(reasons) if reasons else plan.reason
+    return plan
 
 
 def plan_residency(
@@ -169,42 +302,50 @@ def plan_residency(
 
     # Caller override wins — but we still compute a sane layer count.
     if user_preference is not None:
-        return _plan_for_mode(tier, user_preference, total, cost, pol,
+        plan = _plan_for_mode(tier, user_preference, total, cost, pol,
                               reason="user-pref")
+        return _tighten_for_fit(plan, tier, free_vram_gb, pol)
 
     # If there's plenty of room and the user's turn looks involved, give
     # the whole model the GPU.
     complexity = _complexity_score(live_user_text)
     fits_full = free_vram_gb >= cost * pol.full_headroom_multiplier
     if fits_full and complexity >= 0.5:
-        return _plan_for_mode(tier, ResidencyMode.FULL, total, cost, pol,
+        plan = _plan_for_mode(tier, ResidencyMode.FULL, total, cost, pol,
                               reason="headroom-ok+complex")
-    if fits_full and tier.pinned:
+    elif fits_full and tier.pinned:
         # Pinned tiers (e.g. vision on llama.cpp, which can't unload
         # without a restart) shouldn't be partially offloaded on a whim —
         # if the card fits them, keep them whole.
-        return _plan_for_mode(tier, ResidencyMode.FULL, total, cost, pol,
+        plan = _plan_for_mode(tier, ResidencyMode.FULL, total, cost, pol,
                               reason="headroom-ok+pinned")
-    if fits_full:
+    elif fits_full:
         # Fits, but the turn looks trivial — shave off a bit to leave VRAM
         # for other tiers to share the card without eviction.
         ratio = max(pol.partial_min_ratio,
                     1.0 - pol.low_complexity_savings)
-        return _custom_plan(tier, ratio, total, cost, pol,
+        plan = _custom_plan(tier, ratio, total, cost, pol,
                             reason="headroom-ok+trivial")
-
-    # Tight: pick the offload ratio that projects under free_vram.
-    if cost <= 0 or free_vram_gb <= 0:
-        return _plan_for_mode(tier, ResidencyMode.MINIMAL, total, cost, pol,
+    elif cost <= 0 or free_vram_gb <= 0:
+        plan = _plan_for_mode(tier, ResidencyMode.MINIMAL, total, cost, pol,
                               reason="unknown-cost")
-    ratio = max(pol.minimal_ratio, min(1.0, free_vram_gb / cost))
-    if ratio < pol.partial_min_ratio:
-        return _plan_for_mode(tier, ResidencyMode.MINIMAL, total, cost, pol,
-                              reason="pressure-high")
-    if complexity < 0.3:
-        ratio = max(pol.partial_min_ratio, ratio - pol.low_complexity_savings)
-    return _custom_plan(tier, ratio, total, cost, pol,
-                        reason="pressure-partial")
+    else:
+        # Tight: pick the offload ratio that projects under free_vram.
+        ratio = max(pol.minimal_ratio, min(1.0, free_vram_gb / cost))
+        if ratio < pol.partial_min_ratio:
+            plan = _plan_for_mode(tier, ResidencyMode.MINIMAL, total, cost, pol,
+                                  reason="pressure-high")
+        else:
+            if complexity < 0.3:
+                ratio = max(pol.partial_min_ratio,
+                            ratio - pol.low_complexity_savings)
+            plan = _custom_plan(tier, ratio, total, cost, pol,
+                                reason="pressure-partial")
+
+    # Final cascade: KV→CPU first, then ctx-shrink. The layer-offload
+    # decision above is the cheapest VRAM lever for MoE / partial-attn
+    # models; the cascade here covers what's left when it isn't enough.
+    return _tighten_for_fit(plan, tier, free_vram_gb, pol)
 
 
 def _plan_for_mode(

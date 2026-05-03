@@ -91,6 +91,12 @@ class TierConfig(BaseModel):
     use_mmap: bool = True
     use_mlock: bool = False
     spawn_timeout_sec: int = 180
+    # When true, llama-server is launched with --no-kv-offload, keeping
+    # the entire KV cache in CPU RAM. Costs throughput (CPU↔GPU traffic
+    # in attention) but frees a chunk of VRAM proportional to ctx-size.
+    # The residency planner toggles this automatically as a fitting
+    # cascade step before resorting to shrinking context_window.
+    kv_offload: bool = False
 
     # ── Speculative decoding ───────────────────────────────────────────
     # When `draft_gguf_path` is set at runtime (resolved from
@@ -305,6 +311,18 @@ class ResidencyPolicyConfig(BaseModel):
     low_complexity_savings: float = 0.15
     mlock_full_mode: bool = True
     mlock_partial_mode: bool = False
+    # Fitting cascade — applied after the layer-offload decision when
+    # the resulting plan still doesn't fit free VRAM. Order:
+    #   1. shrink GPU layers (existing PARTIAL/MINIMAL behaviour)
+    #   2. flip --no-kv-offload (KV cache → CPU RAM)
+    #   3. shrink context_window in half-steps until it fits or hits min
+    # Both steps 2 and 3 are gated by these knobs so an operator can opt
+    # out of either (e.g. if their RAM bandwidth makes KV-on-CPU too slow
+    # in their workload, set enable_kv_offload=false to skip straight to
+    # ctx shrink).
+    enable_kv_offload: bool = True
+    enable_ctx_shrink: bool = True
+    min_context_window: int = 4096
 
 
 class VRAMConfig(BaseModel):

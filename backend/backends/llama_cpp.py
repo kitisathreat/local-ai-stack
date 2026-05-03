@@ -153,6 +153,12 @@ def build_argv(tier: TierConfig) -> list[str]:
         argv.append("--mlock")
     if not tier.use_mmap:
         argv.append("--no-mmap")
+    # When the residency cascade chose to spill the KV cache to system
+    # RAM (set via tier.kv_offload after plan_residency tightens for fit),
+    # llama-server's --no-kv-offload flag keeps the cache off the GPU.
+    # Frees several GB at long contexts; costs attention bandwidth.
+    if getattr(tier, "kv_offload", False):
+        argv.append("--no-kv-offload")
     if tier.rope_scaling and tier.rope_scaling.factor and tier.rope_scaling.factor != 1.0:
         argv += ["--rope-scaling", tier.rope_scaling.type]
         argv += ["--rope-scale", str(tier.rope_scaling.factor)]
@@ -446,16 +452,22 @@ class LlamaCppClient:
                 )
                 return time.monotonic() - t0
 
-            # Residency planner — gated by LAI_RESIDENCY_PLANNER env flag
-            # for safe rollout. When enabled and free_vram_gb is provided,
-            # compute a per-spawn layer-count + mmap/mlock plan instead
-            # of using the YAML-hardcoded values.
-            if (
-                os.getenv("LAI_RESIDENCY_PLANNER") == "1"
-                and free_vram_gb is not None
-            ):
+            # Residency planner — fitting cascade: layer offload → KV-on-CPU
+            # → ctx shrink. Gated by `vram.residency.enable` in YAML; the
+            # legacy LAI_RESIDENCY_PLANNER env var still force-enables the
+            # planner so existing rollouts keep working until the YAML
+            # default propagates.
+            cfg = None
+            try:
                 from ..config import get_config
                 cfg = get_config()
+            except Exception:
+                cfg = None
+            planner_on = (
+                (cfg is not None and getattr(cfg.vram.residency, "enable", False))
+                or os.getenv("LAI_RESIDENCY_PLANNER") == "1"
+            )
+            if planner_on and free_vram_gb is not None and cfg is not None:
                 policy = ResidencyPolicy(
                     full_headroom_multiplier=cfg.vram.residency.full_headroom_multiplier,
                     partial_min_ratio=cfg.vram.residency.partial_min_ratio,
@@ -463,6 +475,9 @@ class LlamaCppClient:
                     low_complexity_savings=cfg.vram.residency.low_complexity_savings,
                     mlock_full_mode=cfg.vram.residency.mlock_full_mode,
                     mlock_partial_mode=cfg.vram.residency.mlock_partial_mode,
+                    enable_kv_offload=cfg.vram.residency.enable_kv_offload,
+                    enable_ctx_shrink=cfg.vram.residency.enable_ctx_shrink,
+                    min_context_window=cfg.vram.residency.min_context_window,
                 )
                 plan = plan_residency(
                     tier,
@@ -470,12 +485,17 @@ class LlamaCppClient:
                     live_user_text=live_user_text,
                     policy=policy,
                 )
-                # Apply the plan to a tier copy (don't mutate the registry singleton)
+                # Apply the plan to a tier copy (don't mutate the registry singleton).
+                # to_backend_options() already returns kv_offload + ctx override
+                # when the cascade flipped them.
                 tier = tier.model_copy(update=plan.to_backend_options())
                 logger.info(
-                    "Residency plan for %s: mode=%s layers=%d/%d reason=%s",
+                    "Residency plan for %s: mode=%s layers=%d/%d ctx=%d "
+                    "kv_offload=%s reason=%s",
                     tier.name, plan.mode.value,
-                    plan.num_gpu_layers, plan.total_layers, plan.reason,
+                    plan.num_gpu_layers, plan.total_layers,
+                    plan.context_window or tier.context_window,
+                    plan.kv_offload, plan.reason,
                 )
 
             argv = build_argv(tier)
