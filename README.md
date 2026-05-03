@@ -561,12 +561,18 @@ attention path on GPU in the partial-residency regime that previously
 forced a layer downscale. Cold-load latency is roughly stable —
 weights still page in from the warm OS cache in similar wall time.
 
-`highest_quality` (Qwen3-Next 80B-A3B Thinking, ~50 GB GGUF) and
-`coding_80b` (Qwen3-Coder-Next 80B, ~50 GB GGUF) bench numbers will
-be added once the resolver pull completes; the resolver auto-resumes
-from the partial blob in `data/models/.cache/huggingface/download/`
-across CDN drops, so an interrupted multi-hour pull continues
-where it left off on the next `-Start`.
+`coding_80b` is a variant of `coding` (selected via `/coder big`) and
+isn't bench-able as a standalone tier in `bench_tiers.py` today —
+follow-up work to add `--variant` support to the bench script.
+
+`highest_quality` (Qwen3-Next 80B-A3B Thinking, 43 GB GGUF) is now
+on disk — the bench picks it up automatically once the running
+backend is bounced via `pwsh .\LocalAIStack.ps1 -Stop -Start` (the
+in-process EMA observed-cost cache from prior loads needs to clear so
+the scheduler tries the YAML estimate first instead of an inflated
+historical value). Same applies to `reasoning_max`, `reasoning_xl`,
+and `frontier` once their downloads complete — the auto-bench Task
+Scheduler job from PR #174 picks them up on its next 6 h tick.
 
 Reproduce with:
 
