@@ -197,6 +197,153 @@ async def test_release_temporarily_allows_eviction(cfg):
         assert "fast" in sched.loaded
 
 
+# ── Idle / cross-tier eviction ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_idle_eviction_unloads_after_threshold(cfg):
+    """A tier idle past `idle_eviction_sec` is unloaded by the sweeper
+    even when there's no VRAM pressure."""
+    cfg.vram.eviction.idle_eviction_sec = 1
+    cfg.vram.eviction.cross_tier_eviction_messages = 0
+    cfg.vram.eviction.min_residency_sec = 0
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("fast"):
+        pass
+    assert "fast" in sched.loaded
+    assert sched.loaded["fast"].refcount == 0
+
+    # Force the LoadedModel to look 5s old, then sweep.
+    sched.loaded["fast"].last_used -= 5
+    await sched._sweep_once()
+    assert "fast" not in sched.loaded
+
+
+@pytest.mark.asyncio
+async def test_idle_eviction_skips_active_refcount(cfg):
+    """A tier with refcount>0 is never idle-evicted."""
+    cfg.vram.eviction.idle_eviction_sec = 1
+    cfg.vram.eviction.min_residency_sec = 0
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold():
+        async with sched.reserve("fast"):
+            started.set()
+            await release.wait()
+
+    holder = asyncio.create_task(hold())
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    # Pretend it's been idle for ages — sweeper must NOT evict because refcount=1.
+    sched.loaded["fast"].last_used -= 999
+    await sched._sweep_once()
+    assert "fast" in sched.loaded
+
+    release.set()
+    await holder
+
+
+@pytest.mark.asyncio
+async def test_idle_eviction_disabled_when_zero(cfg):
+    """idle_eviction_sec=0 disables idle eviction (legacy behavior)."""
+    cfg.vram.eviction.idle_eviction_sec = 0
+    cfg.vram.eviction.cross_tier_eviction_messages = 0
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("fast"):
+        pass
+    sched.loaded["fast"].last_used -= 99999
+    await sched._sweep_once()
+    assert "fast" in sched.loaded   # still resident
+
+
+@pytest.mark.asyncio
+async def test_cross_tier_eviction_after_n_other_acquires(cfg):
+    """A tier is evicted when N other-tier acquires happen since it was
+    last used, even within the idle window."""
+    cfg.vram.eviction.idle_eviction_sec = 0   # disable idle path so we test cross-tier alone
+    cfg.vram.eviction.cross_tier_eviction_messages = 3
+    cfg.vram.eviction.min_residency_sec = 0
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("fast"):
+        pass
+    assert "fast" in sched.loaded
+    assert sched._other_tier_acquires["fast"] == 0
+
+    # Acquire `versatile` 3 times; counter on `fast` should hit 3.
+    for _ in range(3):
+        async with sched.reserve("versatile"):
+            pass
+    assert sched._other_tier_acquires["fast"] == 3
+
+    await sched._sweep_once()
+    assert "fast" not in sched.loaded
+
+
+@pytest.mark.asyncio
+async def test_cross_tier_counter_resets_on_self_acquire(cfg):
+    """Re-acquiring the tier resets its own cross-tier counter to 0."""
+    cfg.vram.eviction.idle_eviction_sec = 0
+    cfg.vram.eviction.cross_tier_eviction_messages = 5
+    cfg.vram.eviction.min_residency_sec = 0
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("fast"):
+        pass
+    for _ in range(3):
+        async with sched.reserve("versatile"):
+            pass
+    assert sched._other_tier_acquires["fast"] == 3
+
+    # Touching `fast` again clears its counter.
+    async with sched.reserve("fast"):
+        pass
+    assert sched._other_tier_acquires["fast"] == 0
+
+
+@pytest.mark.asyncio
+async def test_min_residency_blocks_idle_eviction(cfg):
+    """Anti-thrash: a model that just loaded isn't idle-evicted even
+    when idle_eviction_sec has elapsed."""
+    cfg.vram.eviction.min_residency_sec = 30
+    cfg.vram.eviction.idle_eviction_sec = 1
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("fast"):
+        pass
+    # last_used is "now" — sweeper should NOT evict because age < 30s.
+    await sched._sweep_once()
+    assert "fast" in sched.loaded
+
+
+@pytest.mark.asyncio
+async def test_status_includes_cross_tier_counter(cfg):
+    """The /vram status endpoint surfaces other_tier_acquires per tier."""
+    cfg.vram.eviction.min_residency_sec = 0
+    probe = FakeProbe(total_gb=24.0, loaded_costs={})
+    sched = make_scheduler(cfg, probe)
+
+    async with sched.reserve("fast"):
+        pass
+    async with sched.reserve("versatile"):
+        pass
+
+    snap = await sched.status()
+    by_id = {m["tier_id"]: m for m in snap["loaded"]}
+    assert by_id["fast"]["other_tier_acquires"] == 1
+    assert by_id["versatile"]["other_tier_acquires"] == 0
+
+
 # ── Slot cap + wait queue ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio

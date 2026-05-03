@@ -1646,25 +1646,17 @@ def httpx_module():
 
 
 # ── Tier pre-warm ───────────────────────────────────────────────────────
-# Hot-load the everyday chat tiers on user login / page connect so the
-# first message doesn't pay the 5-30 s cold-spawn cost. Hooked into
-# /auth/login (fresh login) and exposed as POST /api/warm so the chat UI
-# can call it on page-mount and visibility-change too (existing sessions
-# don't fire /auth/login). Idempotent — fast no-op when already loaded.
-
-# Default chat tier to pre-warm on user connect. Versatile is the
-# orchestrator + default tier and covers the dominant first-message
-# path. We tried warming both `versatile` + `fast` together — even
-# sequentially, even with vision dropped from pre-spawn — and the
-# observed-cost EMA + transient cold-spawn peaks cause the 24 GB
-# card's scheduler to evict versatile to make room for fast. Net:
-# only one chat tier stays resident at a time on this hardware.
-# Versatile alone is the right pick: fast cold-spawns in ~5–7 s on
-# first multi-agent dispatch (worst case), and that's a smaller wait
-# than evicting+reloading versatile on every alternation. Operators
-# with more VRAM headroom can override per-request via POST /api/warm
-# with `{"tiers": ["versatile", "fast"]}`.
-_DEFAULT_WARM_TIERS = ("versatile",)
+# Pre-warm is OPT-IN: on a 24 GB card, even the "lightweight" versatile
+# tier really costs ~15-20 GB once parallel_slots × ctx KV cache + the
+# spec-decode draft + llama.cpp scratch buffers are accounted for. Auto-
+# warming versatile on every login / page-load / visibility-change meant
+# 20 GB of VRAM was tied up before the user even sent a message — and
+# any subsequent route to coding/vision/fast had to evict it.
+#
+# Now: load only the model the user actually targets. The /api/warm
+# endpoint still exists for operators on bigger cards; pass an explicit
+# `{"tiers": [...]}` body to invoke it. The default body warms nothing.
+_DEFAULT_WARM_TIERS: tuple[str, ...] = ()
 
 
 async def _warm_chat_tiers(tier_ids: tuple[str, ...] | list[str]) -> dict[str, str]:
@@ -1711,13 +1703,19 @@ async def api_warm(
     body: dict | None = None,
     user: dict | None = Depends(auth.optional_user),
 ):
-    """Trigger a background pre-warm of the everyday chat tiers. Returns
-    immediately; the warm itself runs as a background task. Body may
-    optionally carry `{"tiers": ["versatile", "fast"]}` to override the
-    default set. Anonymous callers are accepted because the chat UI may
-    fire this before /auth/login completes (race with cookie set)."""
+    """Trigger a background pre-warm of named chat tiers. Returns
+    immediately; the warm itself runs as a background task.
+
+    Body MUST carry `{"tiers": ["versatile", ...]}` — the default
+    set is empty so a stray `{}` POST from the chat UI doesn't
+    auto-load anything. This matches the "only load the model the
+    user is actually using" policy. Anonymous callers are accepted
+    because the chat UI may fire this before /auth/login completes
+    (race with cookie set)."""
     requested = (body or {}).get("tiers") if isinstance(body, dict) else None
     tiers = tuple(requested) if isinstance(requested, list) and requested else _DEFAULT_WARM_TIERS
+    if not tiers:
+        return {"ok": True, "warming": [], "user": user["email"] if user else None}
     asyncio.create_task(_warm_chat_tiers(tiers))
     return {"ok": True, "warming": list(tiers), "user": user["email"] if user else None}
 
@@ -1752,10 +1750,11 @@ async def auth_login(body: LoginRequest, request: Request):
         samesite=cfg.session.cookie_samesite,
         path="/",
     )
-    # Pre-warm the everyday chat tiers in the background so the user's
-    # first message doesn't pay the 5-30s cold-spawn cost. Fire-and-
-    # forget — never blocks the login response.
-    asyncio.create_task(_warm_chat_tiers(_DEFAULT_WARM_TIERS))
+    # Pre-warm is opt-in (default empty) — see _DEFAULT_WARM_TIERS.
+    # Spawning models the user hasn't asked for caused VRAM exhaustion
+    # on the 24 GB card; chat tiers cold-spawn on first message instead.
+    if _DEFAULT_WARM_TIERS:
+        asyncio.create_task(_warm_chat_tiers(_DEFAULT_WARM_TIERS))
     return resp
 
 

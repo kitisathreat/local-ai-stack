@@ -173,6 +173,12 @@ class VRAMScheduler:
         # a waiter counter for position reporting and max_depth enforcement.
         self._gates: dict[str, asyncio.Condition] = {}
         self._waiters: dict[str, int] = {}
+        # Cross-tier acquire counter — for each loaded tier, counts how
+        # many OTHER tiers have been acquired since this one was last
+        # used. When it crosses `eviction.cross_tier_eviction_messages`,
+        # the sweeper unloads this tier even if there's no VRAM pressure.
+        # Reset to 0 every time the tier itself is acquired.
+        self._other_tier_acquires: dict[str, int] = {}
         self._sweeper_task: asyncio.Task | None = None
         self._observed_path = Path(self.vram.observed_costs.persist_path)
         self._load_observed_costs()
@@ -183,6 +189,18 @@ class VRAMScheduler:
             g = asyncio.Condition()
             self._gates[tier_id] = g
         return g
+
+    def _note_acquire(self, tier_id: str) -> None:
+        """Bump the "other tiers used since I was last used" counter for
+        every loaded tier OTHER than `tier_id`, and reset the counter for
+        `tier_id` itself. Caller holds `self._lock`."""
+        for other in self.loaded:
+            if other == tier_id:
+                self._other_tier_acquires[other] = 0
+            else:
+                self._other_tier_acquires[other] = (
+                    self._other_tier_acquires.get(other, 0) + 1
+                )
 
     # ── Observed cost persistence ────────────────────────────────────────
 
@@ -311,6 +329,7 @@ class VRAMScheduler:
                         ):
                             m.refcount += 1
                             m.last_used = time.time()
+                            self._note_acquire(tier_id)
                             return
                     if m is None or m.state == ModelState.EVICTING:
                         # Not resident → we'll load it. Join queue so other
@@ -350,6 +369,7 @@ class VRAMScheduler:
                             variant=active_variant,
                         )
                         self.loaded[tier_id] = new_entry
+                        self._other_tier_acquires[tier_id] = 0
                         load_needed = True
                     elif m.state == ModelState.LOADING:
                         # Someone else is loading. Wait on the event.
@@ -628,6 +648,7 @@ class VRAMScheduler:
                 except Exception as e:
                     logger.warning("Unload failed for %s: %s", model.tier_id, e)
         self.loaded.pop(model.tier_id, None)
+        self._other_tier_acquires.pop(model.tier_id, None)
 
     # ── Background sweeper ──────────────────────────────────────────────
 
@@ -642,6 +663,16 @@ class VRAMScheduler:
                 logger.warning("Sweeper error: %s", e)
 
     async def _sweep_once(self) -> None:
+        # Pass 1: proactive idle / cross-tier-activity eviction. Runs
+        # every poll regardless of VRAM pressure so a tier that hasn't
+        # been used in `idle_eviction_sec` (or has had
+        # `cross_tier_eviction_messages` requests routed elsewhere
+        # since it was last used) frees its VRAM proactively. Without
+        # this, llama-server processes accumulate as users move
+        # between tiers, eating headroom even when each individual
+        # tier still has refcount==0.
+        await self._evict_idle_tiers()
+
         free = self.probe.free_gb(self.vram.total_vram_gb)
         if free >= self.vram.headroom_gb:
             return
@@ -659,6 +690,50 @@ class VRAMScheduler:
                 free = self.probe.free_gb(self.vram.total_vram_gb)
                 if free >= self.vram.headroom_gb:
                     break
+
+    async def _evict_idle_tiers(self) -> None:
+        """Unload tiers idle past `idle_eviction_sec` or that have seen
+        `cross_tier_eviction_messages` acquires of other tiers since
+        their own last use. No-op when both knobs are 0."""
+        idle_sec = int(getattr(self.vram.eviction, "idle_eviction_sec", 0) or 0)
+        cross_n = int(
+            getattr(self.vram.eviction, "cross_tier_eviction_messages", 0) or 0
+        )
+        if idle_sec <= 0 and cross_n <= 0:
+            return
+        now = time.time()
+        async with self._lock:
+            min_residency = self.vram.eviction.min_residency_sec
+            victims: list[LoadedModel] = []
+            for m in self.loaded.values():
+                if m.state != ModelState.RESIDENT:
+                    continue
+                if m.refcount > 0 or m.pinned:
+                    continue
+                age = now - m.last_used
+                # min_residency_sec is anti-thrash protection — don't
+                # evict a model that just loaded even if it looks idle.
+                if age < min_residency:
+                    continue
+                idle_hit = idle_sec > 0 and age >= idle_sec
+                cross_hit = (
+                    cross_n > 0
+                    and self._other_tier_acquires.get(m.tier_id, 0) >= cross_n
+                )
+                if idle_hit or cross_hit:
+                    reason = (
+                        "idle" if idle_hit and not cross_hit
+                        else "cross-tier activity" if cross_hit and not idle_hit
+                        else "idle+cross-tier activity"
+                    )
+                    logger.info(
+                        "Evicting %s: %s (idle=%.0fs, other_tier_acquires=%d)",
+                        m.tier_id, reason, age,
+                        self._other_tier_acquires.get(m.tier_id, 0),
+                    )
+                    victims.append(m)
+            for victim in victims:
+                await self._unload(victim)
 
     # ── Introspection ────────────────────────────────────────────────────
 
@@ -678,6 +753,7 @@ class VRAMScheduler:
                     "vram_cost_gb": m.vram_estimate_gb,
                     "observed_cost_gb": m.observed_cost_gb,
                     "last_used_sec_ago": now - m.last_used,
+                    "other_tier_acquires": self._other_tier_acquires.get(m.tier_id, 0),
                 })
             projected = sum(
                 m.effective_cost() for m in self.loaded.values()

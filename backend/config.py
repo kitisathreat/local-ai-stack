@@ -249,6 +249,16 @@ class RouterConfig(BaseModel):
 class EvictionPolicy(BaseModel):
     policy: str = "lru"
     min_residency_sec: int = 30
+    # Proactive idle eviction: any RESIDENT, unpinned, refcount==0 tier
+    # whose last_used is older than this gets unloaded by the background
+    # sweeper, regardless of whether the card is under VRAM pressure. Set
+    # to 0 to disable (legacy behavior — only evict on pressure).
+    idle_eviction_sec: int = 300
+    # Cross-tier message threshold: when this tier has been idle while
+    # OTHER tiers received this many acquires, evict it. Lets a hot tier
+    # reclaim VRAM from a tier that's "stuck" resident even within the
+    # idle_eviction window. Set to 0 to disable.
+    cross_tier_eviction_messages: int = 50
     pin_orchestrator: bool = False
     pin_vision: bool = True
 

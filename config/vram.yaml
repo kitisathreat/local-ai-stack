@@ -11,9 +11,22 @@ headroom_gb: 1.5                        # safety margin for KV cache growth
 poll_interval_sec: 5                    # background sweeper cadence
 
 # ── Eviction policy ─────────────────────────────────────────────────────────
+# The sweeper polls every `poll_interval_sec` and evicts any RESIDENT,
+# unpinned, refcount==0 tier that EITHER:
+#   - hasn't been used in `idle_eviction_sec` seconds, OR
+#   - has had `cross_tier_eviction_messages` requests routed to a different
+#     tier since its own last use (whichever fires first).
+# Both default to a conservative "release VRAM proactively" policy because
+# llama.cpp KV cache + draft model + parallel slots make actual residency
+# cost ~2-3x the static `vram_estimate_gb` for MoE tiers — letting idle
+# tiers linger until VRAM pressure forces eviction caused VRAM exhaustion
+# bugs across multi-tier chat sessions on the 24 GB card.
 eviction:
   policy: lru
   min_residency_sec: 30                 # don't evict a model that just loaded (anti-thrash)
+  idle_eviction_sec: 300                # 5 min idle → unload (set 0 to disable)
+  cross_tier_eviction_messages: 50      # 50 acquires of OTHER tiers since this one
+                                        # was last used → unload (set 0 to disable)
   pin_orchestrator: false               # orchestrator CAN be evicted while workers run
   pin_vision: true                      # vision tier is pinned — pre-spawned by the
                                         # launcher and never evicted
