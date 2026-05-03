@@ -597,86 +597,6 @@ class LlamaCppClient:
                 logger.debug("Failed to kill orphan pid=%s: %s", pid, exc)
         return killed
 
-
-async def _list_llama_server_pids() -> list[tuple[int, int | None]]:
-    """Return [(pid, listening_port_or_None)] for every live
-    llama-server process. Best-effort + cross-platform."""
-    pids: list[int] = []
-    if os.name == "nt":
-        # tasklist is faster + dependency-free on Windows.
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "tasklist", "/FI", "IMAGENAME eq llama-server.exe",
-                "/FO", "CSV", "/NH",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            stdout, _ = await proc.communicate()
-        except (OSError, FileNotFoundError):
-            return []
-        for line in stdout.decode("utf-8", errors="ignore").splitlines():
-            parts = [p.strip().strip('"') for p in line.split(",")]
-            if len(parts) >= 2:
-                try:
-                    pids.append(int(parts[1]))
-                except ValueError:
-                    pass
-    else:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "pgrep", "-x", "llama-server",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await proc.communicate()
-        except (OSError, FileNotFoundError):
-            return []
-        for line in stdout.decode("utf-8", errors="ignore").splitlines():
-            line = line.strip()
-            if line.isdigit():
-                pids.append(int(line))
-
-    if not pids:
-        return []
-
-    # Resolve listening ports per pid (Windows-only — POSIX path
-    # returns ports as None and falls back to PID-only matching, which
-    # is fine because preserve_ports only matters for the launcher's
-    # adopted services).
-    if os.name != "nt":
-        return [(pid, None) for pid in pids]
-
-    pid_to_port: dict[int, int] = {}
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "netstat", "-ano", "-p", "TCP",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        stdout, _ = await proc.communicate()
-        for line in stdout.decode("utf-8", errors="ignore").splitlines():
-            parts = line.split()
-            if len(parts) < 5 or "LISTENING" not in parts:
-                continue
-            try:
-                pid = int(parts[-1])
-            except ValueError:
-                continue
-            if pid not in pids or pid in pid_to_port:
-                continue
-            local = parts[1]
-            try:
-                port = int(local.rsplit(":", 1)[-1])
-            except ValueError:
-                continue
-            pid_to_port[pid] = port
-    except (OSError, FileNotFoundError):
-        pass
-
-    return [(pid, pid_to_port.get(pid)) for pid in pids]
-
     async def _port_is_serving(self, endpoint: str) -> bool:
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
@@ -781,3 +701,85 @@ async def _list_llama_server_pids() -> list[tuple[int, int | None]]:
             return await self._port_is_serving(tier.resolved_endpoint())
         except Exception:
             return False
+
+
+async def _list_llama_server_pids() -> list[tuple[int, int | None]]:
+    """Return [(pid, listening_port_or_None)] for every live llama-server
+    process. Best-effort + cross-platform. Used by
+    ``LlamaCppClient.kill_orphans`` and the ``/admin/vram/probe`` diagnostic.
+    """
+    pids: list[int] = []
+    if os.name == "nt":
+        # tasklist is faster + dependency-free on Windows.
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "tasklist", "/FI", "IMAGENAME eq llama-server.exe",
+                "/FO", "CSV", "/NH",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            stdout, _ = await proc.communicate()
+        except (OSError, FileNotFoundError):
+            return []
+        for line in stdout.decode("utf-8", errors="ignore").splitlines():
+            parts = [p.strip().strip('"') for p in line.split(",")]
+            if len(parts) >= 2:
+                try:
+                    pids.append(int(parts[1]))
+                except ValueError:
+                    pass
+    else:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pgrep", "-x", "llama-server",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+        except (OSError, FileNotFoundError):
+            return []
+        for line in stdout.decode("utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line.isdigit():
+                pids.append(int(line))
+
+    if not pids:
+        return []
+
+    # Resolve listening ports per pid (Windows-only — POSIX path
+    # returns ports as None and falls back to PID-only matching, which
+    # is fine because preserve_ports only matters for the launcher's
+    # adopted services).
+    if os.name != "nt":
+        return [(pid, None) for pid in pids]
+
+    pid_to_port: dict[int, int] = {}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "netstat", "-ano", "-p", "TCP",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        stdout, _ = await proc.communicate()
+        for line in stdout.decode("utf-8", errors="ignore").splitlines():
+            parts = line.split()
+            if len(parts) < 5 or "LISTENING" not in parts:
+                continue
+            try:
+                pid = int(parts[-1])
+            except ValueError:
+                continue
+            if pid not in pids or pid in pid_to_port:
+                continue
+            local = parts[1]
+            try:
+                port = int(local.rsplit(":", 1)[-1])
+            except ValueError:
+                continue
+            pid_to_port[pid] = port
+    except (OSError, FileNotFoundError):
+        pass
+
+    return [(pid, pid_to_port.get(pid)) for pid in pids]
