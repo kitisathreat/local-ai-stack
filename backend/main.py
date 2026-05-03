@@ -1297,8 +1297,89 @@ async def _finalize_conversation(
                 user["id"], req.conversation_id, state.llama_cpp, versatile_tier,
                 airgap=conv_airgap,
             )
+
+        # Auto-title on the first assistant turn — only when the user
+        # hasn't already renamed the chat (default sentinel "New chat").
+        # Spawned as its own task so a slow title-gen doesn't delay the
+        # rest of finalization. Best-effort: failures are logged and
+        # the chat keeps the default title.
+        if asst_count == 1 and (conv.get("title") or "").strip().lower() == "new chat":
+            asyncio.create_task(_auto_title_chat(
+                req.conversation_id, user["id"], user_text or "", assistant_text,
+            ))
     except Exception:
         logger.exception("Post-stream finalization failed")
+
+
+_TITLE_PROMPT = (
+    "Summarize this conversation in 3-6 words for a chat sidebar title. "
+    "Output ONLY the title — no quotes, no punctuation at the end, no "
+    "prefix like 'Title:'. Use sentence case.\n\n"
+    "User: {user}\n"
+    "Assistant: {asst}\n\n"
+    "Title:"
+)
+
+
+async def _auto_title_chat(
+    conv_id: int, user_id: int, user_text: str, assistant_text: str,
+) -> None:
+    """Generate a short title from the first user/assistant exchange and
+    save it on the conversation. Uses the fast tier (cheapest); never
+    raises. Truncates inputs so a long first message doesn't blow the
+    title-gen budget."""
+    try:
+        # Trim to keep the title-gen prompt small. The model only needs a
+        # representative slice — no point feeding it 10 KB of context.
+        u = (user_text or "")[:600].strip()
+        a = (assistant_text or "")[:600].strip()
+        if not u and not a:
+            return
+        prompt = _TITLE_PROMPT.format(user=u, asst=a)
+        # Fast tier is the cheapest chat model; fall back to versatile
+        # only if fast isn't configured (rare).
+        tier_id = "fast" if "fast" in state.config.models.tiers else "versatile"
+        tier = state.config.models.tiers.get(tier_id)
+        if tier is None:
+            return
+        async with state.scheduler.reserve(tier_id):
+            raw = await state.llama_cpp.chat_once(
+                tier,
+                [ChatMessage(role="user", content=prompt)],
+                think=False,
+            )
+        title = _clean_auto_title(raw)
+        if not title:
+            return
+        ok = await db.update_conversation(conv_id, user_id, title=title)
+        if ok:
+            logger.info("Auto-titled conv %d -> %r", conv_id, title)
+    except Exception as e:
+        logger.warning("Auto-title for conv %d failed: %s", conv_id, e)
+
+
+def _clean_auto_title(raw: str) -> str:
+    """Strip quotes, leading 'Title:' prefixes, trailing punctuation, and
+    cap at ~60 chars. Returns '' for unusable output (so we leave the
+    default title in place rather than save garbage)."""
+    if not raw:
+        return ""
+    # Drop any think-block content (Qwen3 may emit one despite think=False).
+    s = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
+    # First non-empty line is the title.
+    s = next((ln.strip() for ln in s.splitlines() if ln.strip()), "")
+    # Strip "Title:" / "Title -" prefixes (case-insensitive).
+    s = re.sub(r"^title\s*[:\-—]\s*", "", s, flags=re.IGNORECASE)
+    # Strip wrapping quotes.
+    s = s.strip().strip("\"'`«»“”").strip()
+    # Strip trailing period / ellipsis.
+    s = re.sub(r"[\.…]+\s*$", "", s).strip()
+    if len(s) > 60:
+        s = s[:57].rstrip() + "…"
+    # Refuse if the model echoed back the prompt or returned the sentinel.
+    if not s or s.lower() in {"new chat", "title", "untitled"}:
+        return ""
+    return s
 
 
 async def _multi_agent_sse(
