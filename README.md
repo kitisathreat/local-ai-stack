@@ -543,56 +543,45 @@ are written to `data/eval/tier-bench-<ts>.json` for A/B tracking
 across quant swaps, llama.cpp version bumps, hardware changes, etc.
 
 Reference numbers from the RTX Pro 4000 SFF (24 GB) reference rig,
-post-merge of [#199](https://github.com/kitisathreat/local-ai-stack/pull/199)
-+ [#200](https://github.com/kitisathreat/local-ai-stack/pull/200)
-(hf_transfer default-off + ProtonVPN tool hardening). 2026-05-03 run,
-warm OS page cache, `--tokens 220 --warmup-tokens 8`, ~16 GB GPU free
-(non-stack apps closed):
+post-merge of
+[#199](https://github.com/kitisathreat/local-ai-stack/pull/199) (hf_transfer default off),
+[#202](https://github.com/kitisathreat/local-ai-stack/pull/202) (observed_cost EMA clamp),
+[#206](https://github.com/kitisathreat/local-ai-stack/pull/206) (versatile long-ctx variant),
+[#208](https://github.com/kitisathreat/local-ai-stack/pull/208) + [#209](https://github.com/kitisathreat/local-ai-stack/pull/209) (Multi-Agent Team tier + per-agent tiers),
+[#210](https://github.com/kitisathreat/local-ai-stack/pull/210) (sharded GGUF spawn fix + KV offload on heavy tiers).
+2026-05-03 14:14 PT run, warm OS page cache, `--tokens 100`,
+~16 GB GPU free (non-stack apps closed, RAG services pre-spawned):
 
 | tier | model | cold-load (s) | warm-first (s) | tok/s @ slot=1 | notes |
 |---|---|---:|---:|---:|---|
-| `fast`             | Qwen3.5 9B (dense + spec-decode)              |  0.7 | 0.61 | **20.5** | small, fully GPU-resident |
-| `versatile`        | Qwen3.6 35B-A3B MoE (expert offload + spec)   | 11.6 | 1.67 | **14.0** | default chat tier |
-| `coding`           | Qwen3-Coder 30B-A3B (expert offload + spec)   | 15.3 | 1.07 |  **9.3** | default coder |
-| `coding_80b`       | Qwen3-Coder-Next 80B-A3B (`/coder big`)       | ~30  | 2.66 |  **7.4** | bench via API `variant: "80b"` field |
-| `highest_quality`  | Qwen3-Next 80B-A3B Thinking                   | —    | —    |  blocked | needs ≥21 GB free; current 16 GB after non-stack apps closed isn't enough — see follow-up notes below |
-| `reasoning_max`    | OpenAI GPT-OSS-120B (Q4_K_M sharded ×2)       | —    | —    |  blocked | spawn fails: `invalid split file name: reasoning_max.gguf` — llama.cpp follows `<base>-NNNNN-of-MMMMM` for shard 2..M and the canonical symlink doesn't match the pattern; needs the spawn path to pass the resolved first-shard path |
+| `fast`             | Qwen3.5 9B (dense + spec-decode)            |  0.6 | 0.63 | **12.7** | small, fully GPU-resident |
+| `versatile`        | Qwen3.6 35B-A3B MoE (expert offload + spec) | 13.6 | 1.63 |  **9.0** | default chat tier; 65k ctx default, `Long context (131k)` variant available |
+| `coding`           | Qwen3-Coder 30B-A3B (expert offload + spec) | 14.7 | 15.06| **10.4** | default coder |
+| `coding_80b`       | Qwen3-Coder-Next 80B-A3B (`/coder big`)     | 24.4 | 2.61 | **22.3** | 3 B active MoE — clean wins on the 80B over the 30B |
+| `highest_quality`  | Qwen3-Next 80B-A3B Thinking                 | 41.9 | 57.90|  **7.2** | KV offloaded to CPU per [#210](https://github.com/kitisathreat/local-ai-stack/pull/210) — slower attention path, but fits |
+| `reasoning_max`    | OpenAI GPT-OSS-120B (Q4_K_M sharded ×2)     | 36.3 | 4.69 |  **6.1** | first successful bench post-#210; sharded spawn fix lets llama.cpp find shard 2 |
+| `reasoning_xl`     | Qwen3.5 397B-A17B (UD-IQ2_M sharded ×4)     |  8.9 |104.24|  **1.0** | first-ever successful bench; post-[#211](https://github.com/kitisathreat/local-ai-stack/pull/211) `--no-warmup` skipped the OOM-prone graph-warmup. 17 B active params + KV-on-CPU pegs throughput at ~1 t/s. Aspirational, not interactive. |
+| `frontier`         | DeepSeek V3.2 (UD-IQ1_S sharded ×4)         | —    | —    |  blocked | still crashes during tensor load even after [#211](https://github.com/kitisathreat/local-ai-stack/pull/211) (`--no-warmup` + ctx 32k). Root cause: 171 GB on a 125 GB RAM box — even with NVMe spillover, llama.cpp's tensor-load pre-allocation pushes past available physical RAM before the mmap pager can kick in. Real fix is either a 192 GB+ RAM upgrade or a llama.cpp build that handles the mmap+`-ot` combination more conservatively. |
 
-The cascade-driven KV→CPU spillover frees the equivalent of ~5 GB of
-VRAM at full ctx for `versatile` (3 slots, q4_0 KV), which keeps the
-attention path on GPU in the partial-residency regime that previously
-forced a layer downscale. Cold-load latency is roughly stable —
-weights still page in from the warm OS cache in similar wall time.
+The cascade-driven KV→CPU spillover (heavy tiers) frees ~3–5 GB of
+VRAM at full ctx, the difference between "doesn't fit" and "fits and
+runs at 6–7 tok/s." Cold-load latency for these tiers grew (was
+infinity, since they didn't load at all) — measured at 36–42 s on a
+warm OS cache. Worth it.
 
 `coding_80b` doesn't have a `tier.coding_80b` model id in `/v1/models`
 — it's selected through the `coding` tier with `variant: "80b"` in the
 chat request body (or `/coder big` from the chat input). The bench
-script grew a `--variant` follow-up after this run; for now the row
-above came from a hand-rolled stream-counter against the same prompt.
+script doesn't yet support `--variant`; the row above came from a
+hand-rolled stream-counter using the same prompts.
 
-#### Follow-ups blocked at this snapshot
+#### What's fixed and what's still open
 
-- **`reasoning_max` sharded-spawn bug.** llama.cpp errors with
-  `invalid split file name: reasoning_max.gguf` because shard 2..M
-  discovery walks `<basename>-NNNNN-of-MMMMM.gguf` literally — the
-  canonical `<tier>.gguf` symlink doesn't match that template, even
-  though it resolves to the proper first shard. Two fix paths: pass
-  the resolved target path to llama-server, or add a sibling-shard
-  symlink set in `data/models/` so the pattern walk finds shard 2.
-  Same bug will hit `frontier` and `reasoning_xl` once those pulls
-  finalise.
-- **`highest_quality` VRAM gate.** Scheduler reports `needing 20.6 GB`
-  even with `pinned/in-use=0.0 GB`, so the inflation is real cost
-  (weights + KV @ 8010 ctx + 0.6B draft + spec-decode overhead) not
-  a stale EMA. With ~16 GB GPU free after closing non-stack apps,
-  the gate refuses correctly. Either bump the YAML
-  `vram_estimate_gb` past today's 14.5, drop the spec-decode draft
-  for this tier, or run on a 32 GB+ card.
-- **VRAM scheduler accuracy.** A separate issue surfaced during this
-  run: pre-cleanup, the scheduler reported 14.6 GB needed for `fast`
-  (model is 5.3 GB Q4 + KV) because of an inflated in-memory
-  `observed_cost_gb` learned during an earlier orphan-llama-server
-  episode. Backend bounce + `kill-orphans` clears it.
+- **`reasoning_xl` warmup OOM** — fixed by [#211](https://github.com/kitisathreat/local-ai-stack/pull/211). With `extra_args: ['--no-warmup']`, llama-server skips the empty-run warmup that was OOM'ing the scratch buffers (575-split graph from Gated DeltaNet hybrid attention + 60 layers + kv_offload). First-token latency is now ~100 s on cold cache as the warmup happens implicitly during the first real request, but the tier loads + streams.
+- **`reasoning_max` sharded spawn** — fixed by [#210](https://github.com/kitisathreat/local-ai-stack/pull/210). `_resolve_for_llama()` resolves the canonical `<tier>.gguf` symlink to its `<base>-00001-of-MMMMM.gguf` target before passing to llama-server, so shard-pattern discovery works.
+- **`highest_quality` VRAM gate** — fixed by [#210](https://github.com/kitisathreat/local-ai-stack/pull/210). `kv_offload: true` pushes KV to CPU RAM; `vram_estimate_gb` bumped 14.5 → 16 to match real cost.
+- **VRAM scheduler EMA poisoning** — fixed by [#202](https://github.com/kitisathreat/local-ai-stack/pull/202). Observed-cost measurements clamp at 1.5× the YAML estimate, so a single bad reading under transient pressure can't drift the EMA into permanent "Cannot fit" 503s.
+- **`frontier` tensor-load crash** — STILL OPEN. [#211](https://github.com/kitisathreat/local-ai-stack/pull/211)'s `--no-warmup` + ctx 32k didn't help because the crash is during tensor load itself, before warmup. The fundamental problem is that the 171 GB sharded GGUF doesn't fit our 125 GB RAM, and llama.cpp's mmap-based loader pre-allocates more than the OS pager can satisfy from disk in time. Two real paths: (a) RAM upgrade to 192 GB+ so the model fits without spillover, or (b) a llama.cpp build with more conservative mmap pre-fetch behaviour. Until then `frontier` is a "downloaded, not yet loadable" tier.
 
 Reproduce with:
 
