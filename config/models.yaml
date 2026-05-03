@@ -70,11 +70,15 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 14.5               # attention + KV cache + embeddings on
-                                         # GPU (~12-14 GB at 65k ctx, parallel=1)
-                                         # plus ~0.5 GB for the speculative-decode
-                                         # draft (Qwen3-0.6B). MoE experts (~33 GB)
-                                         # live in system RAM via -ot.
+    # Realistic estimate: live measurement at 131k ctx + spec-decode
+    # draft + parallel_slots=1 gauged ~20.6 GB on GPU before
+    # kv_offload was added. With kv_offload below pushing KV to CPU
+    # RAM, GPU footprint drops by ~3-5 GB to ~16 GB. Set to 16 to
+    # let the VRAM gate accept this tier on a 24 GB card with normal
+    # desktop overhead (~5-6 GB DWM + always-on RAG services), while
+    # the EMA clamp from #202 keeps a single bad measurement from
+    # poisoning the cache.
+    vram_estimate_gb: 16
     parallel_slots: 1
     # Speculative decoding: Qwen3-0.6B draft. Lossless rejection-sampling
     # against this 80B target — output distribution is exact-equal to
@@ -96,6 +100,12 @@ tiers:
                                          # cold experts under memory pressure.
     cache_type_k: q4_0                   # Hybrid attention → q4_0 lossless.
     cache_type_v: q4_0                   # Symmetric K/V keeps fused FA active.
+    # Push KV cache to CPU RAM so the 131k ctx doesn't push us past
+    # the 24 GB GPU budget. Costs throughput in the attention path
+    # (CPU↔GPU traffic per token) but frees ~3-5 GB of VRAM at
+    # full ctx — the difference between "can't fit" and "fits with
+    # headroom" on this card.
+    kv_offload: true
     override_tensors:
       - ".ffn_.*_exps.=CPU"              # The single line that makes spillover
                                          # quality good: experts to RAM, every-
@@ -142,8 +152,12 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 14                  # attention + KV + embeddings on GPU.
-                                          # MoE experts (~50 GB) live in system RAM.
+    # 120 B at Q8_0 KV w/ 131k ctx and standard attention is heavier
+    # on KV than the hybrid Qwen3 tiers — 14 GB was the GPU-resident
+    # weights estimate without KV being offloaded. With kv_offload
+    # below, KV moves to CPU RAM and the GPU footprint stabilises at
+    # ~14 GB; bumping the estimate to 15 covers small overheads.
+    vram_estimate_gb: 15
     parallel_slots: 1
     n_gpu_layers: -1                      # base case = everything to GPU; -ot
                                           # below pulls experts back to CPU.
@@ -156,6 +170,12 @@ tiers:
       - ".ffn_.*_exps.=CPU"               # Same MoE expert offload as the
                                           # Qwen3 MoE tiers — keeps every
                                           # attention layer GPU-resident.
+    # Push KV to CPU RAM. Standard (non-hybrid) attention at 131k ctx
+    # q8_0 is ~5 GB of KV — too much for our 24 GB card alongside the
+    # weights. Costs throughput in attention, but worth it since this
+    # tier has no spec-decode draft anyway (tokenizer mismatch — see
+    # commentary block above).
+    kv_offload: true
 
   # ── Reasoning XL — Qwen3.5 397B-A17B at UD-IQ2_M ────────────────────────────
   # Premium reasoning tier above reasoning_max on benchmarks (~79 on
@@ -231,6 +251,10 @@ tiers:
                                          # can then take their RAM).
     cache_type_k: q8_0                   # Standard attention → q8_0 (q4_0 not
     cache_type_v: q8_0                   # lossless on this attention shape).
+    # Push KV to CPU RAM — same rationale as reasoning_max. Q8_0 KV at
+    # 64k ctx is ~2-3 GB; frees enough VRAM that this tier can coexist
+    # with the always-on RAG services on a 24 GB card.
+    kv_offload: true
     override_tensors:
       - ".ffn_.*_exps.=CPU"              # Standard MoE expert offload — keeps
                                          # every attention layer GPU-resident,
@@ -304,6 +328,12 @@ tiers:
     cache_type_k: q4_0                   # Aggressive KV quant to claw back
     cache_type_v: q4_0                   # VRAM at long context, per the
                                          # Opus 4.7 recommendation.
+    # KV to CPU RAM. Frontier already pays NVMe-spillover latency on
+    # cold expert pages, so adding CPU↔GPU traffic for KV is a
+    # marginal cost on a tier that's "5–10 t/s aspirational" anyway.
+    # Frees ~1-2 GB of VRAM at 65k q4_0 — meaningful when we're trying
+    # to fit attention + spec scratch within the GPU envelope.
+    kv_offload: true
     override_tensors:
       - ".ffn_.*_exps.=CPU"              # Standard MoE expert offload —
                                          # attention stays on GPU, experts
