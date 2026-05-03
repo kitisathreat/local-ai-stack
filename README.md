@@ -240,7 +240,12 @@ tier runs with `--cache-type-k q8_0 --cache-type-v q8_0 -fa --jinja`,
 so context windows are pushed to each model's native max within a 24 GB
 card budget. Vision and embedding are pinned and pre-spawned; chat
 tiers cold-spawn on first request via the
-[`VRAMScheduler`](backend/vram_scheduler.py).
+[`VRAMScheduler`](backend/vram_scheduler.py), with `versatile` and
+`fast` warmed sequentially on user connect (login or page-mount via
+`POST /api/warm`). All `.gguf` files are also pre-warmed into the OS
+page cache by [`scripts/warm-page-cache.ps1`](scripts/warm-page-cache.ps1)
+at `-Start`, so even tiers that aren't auto-warmed into VRAM avoid
+disk-read latency on cold-spawn.
 
 | Tier | Model | Port | `--ctx-size` | VRAM | Role |
 |---|---|---|---|---|---|
@@ -308,6 +313,48 @@ Switching variants triggers a re-spawn of the coding tier's
 variants share the same `-ot` expert offload pattern, the same
 Qwen3-0.6B speculative draft, and the same `q8_0` KV cache.
 
+### Residency cascade — fitting tiers into tight VRAM
+
+When a tier doesn't fit in free VRAM, the spawn path
+([`backend/model_residency.py`](backend/model_residency.py)) walks a
+cascade in order of least-perf-impact, stopping as soon as it fits:
+
+1. **Reduce GPU layers** — push transformer blocks (or MoE experts via
+   `-ot`) onto CPU. Cheapest lever for hybrid-attention / MoE tiers
+   because the bandwidth-bound bits stay on GPU.
+2. **Move KV cache to system RAM** (`--no-kv-offload`) — frees several
+   GB at long context, costs attention-step bandwidth. Only engaged
+   when (1) alone is insufficient.
+3. **Halve `--ctx-size`** — last resort, halving repeatedly until it
+   fits or hits `vram.residency.min_context_window` (default 4096).
+
+Knobs live in [`config/vram.yaml`](config/vram.yaml) under
+`residency:` (`enable`, `enable_kv_offload`, `enable_ctx_shrink`,
+`min_context_window`). The planner is on by default; the legacy
+`LAI_RESIDENCY_PLANNER=1` env var still force-enables for parity with
+older deployments. Each spawn logs the chosen plan, e.g.
+`Residency plan for versatile: mode=partial layers=34/40 ctx=131072 kv_offload=False reason=headroom-ok+complex`.
+
+### VRAM probe + orphan reaper
+
+The scheduler cross-checks its in-process projection against NVML's
+actual free-VRAM reading on every fit decision, so an orphan
+`llama-server` (left from a previous backend bounce or crash) can't
+fool the projection into a "fits" verdict followed by an OOM. At
+startup the backend also walks live `llama-server` PIDs and
+SIGTERMs anything not in its own process registry, preserving ports
+that belong to the launcher's pinned vision/embedding/reranker
+processes. The same sweep is exposed as
+`POST /admin/vram/kill-orphans`, and `GET /admin/vram/probe` returns
+the diagnostic snapshot (`nvml_free_gb`, `scheduler_tracked_used_gb`,
+`orphan_drift_gb`, `orphan_llama_server_pids`).
+
+When a chat is archived or deleted, the backend checks whether any
+other non-archived conversation references the same tier; if not, the
+tier is evicted (unless it's in the auto-warm set). Combined with the
+no-eager-load policy this enforces "models loaded only during active
+sessions."
+
 ## Configuration
 
 All runtime configuration lives in [`config/`](config/):
@@ -326,13 +373,12 @@ wizard or `-InitEnv`. Never committed.
 
 ### Optional environment variables
 
-- `LAI_RESIDENCY_PLANNER` (default: unset) — When set to `1`, the
-  llama-server spawn path consults `backend/model_residency.py` to
-  compute `n_gpu_layers` / `use_mmap` / `use_mlock` per spawn based on
-  live free VRAM and (eventually) request complexity. Otherwise (the
-  default), the YAML-declared values in `config/models.yaml` are used
-  verbatim. Useful for testing partial-offload behavior on dense tiers
-  without changing the YAML.
+- `LAI_RESIDENCY_PLANNER` (default: unset) — Force-enables the
+  residency planner (cascade in
+  [`backend/model_residency.py`](backend/model_residency.py)) even
+  when `vram.residency.enable: false` is set in YAML. The planner is
+  on by default now; this flag exists as a parity escape hatch for
+  older deployments that intentionally turned it off.
 - `OFFLINE=1` — Skips upstream HuggingFace polling; uses pinned
   revisions only.
 - `MODEL_UPDATE_POLICY` — `auto`, `prompt`, or `skip` for detected
@@ -400,6 +446,8 @@ GET    /admin/model-pull-status     → live pull progress per tier
 GET    /admin/usage                 → request volume + token totals
 GET    /admin/errors                → recent backend exceptions
 GET    /admin/vram                  → per-tier residency
+GET    /admin/vram/probe            → NVML vs scheduler-tracked, orphan PIDs
+POST   /admin/vram/kill-orphans     → reap stray llama-server processes
 GET    /admin/tools                 → tool toggle state
 PATCH  /admin/tools/{name}          → enable/disable a tool
 GET    /admin/config                → resolved YAML config
@@ -407,6 +455,32 @@ PATCH  /admin/config                → write-through update
 POST   /admin/reload                → hot-reload all YAML
 GET    /admin/airgap                → airgap state
 PATCH  /admin/airgap                → toggle airgap
+```
+
+### Tier benchmarks
+
+[`scripts/bench_tiers.py`](scripts/bench_tiers.py) measures cold-spawn
+latency and steady-state generation tok/s per tier. The script forces
+a cold spawn between runs by acquiring `--evict-tier` first. Results
+are written to `data/eval/tier-bench-<ts>.json` for A/B tracking
+across quant swaps, llama.cpp version bumps, hardware changes, etc.
+
+Reference numbers from the RTX Pro 4000 SFF (24 GB) reference rig,
+post-merge of [#169](https://github.com/kitisathreat/local-ai-stack/pull/169) +
+[#170](https://github.com/kitisathreat/local-ai-stack/pull/170)
+(NVML-aware probe + residency cascade), warm OS page cache:
+
+| tier | cold-load (s) | warm-first-token (s) | tok/s @ slot=1 | notes |
+|---|---:|---:|---:|---|
+| `versatile` | 12.0 | 1.76 | 8.6 | Qwen3.6 35B-A3B MoE, expert offload, spec-decode |
+| `fast`      | 8.4  | 0.56 | 23.0 | Qwen3.5 9B dense, spec-decode |
+| `coding`    | 12.3 | 1.07 | 9.5  | Qwen3-Coder-30B-A3B, expert offload, spec-decode |
+
+Reproduce with:
+
+```powershell
+python scripts/bench_tiers.py --tiers versatile,fast,coding
+python scripts/bench_tiers.py --tiers versatile,fast,coding,highest_quality
 ```
 
 ## Tools, RAG, memory
