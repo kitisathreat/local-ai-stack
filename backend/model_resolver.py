@@ -437,12 +437,17 @@ def pull_missing_hf_files(
             )
         return shards or [first_filename]
 
-    # Per-shard stall watchdog: kills `hf_hub_download` if its target
-    # .incomplete file hasn't grown in `LAI_PULL_STALL_SECONDS` seconds.
-    # Defends against the silent hf_transfer deadlock (connections
-    # ESTABLISHED, zero bytes flowing). Threshold is generous because
-    # legitimate slow CDN ranges can pause for 10–30s between chunks;
-    # we only kill after *no* progress for 90s by default.
+    # Per-shard stall watchdog: when its target .incomplete file
+    # hasn't grown in `LAI_PULL_STALL_SECONDS` seconds, disables
+    # hf_transfer process-wide so the *next* retry attempt uses the
+    # pure-Python path. (Python can't actually kill a thread that's
+    # blocked inside the Rust extension — see the comment in
+    # `_watchdog` for the full story. Belt-and-suspenders with the
+    # module-load default of HF_HUB_ENABLE_HF_TRANSFER=0; mostly
+    # matters when the user explicitly re-enables hf_transfer.)
+    # Threshold is generous because legitimate slow CDN ranges can
+    # pause for 10–30s between chunks; we only act after *no*
+    # progress for 90s by default.
     try:
         _STALL_SECONDS = max(20, int(os.getenv("LAI_PULL_STALL_SECONDS", "90")))
     except ValueError:
@@ -503,7 +508,6 @@ def pull_missing_hf_files(
 
         for attempt in range(1, max_attempts + 1):
             stall_event = threading.Event()
-            stall_killed = {"flag": False}
 
             def _watchdog() -> None:
                 last_size = _current_incomplete_size()
@@ -515,20 +519,22 @@ def pull_missing_hf_files(
                         last_progress = time.monotonic()
                         continue
                     if time.monotonic() - last_progress >= _STALL_SECONDS:
-                        stall_killed["flag"] = True
                         logger.warning(
                             "Stall-watchdog: %s frozen at %.2f GB for %ds — "
-                            "killing worker (hf_transfer deadlock?)",
+                            "disabling hf_transfer for next retry",
                             target_basename, cur / (1024 ** 3), _STALL_SECONDS,
                         )
-                        # We can't actually kill the worker thread from
-                        # here (Python doesn't support that). Instead we
-                        # disable hf_transfer for the next attempt so the
-                        # subsequent retry uses the pure-Python path, and
-                        # we set the event so this watchdog exits. The
-                        # current call will eventually error or finish —
-                        # if it errors, retry picks up the partial; if
-                        # by miracle it finishes, even better.
+                        # Python can't kill the worker thread from here:
+                        # if it's blocked inside the hf_transfer Rust
+                        # extension, no signal reaches it. What we *can*
+                        # do is flip the env so the next retry attempt
+                        # uses the pure-Python downloader. The currently
+                        # blocked call eventually times out at the TCP
+                        # layer (or stays wedged, in which case nothing
+                        # short of process kill recovers it). The module
+                        # defaults HF_HUB_ENABLE_HF_TRANSFER=0 so this
+                        # watchdog only matters when the user has
+                        # explicitly re-enabled the accelerator.
                         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
                         return
 
