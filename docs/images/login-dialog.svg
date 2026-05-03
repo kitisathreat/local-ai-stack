@@ -42,8 +42,15 @@
 
   <!-- Password -->
   <text class="label" x="106" y="222">Password</text>
-  <rect class="panel" x="106" y="228" width="268" height="26" rx="5" stroke="#7c9cff"/>
+  <rect class="panel" x="106" y="228" width="268" height="26" rx="5" stroke="#7c9cff">
+    <!-- Focused-field border glow -->
+    <animate attributeName="stroke-opacity" values="1;0.55;1" dur="1.6s" repeatCount="indefinite"/>
+  </rect>
   <text class="fg" x="118" y="246" font-size="14" letter-spacing="3">••••••••••••</text>
+  <!-- Blinking cursor at end of password -->
+  <rect fill="#e5e7eb" x="232" y="234" width="1.5" height="14">
+    <animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.05s" repeatCount="indefinite"/>
+  </rect>
 
   <!-- Remember me + buttons -->
   <rect fill="#7c9cff" x="106" y="266" width="14" height="14" rx="3"/>
@@ -52,7 +59,10 @@
 
   <rect class="panel" x="246" y="262" width="60" height="22" rx="5" stroke="#252a34"/>
   <text class="dim" x="262" y="278" font-size="11">Cancel</text>
-  <rect class="accent" x="312" y="262" width="62" height="22" rx="5"/>
+  <!-- Sign-in button: subtle attention pulse -->
+  <rect class="accent" x="312" y="262" width="62" height="22" rx="5">
+    <animate attributeName="fill" values="#7c9cff;#9bb1ff;#7c9cff" dur="2.4s" repeatCount="indefinite"/>
+  </rect>
   <text fill="#ffffff" x="328" y="278" font-size="11" font-weight="600">Sign in</text>
 
   <!-- Status note -->
