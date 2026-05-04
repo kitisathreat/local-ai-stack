@@ -280,3 +280,44 @@ tiers:
     pinned:
       revision: "main"
       file: "qwen3-reranker-0.6b-q8_0.gguf"
+
+  # Qwen3-1.7B — bigger speculative-decode draft for the coding tier
+  # (and the coding_80b variant). Same Qwen3 vocab 151936 as the rest
+  # of the family so rejection-sampling math holds. The 0.6B draft is
+  # kept as the universal fallback for every other Qwen3-family tier;
+  # only `coding` references this entry. UD-Q4_K_XL is ~1.13 GB —
+  # adds ~1.2 GB extra VRAM at spawn time vs the 0.6B's ~0.5 GB.
+  # Tradeoff: slower draft pass, but accept rate jumps because the
+  # larger draft genuinely understands code structure (indentation,
+  # brackets, language idioms). Net win on tokens/sec for code-heavy
+  # generation. Bench in PR description.
+  draft_qwen3_17b:
+    source: huggingface
+    repo: "unsloth/Qwen3-1.7B-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "Qwen3-1.7B-UD-Q4_K_XL.gguf"
+
+  # Granite-4.0 H-Tiny — small-MoE worker tier for the multi-agent team.
+  # 7B total / 1B active w/ hybrid Mamba/Transformer attention. Apache 2.0.
+  # IBM positions it as the entry-tier of the Granite-4 family for
+  # "long-context sessions on entry GPUs". Why this for the swarm:
+  #   - 1B active = ~3× faster decode per slot than the dense Qwen3.5 9B
+  #     used by the current `fast` worker tier.
+  #   - Mamba layers don't grow KV cache linearly with context — meaningfully
+  #     less per-slot memory at 16k ctx than a pure-transformer 7B.
+  #   - Trained for tool use and structured output (the agent-worker shape).
+  # Granite-4 vocab is NOT Qwen3-compatible, so no spec-decode draft for
+  # this tier. That's fine — at 1B active it's already fast enough that
+  # draft overhead would barely help. UD-Q4_K_XL is ~4.07 GB on disk;
+  # Q4_K_M (~4.25 GB) is the fallback if UD ever disappears.
+  swarm:
+    source: huggingface
+    repo: "unsloth/granite-4.0-h-tiny-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "granite-4.0-h-tiny-UD-Q4_K_XL.gguf"

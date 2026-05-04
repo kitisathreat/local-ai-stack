@@ -546,6 +546,56 @@ tiers:
     cache_type_k: q4_0
     cache_type_v: q4_0
 
+  # ── Swarm — Granite-4.0 H-Tiny, small-MoE multi-agent worker ──────────────
+  # IBM Granite-4.0 H-Tiny: 7B total / 1B active w/ hybrid Mamba/Transformer.
+  # The intended worker_tier for the multi-agent team when fan-out > 4
+  # workers — at 1B active per slot it decodes ~3× faster than the dense
+  # 9B `fast` tier, and Mamba layers don't grow KV cache linearly with
+  # context so per-slot memory at 16k ctx is meaningfully lower.
+  #
+  # No spec-decode: Granite-4 vocab is not Qwen3-compatible. At 1B active
+  # the draft overhead would barely help anyway — rejection sampling math
+  # requires tokenizer match.
+  #
+  # Footprint at UD-Q4_K_XL: ~4 GB weights (mostly GPU-resident — small
+  # enough that expert offload is barely needed), KV per slot at 16k ctx
+  # q8_0 ≈ 0.5–1 GB. 8 slots ≈ ~10–12 GB total VRAM.
+  swarm:
+    category: "Fast"
+    name: "Swarm · Granite-4 H-Tiny · 8-slot worker (TBD t/s)"
+    description: "IBM Granite-4.0 H-Tiny — 7B/1B-active hybrid Mamba/Transformer MoE. Designed as the multi-agent worker tier when fan-out > 4. ~3× faster decode per slot than the 9B fast tier."
+    backend: llama_cpp
+    port: 8019
+    model_tag: "granite-4.0-h-tiny"
+    context_window: 16384                # 16k per slot keeps the 8-slot pool
+                                         # under the 12 GB VRAM budget at q8_0 KV.
+    think_default: false
+    think_supported: false               # Granite-4 isn't a thinking model.
+    params:
+      temperature: 0.7
+      top_p: 0.95
+      top_k: 20
+      repeat_penalty: 1.0
+      num_predict: 2048
+    vram_estimate_gb: 11                 # ~4 GB weights + ~7 GB KV across 8 slots
+                                         # at 16k ctx q8_0. No draft.
+    parallel_slots: 8                    # the whole point of this tier
+    n_gpu_layers: -1
+    flash_attention: true
+    # Granite-4 is hybrid (Mamba + Transformer attention). q8_0 KV is the
+    # safe default for the transformer-attention layers; q4_0 untested on
+    # this architecture. Revisit after first bench.
+    cache_type_k: q8_0
+    cache_type_v: q8_0
+    # Granite-4 ships with a Jinja chat template that needs --jinja to
+    # parse properly (per Unsloth's release notes). Already auto-added by
+    # the llama-cpp argv builder when the binary supports it.
+    extra_args:
+      - "--threads"
+      - "12"
+      - "--threads-batch"
+      - "12"
+
   # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
   # Was Qwen3-Coder-Next-80B-A3B which couldn't fit on a 24 GB GPU
   # (same partial-offload corruption that hit the 72B). Now using
@@ -577,21 +627,23 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 6.5                # was 20 — experts now spill to RAM via -ot.
-                                         # GPU holds attention + KV + embeddings, plus
-                                         # ~0.5 GB for the Qwen3-0.6B spec-decode draft.
-                                         # Note: the 80b variant (defined in `variants:`
-                                         # below) bumps this to 14.5 GB.
+    vram_estimate_gb: 7.2                # was 6.5 — bigger 1.7B draft adds
+                                         # ~0.7 GB vs the 0.6B (~1.2 GB resident
+                                         # vs ~0.5 GB). Experts still spill to
+                                         # RAM via -ot. GPU holds attention +
+                                         # KV + embeddings + draft. The 80b
+                                         # variant bumps this to ~15.2 GB
+                                         # (also includes the bigger draft).
     reasoning_format: none              # strip <think> tags from API output
-    # Speculative decoding: Qwen3-0.6B draft. Tokenizer-compatible with
-    # Qwen3-Coder-30B-A3B (both Qwen3 family vocab 151936). Lossless
-    # rejection-sampling — output matches running the target alone.
-    # draft_max widened from 8 → 24 (and min 4 → 5): code has unusually
-    # high draft accept rate (predictable structure — indentation, brackets,
-    # language idioms) so a wider speculative window pays off where it
-    # would over-spend on chatty tiers. Bigger-draft swap (Qwen3-1.7B)
-    # ships in the follow-up PR; this one only retunes the existing 0.6B.
-    draft_model_tag: "draft_qwen3_06b"
+    # Speculative decoding: Qwen3-1.7B draft (was 0.6B). Same Qwen3 vocab
+    # 151936 — rejection-sampling math holds. The bigger draft genuinely
+    # understands code structure (indentation, brackets, language idioms)
+    # so per-step accept rate jumps; pairs with the wider draft window
+    # (max 24 / min 5 from the perf-tune PR) for code-heavy generation.
+    # Tradeoff: slower draft pass, ~1.2 GB resident vs ~0.5 GB for 0.6B.
+    # Net win on code; worse on chat-heavy turns (which is fine — coding
+    # tier is for code).
+    draft_model_tag: "draft_qwen3_17b"
     draft_n_gpu_layers: -1
     draft_max: 24
     draft_min: 5
@@ -628,7 +680,7 @@ tiers:
     # is the smaller 30B (faster, fits with plenty of slack); users opt
     # into the larger 80B for harder refactors via the `/coder big`
     # slash command. Both variants share the same -ot expert-offload
-    # pattern, the same Qwen3-0.6B draft, the same KV cache type.
+    # pattern, the same Qwen3-1.7B draft, the same KV cache type.
     # Switching variants triggers a re-spawn of the tier's llama-server.
     default_variant: "30b"
     variants:
@@ -637,7 +689,7 @@ tiers:
         # gguf_path from the parent coding tier's model_resolver entry.
         name: "30B · fast (~26 t/s)"
         model_tag: "qwen3-coder-30b-a3b"
-        vram_estimate_gb: 6.5
+        vram_estimate_gb: 7.2
       80b:
         # The big variant — points at the `coding_80b` entry in
         # model-sources.yaml. Re-uses the same -ot pattern (configured
@@ -645,7 +697,8 @@ tiers:
         name: "80B · deep (~20 t/s)"
         source: "coding_80b"
         model_tag: "qwen3-coder-next-80b-a3b"
-        vram_estimate_gb: 14.5
+        vram_estimate_gb: 15.2                # was 14.5; +0.7 GB for the bigger
+                                              # 1.7B draft (vs the prior 0.6B).
 
   # ── Vision — Qwen3.6 35B-A3B + mmproj via llama.cpp ─────────────────────────
   vision:
