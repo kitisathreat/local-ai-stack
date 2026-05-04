@@ -778,7 +778,7 @@ async def list_plugins():
 
 
 @app.post("/admin/plugins/{slug}/toggle")
-async def toggle_plugin(slug: str, enabled: bool, user=Depends(auth.require_admin)):
+async def toggle_plugin(slug: str, enabled: bool, _: dict = Depends(admin.require_admin)):
     """Flip every tool method + every skill belonging to a plugin in a
     single call. Mirrors the on/off switch in Claude's Plugins panel.
 
