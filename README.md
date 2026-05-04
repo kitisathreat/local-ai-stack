@@ -69,29 +69,113 @@ embedded browser, no Electron.
   collections at the old dim are incompatible — run
   `scripts/reembed_knowledge.py`.
 
-## Quickstart
+## Operating
+
+All operator commands run through `LocalAIStack.ps1`. Run from the
+repo root in `pwsh`. `pwsh .\LocalAIStack.ps1 -Help` prints the
+canonical reference; the snippets below are the day-to-day workflows.
+
+### First-time setup
 
 ```powershell
-pwsh .\LocalAIStack.ps1 -InitEnv   # write default .env (edit secrets, optional Brave key)
-pwsh .\LocalAIStack.ps1 -Setup     # install prereqs, download binaries, create venvs, pull models
-pwsh .\LocalAIStack.ps1            # start everything + launch the Qt GUI
+pwsh .\LocalAIStack.ps1 -InitEnv   # write default .env at repo root
+# Edit .env: AUTH_SECRET_KEY, HISTORY_SECRET_KEY, optional BRAVE_API_KEY / HF_TOKEN
+pwsh .\LocalAIStack.ps1 -Setup     # install prereqs, download binaries, create venvs, pull GGUFs
+pwsh .\LocalAIStack.ps1            # alias for -Start; opens the Qt GUI
 ```
 
-Operator instructions (daily commands, cloudflared snippet, log paths,
-uninstall) live in `pwsh .\LocalAIStack.ps1 -Help`.
+`-Setup` installs (with one-time UAC prompts): Git, Python 3.12,
+PowerShell 7, cloudflared. CUDA 12 runtime is bundled. NVIDIA driver
+≥550 is detected but never auto-installed. Vendored binaries
+(`qdrant.exe`, `llama-server.exe`) are downloaded + SHA256-verified
+into `vendor/`. Three Python venvs (`venv-backend`, `venv-gui`,
+`venv-jupyter`) are created under `vendor/`. The setup wizard runs on
+first `-Start` if `.env` is missing or no admin user exists.
 
-### Auto-refresh on `git pull`
+### Start / stop the stack
+
+```powershell
+pwsh .\LocalAIStack.ps1                    # start everything + Qt GUI
+pwsh .\LocalAIStack.ps1 -Start -NoGui      # start backend + services without the GUI
+pwsh .\LocalAIStack.ps1 -Start -NoUpdateCheck   # skip HF model-update polling
+pwsh .\LocalAIStack.ps1 -Start -Offline    # also skip cloudflared + upstream model polls (CI / airgap)
+pwsh .\LocalAIStack.ps1 -Stop              # terminate every tracked PID from pids.json
+```
+
+`-Start` brings up qdrant, the pre-spawned llama-servers (vision,
+embedding, reranker), jupyter-lab, the FastAPI backend, and (unless
+`-NoGui`) the Qt app. The four chat tiers cold-spawn on first request
+via the `VRAMScheduler` — no pre-spawn at boot. PIDs land in
+`%APPDATA%\LocalAIStack\pids.json` so `-Stop` only kills what was
+started.
+
+### Reach the chat UI
+
+The web chat UI (`backend/static/chat.html`) is served by the FastAPI
+backend on `:18000` and is the canonical surface. Three ways in:
+
+```powershell
+# 1. Public hostname via Cloudflare Tunnel (set up below): https://chat.<your-domain>
+# 2. Native desktop window — the Qt app rendering the same web UI:
+pwsh .\LocalAIStack.ps1 -DesktopChat
+# 3. Loopback (admin only; chat is host-gated):
+#    http://127.0.0.1:18000/  works only when CHAT_HOSTNAME=localhost or airgap mode is on
+```
+
+The `-Start` Qt window is the operator console (admin / metrics /
+diagnostics / setup wizard). For everyday chat, use the browser at
+`chat.<your-domain>` or `-DesktopChat`. **In airgap mode**, the Qt
+chat window swaps in-place to a fully local chat surface.
+
+### Cloudflare Tunnel
+
+`-Start` brings up cloudflared automatically: as a Windows service if
+the setup wizard installed it that way, otherwise inline via
+`cloudflared tunnel run` reading `~/.cloudflared/config.yml`.
+
+Chat is host-gated, so the ingress hostname **must** match the
+`CHAT_HOSTNAME` env var (default `chat.mylensandi.com`). List the chat
+hostname **before** any wildcard or `http_status:404` fallback —
+cloudflared evaluates rules top-to-bottom.
+
+```yaml
+# ~/.cloudflared/config.yml
+ingress:
+  - hostname: chat.your-domain.com
+    service: http://localhost:18000
+  - service: http_status:404
+```
+
+The setup wizard's "Public access" page can provision a tunnel +
+DNS record automatically using your Cloudflare API token. To do it
+manually, follow `cloudflared tunnel login` →
+`cloudflared tunnel create local-ai-stack` → write the config above →
+`cloudflared tunnel route dns local-ai-stack chat.your-domain.com` →
+`cloudflared service install` (if you want it to run as a service).
+
+### Restart the backend after a code change
+
+```powershell
+git pull                                   # if you set core.hooksPath, the post-merge hook does the rest
+.\scripts\refresh-backend.ps1              # diff requirements.txt, pip install, bounce backend
+pwsh .\LocalAIStack.ps1 -Stop              # full stop
+pwsh .\LocalAIStack.ps1                    # full restart
+```
+
+Opt into the auto-refresh git hook so future `git pull`s restart the
+backend with the new code:
 
 ```powershell
 git config core.hooksPath .githooks
 ```
 
-Wires up [`.githooks/post-merge`](.githooks/post-merge), which calls
+This wires up [`.githooks/post-merge`](.githooks/post-merge) →
 [`scripts/refresh-backend.ps1`](scripts/refresh-backend.ps1): diffs the
 pull, `pip install`s any `requirements.txt` changes, bounces the
 backend. Gated to fire only on pulls from `origin`.
 
-To auto-pull on every PR squash+merge, register the polling task:
+To auto-pull on every PR squash+merge, register the polling task — it
+checks origin every 2 minutes and ff-pulls when a new commit lands:
 
 ```powershell
 pwsh .\scripts\install-auto-pull.ps1                 # default: every 2 min
@@ -99,8 +183,56 @@ pwsh .\scripts\install-auto-pull.ps1 -IntervalMinutes 5
 pwsh .\scripts\install-auto-pull.ps1 -Uninstall
 ```
 
-The chat web UI detects the restart window via `/healthz` heartbeat and
-shows a refresh banner instead of "Failed to fetch".
+The chat web UI detects the restart window via a `/healthz` heartbeat
+and shows a refresh banner instead of "Failed to fetch".
+
+### After a Windows reboot
+
+Nothing is registered as a Windows autostart service except cloudflared
+(when installed via the wizard). On boot:
+
+```powershell
+pwsh .\LocalAIStack.ps1                    # bring everything back up
+```
+
+Tunnel and DNS persist across reboots. Encrypted SQLite history,
+RAG documents, and per-user memory all live under `data/` and survive.
+The auto-pull scheduled task (if installed) starts itself.
+
+### Update model weights
+
+```powershell
+pwsh .\LocalAIStack.ps1 -CheckUpdates      # poll Hugging Face for new revisions per tier
+```
+
+`-Start` also runs the resolver against `config/model-sources.yaml` on
+every boot. `MODEL_UPDATE_POLICY` in `.env` controls the verdict:
+
+- `auto` — download immediately
+- `prompt` — GUI dialog asks the user (default)
+- `skip` — note it, don't download until next `-Setup`
+
+Set `OFFLINE=1` in `.env` to never poll upstream and always use the
+pinned revisions in `config/model-sources.yaml`.
+
+### Uninstall / reset
+
+```powershell
+pwsh .\LocalAIStack.ps1 -Stop
+Remove-Item -Recurse $env:APPDATA\LocalAIStack
+Remove-Item -Recurse .\vendor .\data       # blows away models, DB, history, RAG, .env
+```
+
+`data/lai.db` holds users, chats, memories, and RAG metadata. Deleting
+it resets the install — re-run `-Setup` to re-seed an admin.
+
+### Logs
+
+```
+%APPDATA%\LocalAIStack\logs\<service>.log    Per-service stdout/stderr
+%APPDATA%\LocalAIStack\pids.json             Tracked PIDs (used by -Stop)
+data/eval/tier-bench-<ts>.json               Bench output
+```
 
 ## Architecture
 
