@@ -610,7 +610,12 @@ def pull_missing_hf_files(
         # exists at its expected path under target_root. Any gap
         # forces need_gguf=True so the pull resumes the missing ones.
         need_gguf = not target_gguf.exists()
-        if (not need_gguf) and r.filename:
+        # The companion check only applies to sharded files: those keep
+        # their original `<base>-NNNNN-of-MMMMM.gguf` names on disk
+        # next to the canonical <tier>.gguf symlink. Non-sharded files
+        # are renamed to <tier>.gguf and the original filename is never
+        # written, so probing for it would always re-trigger a pull.
+        if (not need_gguf) and r.filename and _SHARD_RE.match(Path(r.filename).name):
             try:
                 shard_companions = _list_shard_companions(
                     r.repo, r.filename, r.revision or "main",

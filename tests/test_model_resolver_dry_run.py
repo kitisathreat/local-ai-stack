@@ -84,3 +84,42 @@ def test_hf_dry_run_skips_non_hf_sources(monkeypatch, tmp_path):
     pulled = pull_missing_hf_files(result, dry_run=True)
 
     assert pulled == []
+
+
+def test_hf_dry_run_resumes_sharded_with_missing_shard(monkeypatch, tmp_path):
+    """Symlink + first shard on disk but second shard missing → re-pull."""
+    fake_hf = type(sys)("huggingface_hub")
+    fake_hf.hf_hub_download = lambda *a, **k: pytest.fail("no download in dry-run")
+
+    class _FakeSibling:
+        def __init__(self, name): self.rfilename = name
+
+    class _FakeApi:
+        def model_info(self, repo, files_metadata=False, revision="main"):
+            info = type("I", (), {})()
+            info.siblings = [
+                _FakeSibling("UD-IQ1_S/model-00001-of-00002.gguf"),
+                _FakeSibling("UD-IQ1_S/model-00002-of-00002.gguf"),
+            ]
+            return info
+
+    fake_hf.HfApi = _FakeApi
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hf)
+    monkeypatch.setenv("LAI_DATA_DIR", str(tmp_path))
+
+    models_dir = tmp_path / "models"
+    (models_dir / "UD-IQ1_S").mkdir(parents=True, exist_ok=True)
+    (models_dir / "frontier.gguf").write_bytes(b"x")  # canonical symlink stand-in
+    (models_dir / "UD-IQ1_S" / "model-00001-of-00002.gguf").write_bytes(b"x")
+    # shard 2 of 2 is intentionally absent — pull should resume
+
+    result = _make_result(
+        frontier=Resolved(
+            tier="frontier", source="huggingface", repo="org/repo",
+            filename="UD-IQ1_S/model-00001-of-00002.gguf", revision="abc123",
+        ),
+    )
+
+    pulled = pull_missing_hf_files(result, dry_run=True)
+
+    assert pulled == ["frontier"]
