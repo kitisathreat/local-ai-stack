@@ -609,23 +609,30 @@ def pull_missing_hf_files(
         # pattern, additionally check that EVERY companion shard
         # exists at its expected path under target_root. Any gap
         # forces need_gguf=True so the pull resumes the missing ones.
+        # Non-sharded files don't get the per-companion check — the
+        # canonical `<tier>.gguf` is the only place we expect to find
+        # them on disk; the resolved filename may differ from that
+        # canonical name (e.g. `model-q4.gguf` symlinked as `vision.gguf`)
+        # and demanding both exist would re-pull a complete file.
         need_gguf = not target_gguf.exists()
         if (not need_gguf) and r.filename:
-            try:
-                shard_companions = _list_shard_companions(
-                    r.repo, r.filename, r.revision or "main",
-                )
-            except Exception:
-                shard_companions = [r.filename]
-            for sh in shard_companions:
-                shard_path = target_root / sh
-                if not shard_path.exists():
-                    logger.info(
-                        "tier %s: symlink exists but shard %s missing — re-pulling",
-                        tier, sh,
+            base = r.filename.rpartition("/")[2]
+            if _SHARD_RE.match(base):
+                try:
+                    shard_companions = _list_shard_companions(
+                        r.repo, r.filename, r.revision or "main",
                     )
-                    need_gguf = True
-                    break
+                except Exception:
+                    shard_companions = [r.filename]
+                for sh in shard_companions:
+                    shard_path = target_root / sh
+                    if not shard_path.exists():
+                        logger.info(
+                            "tier %s: symlink exists but shard %s missing — re-pulling",
+                            tier, sh,
+                        )
+                        need_gguf = True
+                        break
 
         need_mmproj = bool(target_mmproj) and not target_mmproj.exists()
         if not (need_gguf or need_mmproj):
