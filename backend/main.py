@@ -68,9 +68,19 @@ from .vram_scheduler import QueueFull, QueueTimeout, VRAMScheduler, VRAMExhauste
 from . import error_codes
 
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+# Process identification + unified logging — see backend/observability.py
+# for the full rationale. Single-call setup gives this process a stable
+# OS-level name (`lai-backend` in tasklist instead of `python.exe`),
+# routes log output to both stderr and a rotating file at
+# data/logs/backend-<date>.log, and writes data/runtime/backend.json so
+# any other tool can find this PID + port without grep'ing tasklist.
+# The port arg is best-known-default; uvicorn's actual bind happens
+# later, so a wrapper that runs uvicorn from a different port should
+# overwrite the runtime state via a follow-up obs.install() call.
+from . import observability as _obs
+_obs.install(
+    "backend",
+    port=int(os.getenv("LAI_BACKEND_PORT", "18000")),
 )
 logger = logging.getLogger("backend")
 

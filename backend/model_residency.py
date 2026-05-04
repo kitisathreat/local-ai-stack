@@ -231,6 +231,10 @@ def _tighten_for_fit(
     # Already fits with everything on GPU at full ctx? Done.
     if total <= free_vram_gb:
         plan.projected_vram_gb = total
+        logger.info(
+            "residency: %s fits at full ctx %d (need %.2fG, free %.2fG, mode=%s)",
+            tier.name, ctx, total, free_vram_gb, plan.mode.value,
+        )
         return plan
 
     reasons: list[str] = [plan.reason] if plan.reason else []
@@ -238,6 +242,10 @@ def _tighten_for_fit(
     # Step 2: KV → CPU.
     if pol.enable_kv_offload:
         plan.kv_offload = True
+        logger.info(
+            "residency: %s KV→CPU (layer=%.2fG + kv=%.2fG > free=%.2fG)",
+            tier.name, layer_vram, kv_vram, free_vram_gb,
+        )
         kv_vram = 0.0
         reasons.append("kv→cpu")
         total = layer_vram + kv_vram
@@ -260,6 +268,10 @@ def _tighten_for_fit(
                 plan.projected_vram_gb = layer_vram + kv_vram
                 reasons.append(f"ctx→{candidate}")
                 plan.reason = "+".join(reasons)
+                logger.info(
+                    "residency: %s ctx shrunk %d→%d (layer=%.2fG + kv=%.2fG ≤ free=%.2fG)",
+                    tier.name, ctx, candidate, layer_vram, kv_vram, free_vram_gb,
+                )
                 return plan
             if candidate <= pol.min_context_window:
                 break
@@ -272,6 +284,10 @@ def _tighten_for_fit(
             )
         )
         reasons.append(f"ctx→{pol.min_context_window}(floor)")
+        logger.warning(
+            "residency: %s hit ctx floor %d — projected %.2fG, free %.2fG",
+            tier.name, pol.min_context_window, plan.projected_vram_gb, free_vram_gb,
+        )
 
     plan.reason = "+".join(reasons) if reasons else plan.reason
     return plan
