@@ -749,18 +749,17 @@ tiers:
   # collections at 2560 and re-embeds the original chunk text from the
   # Qdrant payloads.
   embedding:
-    name: "Embedding (Qwen3-Embedding-4B)"
-    description: "Always-on embedding server for RAG and memory distillation. 2560-dim, 32k ctx, MTEB ~70.0."
+    name: "Embedding (Qwen3-Embedding-8B)"
+    description: "Always-on embedding server for RAG and memory distillation. 4096-dim, 32k ctx, MTEB ~70.6."
     backend: llama_cpp
     role: embedding
     port: 8090
-    model_tag: "qwen3-embedding-4b"
+    model_tag: "qwen3-embedding-8b"
     context_window: 32768                # native; chunks larger documents in
                                          # one shot — better recall.
     think_supported: false
-    vram_estimate_gb: 2.8                # was 1 — the 4 B Qwen3 embedder is
-                                         # ~2.4 GB weights + ~0.4 GB KV at the
-                                         # 32 k ctx with 4 parallel slots.
+    vram_estimate_gb: 5.2                # 8 B Qwen3 embedder: ~4.7 GB weights
+                                         # + ~0.5 GB KV at 32 k ctx with 4 slots.
     pinned: true                        # pre-spawned by the launcher; never evicted
     parallel_slots: 4
     n_gpu_layers: -1

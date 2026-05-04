@@ -130,29 +130,25 @@ tiers:
       file: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
       mmproj: "mmproj-Qwen3.6-35B-A3B-BF16.gguf"
 
-  # Qwen3-Embedding-4B — replaces nomic-embed-text-v1.5 (137 M, 768-dim).
-  # The 4 B variant gives substantially better retrieval quality (MTEB
-  # ~70.0 vs nomic ~62.4), 32 k native context (vs nomic's 8 k), and 2560
-  # output dimensions (vs 768) for richer representations. Same Qwen3
-  # tokenizer family as the chat tiers — no token-count drift between
-  # embedder and generator when chunking long documents.
+  # Qwen3-Embedding-8B — top of the MTEB leaderboard among open-weight
+  # embedders at the time of switch (~70.6 avg vs the 4B at ~70.0). Same
+  # Qwen3 tokenizer + 32 k context + 4096-dim output (vs 4B's 2560).
   #
-  # Q4_K_M GGUF lands at ~2.4 GB on disk; ~2.8 GB resident as the pinned
-  # embedding tier. Net free VRAM at idle drops from ~23 GB to ~21 GB —
-  # still ample for any single chat tier (largest is highest_quality at
-  # ~14.5 GB).
+  # Q4_K_M GGUF is ~4.68 GB on disk; ~5.2 GB resident. Net idle VRAM drops
+  # from ~21 GB (with 4B embedder) to ~18 GB — still fits the largest
+  # single chat tier (highest_quality ~14.5 GB) with breathing room.
   #
-  # Migration: the 768->2560 dimension change invalidates existing
+  # Migration: the 2560 -> 4096 dimension change invalidates existing
   # Qdrant collections. Run scripts/reembed_knowledge.py after -Setup
   # to rebuild user collections at the new dim.
   embedding:
     source: huggingface
-    repo: "Qwen/Qwen3-Embedding-4B-GGUF"
+    repo: "Qwen/Qwen3-Embedding-8B-GGUF"
     file: "*Q4_K_M.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "Qwen3-Embedding-4B-Q4_K_M.gguf"
+      file: "Qwen3-Embedding-8B-Q4_K_M.gguf"
 
   # GPT-OSS-120B — opt-in highest-reasoning tier (reasoning_max). Heavy-
   # weight MoE (5.1 B active out of 117 B) trained on reasoning, RL'd on
