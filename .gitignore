@@ -6,6 +6,14 @@ tests/ci_results.txt
 # Runtime state (SQLite db, Qdrant volumes, VRAM observed costs)
 data/*
 !data/.gitkeep
+# Vendored eval benchmarks ship with the repo so `scripts/eval_tiers.py`
+# runs offline. The datasets/ subdir is checked in; results/ + logs/ are
+# generated output and stay ignored.
+!data/eval/
+data/eval/*
+!data/eval/datasets/
+!data/eval/datasets/**
+!data/eval/README.md
 
 # Downloaded model files (GGUF + mmproj for llama.cpp vision tier)
 models/*
