@@ -1,0 +1,14 @@
+name: design
+title: Design
+description: Visual-design tooling — Figma + Canva + algorithmic art + canvas-design skill.
+icon: pencil
+enabled_by_default: false
+
+tools:
+  - figma
+  - canva
+
+skills:
+  - canvas-design
+  - algorithmic-art
+  - web-artifacts-builder

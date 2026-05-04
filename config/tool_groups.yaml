@@ -93,6 +93,7 @@ groups:
     description: "Host-touching tools — opt-in, blocked when airgap is on."
     subgroups:
       system:              { title: "System",                  order: 10 }
+      mobile:              { title: "Mobile (Android/iOS)",    order: 15 }
       eda:                 { title: "Electronics (EDA)",       order: 20 }
       eda_authoring:       { title: "EDA — Authoring",         order: 25 }
       cad_3d:              { title: "3D & CAD",                order: 30 }
@@ -100,6 +101,37 @@ groups:
       audio_production:    { title: "Audio Production",        order: 40 }
       audio_authoring:     { title: "Audio — Authoring",       order: 45 }
       media_library:       { title: "Media Library",           order: 50 }
+      documents:           { title: "Documents",               order: 60 }
+
+  productivity:
+    title: "Productivity"
+    order: 85
+    description: "Email, calendar, cloud docs, knowledge bases, and conferencing."
+    subgroups:
+      email:               { title: "Email",                   order: 10 }
+      calendar:            { title: "Calendar",                order: 20 }
+      cloud_storage:       { title: "Cloud Storage",           order: 30 }
+      knowledge_base:      { title: "Knowledge Base",          order: 40 }
+      databases_lite:      { title: "Lightweight Databases",   order: 50 }
+      conferencing:        { title: "Conferencing",            order: 60 }
+      mobility:            { title: "Mobility",                order: 70 }
+
+  design:
+    title: "Design"
+    order: 90
+    description: "Visual / creative-tool integrations."
+    subgroups:
+      collaborative:       { title: "Collaborative",           order: 10 }
+      consumer:            { title: "Consumer / Marketing",    order: 20 }
+
+  cloud_infra:
+    title: "Cloud Infra & DevTools"
+    order: 95
+    description: "Edge platforms, API tooling, AI hubs."
+    subgroups:
+      edge_platform:       { title: "Edge Platform",           order: 10 }
+      api_tooling:         { title: "API Tooling",             order: 20 }
+      ai_hub:              { title: "AI Model Hub",            order: 30 }
 
   uncategorized:
     title: "Uncategorized"

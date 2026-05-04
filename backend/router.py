@@ -30,6 +30,9 @@ class SlashParseResult:
     think_override: bool | None = None
     multi_agent_override: bool | None = None
     clear_memory: bool = False
+    # Slugs activated via `/skill <slug>` — the chat handler unions these
+    # with the request's `enabled_skills` list before injecting prompts.
+    skills: list[str] = field(default_factory=list)
 
 
 def parse_slash_commands(
@@ -73,6 +76,20 @@ def parse_slash_commands(
                     raw = parts[0].strip().lower()
                     aliases = {"small": "30b", "big": "80b", "large": "80b"}
                     result.set_variant = aliases.get(raw, raw)
+                    result.applied.append(f"{cmd.strip()} {parts[0]}")
+                    text = parts[1] if len(parts) > 1 else ""
+                    changed = True
+                    break
+
+            # "/skill " consumes the next token as the skill slug. Repeats
+            # are allowed: `/skill doc-coauthoring /skill mcp-builder write me a tool`
+            if effects.get("set_skill"):
+                remaining = text[len(cmd):].strip()
+                parts = remaining.split(None, 1)
+                if parts:
+                    slug = parts[0].strip().lower()
+                    if slug and slug not in result.skills:
+                        result.skills.append(slug)
                     result.applied.append(f"{cmd.strip()} {parts[0]}")
                     text = parts[1] if len(parts) > 1 else ""
                     changed = True
@@ -311,6 +328,16 @@ def route(
         },
         specialist_reason=specialist_reason,
     )
+
+    # Merge `/skill <slug>` slash commands into the request's enabled_skills
+    # so the chat handler's existing skill-injection path picks them up
+    # without needing to know about the slash flow.
+    if parsed.skills:
+        existing = list(req.enabled_skills or [])
+        for slug in parsed.skills:
+            if slug not in existing:
+                existing.append(slug)
+        req.enabled_skills = existing
 
     # Normalize request.model so downstream uses the canonical tier name
     req.model = tier_name

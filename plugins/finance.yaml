@@ -1,0 +1,27 @@
+name: finance
+title: Finance
+description: Markets, fundamentals, modelling, macro indicators — all of the local-ai-stack finance tools, batched.
+icon: line-chart
+enabled_by_default: false
+
+tools:
+  - finance
+  - yahoo_finance_extended
+  - alpha_vantage
+  - finnhub
+  - sec_edgar
+  - forex
+  - financial_calculator
+  - fred
+  - bls
+  - bea
+  - imf
+  - chart_generator
+  - financial_model
+  - technical_analysis
+  - portfolio_author
+  - dd_report_author
+  - news_correlator
+  - coincap
+
+skills: []

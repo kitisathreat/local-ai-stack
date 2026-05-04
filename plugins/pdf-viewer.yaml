@@ -1,0 +1,12 @@
+name: pdf-viewer
+title: Pdf Viewer
+description: Read, search, and extract structured content from PDF files (local or URL).
+icon: file
+enabled_by_default: false
+
+tools:
+  - pdf_viewer
+  - paper_full_text
+
+skills:
+  - doc-coauthoring

@@ -82,3 +82,7 @@ slash_commands:
   '/quick':
     think: false
     multi_agent: false
+  '/skill':                             # usage: /skill doc-coauthoring
+    set_skill: true                     # value comes from next token; chains
+                                        # so multiple skills can stack
+                                        # (`/skill foo /skill bar question`)

@@ -599,21 +599,70 @@ python scripts/bench_tiers.py --tiers fast,versatile,coding
 python -c "import json,urllib.request,time; b={'model':'tier.coding','variant':'80b','stream':True,'max_tokens':220,'messages':[{'role':'user','content':'Count from 1 to 50, single comma+space separator, one line, no other text.'}]}; ..."
 ```
 
-## Tools, RAG, memory
+## Tools, connectors, skills, plugins, RAG, memory
 
-- **Tools.** [`tools/`](tools/) holds 90+ self-contained modules (web
+- **Tools.** [`tools/`](tools/) holds 170+ self-contained modules (web
   search, finance, science, dev utils, data repos). The registry is
   driven by [`config/tools.yaml`](config/tools.yaml); each tool exposes
   its JSON schema and is enable/disable-able from the admin Tools tab.
   See [Desktop integration](#desktop-integration) below for the
   filesystem / app-launcher / KiCad / Blender / Fusion 360 / FL Studio /
   Synthesizer V Studio bridge.
+- **Connectors.** A subset of the tools above mirrors the Anthropic
+  Claude *Connectors* tray one-for-one — Airtable, Notion, Hugging Face,
+  NPI Registry, Cloudflare Developer Platform, Figma, Canva, Postman,
+  Gmail, Google Calendar, Google Drive, Uber, Zoom, an extended GitHub
+  Integration (PRs/issues/files/branches/Actions), Android-MCP (adb),
+  Windows-MCP (native automation), and a pdf-viewer. Each is OFF by
+  default — flip them on from the admin Tools panel and configure the
+  required API key / OAuth refresh-token in the tool's Valves. See the
+  [connector mapping table](#connector-parity-with-claude) below.
+- **Skills.** [`skills/<slug>/SKILL.md`](skills/) — prompt-only capability
+  packs ported one-for-one from Claude (`algorithmic-art`, `canvas-design`,
+  `doc-coauthoring`, `mcp-builder`, `skill-creator`,
+  `web-artifacts-builder`). Activated per-chat via `enabled_skills` on the
+  request body or the `/skill <slug>` slash command — the skill body is
+  prepended to the system prompt for the duration of the turn. Loaded by
+  [`backend/skills/registry.py`](backend/skills/registry.py) and surfaced at
+  `GET /skills` / `GET /skills/{slug}`.
+- **Plugins.** [`plugins/<slug>.yaml`](plugins/) — manifest bundles that
+  flip a group of tools + skills on/off in one click. The eight committed
+  manifests mirror Claude's Plugins panel: Productivity, Design, Data,
+  Finance, Engineering, Pdf viewer, Bio research, Zoom. Surfaced at
+  `GET /plugins` and toggled via `POST /admin/plugins/{slug}/toggle?enabled=true`.
 - **RAG.** Per-user collections in Qdrant, populated via `/rag/upload`.
   Embeddings are computed on the always-on `llama-server --embedding`
   pinned to port 8090.
 - **Memory.** Every Nth turn the orchestrator distills durable facts
   from chat history and stores them per-user; relevant memories are
   injected into prompts on subsequent turns.
+
+### Connector parity with Claude
+
+| Claude connector | local-ai-stack tool | Notes |
+|---|---|---|
+| Airtable | `airtable.*` | Personal Access Token; full base/table/record/comment surface |
+| Canva | `canva.*` | Connect API w/ OAuth + PKCE refresh; designs, exports, folders, asset upload |
+| Clinical Trials | `clinicaltrials.*` | Pre-existing |
+| Cloudflare Developer Platform | `cloudflare.*` | Workers / D1 (incl. SQL) / KV / R2 / Hyperdrive / docs search |
+| Figma | `figma.*` | File structure, node JSON, image renders, comments, projects |
+| GitHub Integration | `github_integration.*` (+ pre-existing `github_search.*`) | PRs, issues, file r/w, branches, Actions runs |
+| Gmail | `gmail.*` | Search, read, draft, send, label; OAuth refresh-token |
+| Google Calendar | `google_calendar.*` | Events CRUD + free/busy; same Google OAuth |
+| Google Drive | `google_drive.*` | Search, read with smart export, upload, share |
+| Hugging Face | `huggingface.*` | Hub search, repo details, README fetch, docs/papers search |
+| Notion | `notion.*` | Search, pages (+ markdown→blocks helper), databases, comments |
+| NPI Registry | `npi_registry.*` | US healthcare provider directory; no auth |
+| Postman | `postman.*` | Workspaces, collections, environments, mocks |
+| PubMed | `pubmed.*` | Pre-existing |
+| Spotify | `spotify.*` | Pre-existing |
+| Uber | `uber.*` | Estimates, ETAs, Eats search; user-scoped trip history with OAuth |
+| Android-MCP | `android_mcp.*` | adb bridge — devices, install, keyevents/taps/swipes, UI dump, files |
+| Claude in Chrome | (built into Claude — n/a) | |
+| Filesystem | `filesystem.*` | Pre-existing |
+| pdf-viewer | `pdf_viewer.*` | Per-page text with `[page N]` anchors, search, outline |
+| Windows-MCP | `windows_mcp.*` | Window focus, keys/clicks, services, scheduled tasks (gated), registry (gated) |
+| Zoom plugin | `zoom.*` | S2S OAuth; meetings CRUD, recordings, transcripts, users |
 
 ## Development
 

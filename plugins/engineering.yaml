@@ -1,0 +1,24 @@
+name: engineering
+title: Engineering
+description: Code search, repos, code review, package metadata, scaffolding, and infra (Cloudflare, Postman).
+icon: terminal
+enabled_by_default: false
+
+tools:
+  - github_search
+  - github_integration
+  - cloudflare
+  - postman
+  - code_troubleshoot
+  - code_review_author
+  - dev_utils
+  - package_search
+  - network_tools
+  - repo_scaffolder
+  - notebook_author
+  - n8n_trigger
+
+skills:
+  - mcp-builder
+  - skill-creator
+  - web-artifacts-builder
