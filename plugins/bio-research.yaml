@@ -1,0 +1,22 @@
+name: bio-research
+title: Bio Research
+description: Biomedical literature, clinical trials, providers (NPI), drug labels, protein/gene data.
+icon: microscope
+enabled_by_default: false
+
+tools:
+  - pubmed
+  - clinicaltrials
+  - openfda
+  - pubchem
+  - npi_registry
+  - europepmc
+  - rcsb_pdb
+  - chembl
+  - uniprot
+  - ensembl
+  - paper_full_text
+  - literature_review_author
+  - citation_graph
+
+skills: []

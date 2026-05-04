@@ -251,6 +251,22 @@ class ToolRegistry:
         return bool(t and _is_airgap_safe(t))
 
 
+def _ensure_tools_package(tools_dir: Path) -> None:
+    """Register a synthetic ``_lai_tools`` parent package so per-file tool
+    modules can `from ._helper import ...` to share code (e.g. the
+    Google OAuth refresh helper used by gmail / google_calendar /
+    google_drive). Idempotent."""
+    import types
+    pkg = sys.modules.get("_lai_tools")
+    if pkg is not None and getattr(pkg, "__path__", None):
+        # Re-point __path__ if the registry is rebuilt against a different dir.
+        pkg.__path__ = [str(tools_dir)]
+        return
+    pkg = types.ModuleType("_lai_tools")
+    pkg.__path__ = [str(tools_dir)]
+    sys.modules["_lai_tools"] = pkg
+
+
 def _import_tool_module(path: Path) -> Any | None:
     """Import a `tools/foo.py` file as a module, returning the instantiated
     `Tools` object. Returns None on import failure."""
@@ -336,6 +352,7 @@ def build_registry(
         logger.warning("Tools directory not found: %s", tools_dir)
         return reg
 
+    _ensure_tools_package(tools_dir)
     cfg_dir = config_dir or tools_dir.parent / "config"
     yaml_entries = _load_tools_yaml(cfg_dir)
     reg.groups = _load_tool_groups_yaml(cfg_dir)

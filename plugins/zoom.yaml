@@ -1,0 +1,11 @@
+name: zoom
+title: Zoom
+description: Schedule, list, and inspect Zoom meetings; pull recordings and transcripts.
+icon: video
+enabled_by_default: false
+
+tools:
+  - zoom
+  - google_calendar     # bridge calendar invites to Zoom-meeting URLs
+
+skills: []

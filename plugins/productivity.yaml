@@ -1,0 +1,19 @@
+name: productivity
+title: Productivity
+description: Email, calendar, cloud docs, notes, and task tracking — the day-to-day knowledge-work surface.
+icon: zap
+enabled_by_default: false
+
+tools:
+  - gmail
+  - google_calendar
+  - google_drive
+  - notion
+  - airtable
+  - memory_tool
+  - plan_tracker
+  - project_workspace
+  - datetime_tool
+
+skills:
+  - doc-coauthoring

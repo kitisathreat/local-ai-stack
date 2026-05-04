@@ -36,13 +36,15 @@ from .middleware.clarification import (
     format_clarifications,
     inject_clarification_instruction,
 )
-from .middleware.context import inject_system_context
+from .middleware.context import inject_skills, inject_system_context
 from .middleware.rate_limit import rate_limiter
 from .middleware.response_mode import inject_response_mode
 from .middleware.web_search import inject_web_results
 from .orchestrator import Orchestrator
+from .plugins import PluginRegistry, build_plugin_registry
 from .router import last_user_text, route
 from .schemas import ChatMessage, MessagePart
+from .skills import SkillRegistry, build_skill_registry
 from .tools import executor as tool_executor
 from .tools.registry import ToolRegistry, build_registry
 from .schemas import (
@@ -94,6 +96,13 @@ class AppState:
     scheduler: VRAMScheduler
     orchestrator: Orchestrator
     tools: ToolRegistry
+    # Prompt-only skill packs (skills/<slug>/SKILL.md). Activated per-chat
+    # via /skill <slug> slash command or the chat UI's skills panel; injected
+    # as a system-prompt prefix.
+    skills: SkillRegistry
+    # Manifest bundles (plugins/<slug>.yaml). Each plugin names a set of
+    # tool modules + skills that flip on/off as a group.
+    plugins: PluginRegistry
     # Runtime airgap flag — toggled via /admin/airgap. When on, the
     # backend refuses outbound calls and persists all new chat + memory
     # content to separate encrypted stores.
@@ -234,6 +243,22 @@ async def lifespan(app: FastAPI):
     config_dir = Path(os.getenv("LAI_CONFIG_DIR") or (_repo_root / "config"))
     state.tools = build_registry(tools_dir=tools_dir, config_dir=config_dir)
     logger.info("Tool registry ready: %d tools (from %s)", len(state.tools.tools), tools_dir)
+
+    # Skills + plugins live alongside tools at the repo root.
+    skills_dir = Path(os.getenv("LAI_SKILLS_DIR") or (_repo_root / "skills"))
+    plugins_dir = Path(os.getenv("LAI_PLUGINS_DIR") or (_repo_root / "plugins"))
+    state.skills = build_skill_registry(skills_dir)
+    state.plugins = build_plugin_registry(plugins_dir)
+    logger.info(
+        "Skills: %d  Plugins: %d  (from %s, %s)",
+        len(state.skills), len(state.plugins), skills_dir, plugins_dir,
+    )
+
+    # Apply enabled_by_default plugins so a fresh deploy lights up sensibly.
+    for plugin in state.plugins.all():
+        if plugin.enabled_by_default:
+            state.plugins.apply_to_tools(plugin.slug, True, state.tools)
+            state.plugins.apply_to_skills(plugin.slug, True, state.skills)
 
     # llama.cpp is the only backend now. The client manages one
     # llama-server subprocess per tier; vision + embedding are pre-spawned
@@ -702,6 +727,80 @@ def _serialize_taxonomy(reg) -> list[dict]:
     return out
 
 
+@app.get("/skills")
+async def list_skills():
+    """Surface every loaded skill pack (skills/<slug>/SKILL.md). The chat
+    UI's skills picker uses this to render the toggleable list. Activation
+    happens client-side: the user sends a chat with `enabled_skills=[...]`
+    or types `/skill <slug>` and the request handler prepends the skill
+    body to the system prompt for that turn."""
+    out = []
+    for s in state.skills.all():
+        out.append({
+            "slug": s.slug,
+            "title": s.title,
+            "description": s.description,
+            "version": s.version,
+            "triggers": s.triggers,
+            "suggested_tier": s.suggested_tier,
+            "enabled": s.enabled,
+        })
+    return {"data": out}
+
+
+@app.get("/skills/{slug}")
+async def get_skill(slug: str):
+    """Fetch the full body + metadata for one skill (e.g. for the admin
+    dashboard's preview pane)."""
+    s = state.skills.get(slug)
+    if not s:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {slug}")
+    return {
+        "slug": s.slug,
+        "title": s.title,
+        "description": s.description,
+        "version": s.version,
+        "triggers": s.triggers,
+        "suggested_tier": s.suggested_tier,
+        "enabled": s.enabled,
+        "body": s.body,
+    }
+
+
+@app.get("/plugins")
+async def list_plugins():
+    """List plugin manifests with their resolved member tools + skills.
+    Members that aren't currently registered (e.g. tool not yet shipped)
+    are filtered out so the UI never points at dead toggles."""
+    out = []
+    for p in state.plugins.all():
+        members = state.plugins.members_for(p.slug, state.tools, state.skills)
+        out.append({
+            "slug": p.slug,
+            "title": p.title,
+            "description": p.description,
+            "icon": p.icon,
+            "enabled_by_default": p.enabled_by_default,
+            "tools": members["tools"],
+            "skills": members["skills"],
+        })
+    return {"data": out}
+
+
+@app.post("/admin/plugins/{slug}/toggle")
+async def toggle_plugin(slug: str, enabled: bool, _: dict = Depends(admin.require_admin)):
+    """Flip every tool method + every skill belonging to a plugin in a
+    single call. Mirrors the on/off switch in Claude's Plugins panel.
+
+    Body is empty; pass the desired state via `?enabled=true|false`.
+    """
+    if slug not in state.plugins:
+        raise HTTPException(status_code=404, detail=f"Plugin not found: {slug}")
+    n_tools = state.plugins.apply_to_tools(slug, bool(enabled), state.tools)
+    n_skills = state.plugins.apply_to_skills(slug, bool(enabled), state.skills)
+    return {"slug": slug, "enabled": bool(enabled), "tools_affected": n_tools, "skills_affected": n_skills}
+
+
 @app.get("/airgap")
 @app.get("/api/airgap")
 async def airgap_status():
@@ -810,10 +909,13 @@ async def chat_completions(
     await rate_limiter.check(rate_key)
 
     # Middleware pipeline — inlet:
-    #   1. Datetime/system context injection
-    #   2. Clarification-protocol system prompt + ambiguity nudge
-    #   3. Web-search auto-inject (if trigger patterns match the user msg)
-    #   4. Per-user RAG + memory context (signed-in users only)
+    #   1. Skill-pack injection (system-prompt prefix from active skills)
+    #   2. Datetime/system context injection
+    #   3. Clarification-protocol system prompt + ambiguity nudge
+    #   4. Response-mode steering
+    #   5. Web-search auto-inject (if trigger patterns match the user msg)
+    #   6. Per-user RAG + memory context (signed-in users only)
+    inject_skills(req.messages, state.skills, req.enabled_skills)
     inject_system_context(req.messages)
     inject_clarification_instruction(req.messages)
     inject_response_mode(req.messages, req.response_mode, req.plan_text)
@@ -1680,6 +1782,7 @@ async def v1_completions(req: dict, request: Request, user: dict | None = Depend
 
         # Reuse the same middleware pipeline as chat so the legacy endpoint
         # gets identical context injection / RAG / clarification semantics.
+        inject_skills(chat_req.messages, state.skills, chat_req.enabled_skills)
         inject_system_context(chat_req.messages)
         inject_clarification_instruction(chat_req.messages)
         inject_response_mode(chat_req.messages, chat_req.response_mode, chat_req.plan_text)

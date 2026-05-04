@@ -74,3 +74,28 @@ def inject_system_context(
             return messages
     messages.insert(0, ChatMessage(role="system", content=injection))
     return messages
+
+
+def inject_skills(
+    messages: list[ChatMessage],
+    skills_registry,
+    slugs: Iterable[str] | None,
+) -> list[ChatMessage]:
+    """Prepend the rendered system-prompt fragments for every active skill
+    to the system message (or insert a fresh one). No-op when ``slugs`` is
+    falsy or no slug resolves to a known, enabled skill — keeps the
+    request shape backwards-compatible when the chat client doesn't yet
+    know about skills."""
+    if not slugs:
+        return messages
+    rendered = skills_registry.render_combined_prompt(list(slugs))
+    if not rendered:
+        return messages
+    for msg in messages:
+        if msg.role == "system" and isinstance(msg.content, str):
+            # Skills go BEFORE [Context: ...] so the model sees the
+            # capability framing first.
+            msg.content = f"{rendered}\n\n{msg.content}" if msg.content else rendered
+            return messages
+    messages.insert(0, ChatMessage(role="system", content=rendered))
+    return messages

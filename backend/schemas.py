@@ -117,6 +117,12 @@ class ChatRequest(BaseModel):
     # form returned by GET /tools.
     enabled_tools: list[str] | None = None
 
+    # Skill packs (skills/<slug>/SKILL.md) the user activated for this
+    # turn. Each slug's body is prepended to the system prompt before
+    # the request hits the model. Mirrors Claude's per-chat skills
+    # picker. Unknown slugs are silently skipped server-side.
+    enabled_skills: list[str] | None = None
+
     # IDs returned by POST /api/chat/upload, attached to the user's
     # next message. The backend looks them up in data/uploads/<user>/
     # and either embeds the text inline or feeds image bytes to the

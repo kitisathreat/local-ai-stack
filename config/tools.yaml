@@ -1480,3 +1480,195 @@ additional_tools:
     title: "CoinCap — Free Crypto Prices & History"
     description: "Key-free crypto asset prices, market caps, and historical candles. Broader altcoin coverage than the basic finance tool."
     api_key_required: false
+
+# ── Connectors (parity with Claude's web/desktop connector tray) ─────────────
+# Each entry below mirrors a connector from the Claude Connectors panel. They
+# slot into the existing tool registry just like every other tool — toggleable
+# from the chat tools popover, gated by airgap when `requires_service: host_*`,
+# and grouped under `productivity` / `design` / `cloud_infra` (added to
+# config/tool_groups.yaml).
+connectors:
+  airtable:
+    file: tools/airtable.py
+    group: productivity
+    subgroup: databases_lite
+    title: "Airtable — Bases, Tables, Records, Comments"
+    description: "Read/write Airtable bases — list bases & tables, fetch schemas, list / search / filter records, create / update / delete records, post record comments. Auth via Personal Access Token."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://airtable.com/create/tokens"
+
+  notion:
+    file: tools/notion.py
+    group: productivity
+    subgroup: knowledge_base
+    title: "Notion — Pages, Databases, Comments"
+    description: "Search the Notion workspace, fetch pages and databases, query databases with filters/sorts, append blocks to a page, create child pages, post comments. Auth via Internal Integration Secret (invite the integration to each page/db)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://www.notion.so/profile/integrations"
+
+  huggingface:
+    file: tools/huggingface.py
+    group: cloud_infra
+    subgroup: ai_hub
+    title: "Hugging Face — Hub, Docs, Papers, Spaces"
+    description: "Search models / datasets / spaces on the HF Hub, fetch repo READMEs and details, search the docs, look up papers, identify the authenticated user. HF_TOKEN required only for private/gated repos."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+    api_key_url: "https://huggingface.co/settings/tokens"
+
+  npi_registry:
+    file: tools/npi_registry.py
+    group: research
+    subgroup: life_sciences
+    title: "NPI Registry — US Healthcare Provider Directory"
+    description: "Look up National Provider Identifier records from the CMS NPPES public registry — clinicians, hospitals, group practices. Search by NPI, name, address, taxonomy. No auth."
+    requires_service: null
+    default_enabled: false
+    api_key_required: false
+
+  cloudflare:
+    file: tools/cloudflare.py
+    group: cloud_infra
+    subgroup: edge_platform
+    title: "Cloudflare Developer Platform"
+    description: "Manage Workers scripts, D1 databases (and run SQL), KV namespaces, R2 buckets, Hyperdrive configs; search the Cloudflare developer docs. Auth via API token."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://dash.cloudflare.com/profile/api-tokens"
+
+  figma:
+    file: tools/figma.py
+    group: design
+    subgroup: collaborative
+    title: "Figma — Files, Frames, Comments, Components"
+    description: "Read Figma files via the REST API: structure, specific node JSON, image renders (PNG/SVG/PDF), comments, projects, components. Auth via Personal Access Token."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://www.figma.com/developers/api#access-tokens"
+
+  canva:
+    file: tools/canva.py
+    group: design
+    subgroup: consumer
+    title: "Canva — Connect API"
+    description: "List / search / create designs, kick off PDF/PNG/MP4 exports, list folders, upload assets via the Canva Connect API. OAuth 2.0 + PKCE; the tool refreshes the access token automatically when CLIENT_ID/CLIENT_SECRET are set."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://www.canva.dev/docs/connect/authentication/"
+
+  postman:
+    file: tools/postman.py
+    group: cloud_infra
+    subgroup: api_tooling
+    title: "Postman — Workspaces, Collections, Mocks"
+    description: "Postman Public API — list workspaces, manage collections (create/duplicate), environments, mock servers. Auth via Postman API key."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://www.postman.com/settings/me/api-keys"
+
+  gmail:
+    file: tools/gmail.py
+    group: productivity
+    subgroup: email
+    title: "Gmail — Search, Read, Draft, Send, Label"
+    description: "Search threads/messages with the Gmail query language, read message bodies, create drafts, send mail, manage labels. OAuth 2.0 with refresh-token (gmail.modify scope)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://console.cloud.google.com/apis/credentials"
+
+  google_calendar:
+    file: tools/google_calendar.py
+    group: productivity
+    subgroup: calendar
+    title: "Google Calendar — Events, Free/Busy"
+    description: "List calendars, list / search / create / update / delete events, run free/busy queries. Same OAuth refresh-token pattern as the Gmail tool (calendar scope)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://console.cloud.google.com/apis/credentials"
+
+  google_drive:
+    file: tools/google_drive.py
+    group: productivity
+    subgroup: cloud_storage
+    title: "Google Drive — Search, Read, Upload, Share"
+    description: "Search Drive, read file content (Docs export to markdown, Sheets to CSV, Slides to PDF), upload text files, manage permissions. OAuth refresh-token (drive scope)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://console.cloud.google.com/apis/credentials"
+
+  uber:
+    file: tools/uber.py
+    group: productivity
+    subgroup: mobility
+    title: "Uber — Estimates, Eats, Trip History"
+    description: "Anonymous price + ETA estimates, product listings, public Uber Eats search; user-scoped trip history and profile when an OAuth refresh-token is configured."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://developer.uber.com"
+
+  zoom:
+    file: tools/zoom.py
+    group: productivity
+    subgroup: conferencing
+    title: "Zoom — Meetings, Recordings, Users"
+    description: "List / create / update / delete Zoom meetings, list cloud recordings, fetch meeting transcripts, look up users. Auth via Server-to-Server OAuth (account_id + client_id + client_secret)."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://developers.zoom.us/docs/internal-apps/s2s-oauth/"
+
+  github_integration:
+    file: tools/github_integration.py
+    group: code_data_compute
+    subgroup: code_search
+    title: "GitHub Integration — PRs, Issues, Files, Reviews"
+    description: "Full read/write GitHub surface — list / create / merge PRs, list / open / comment / close issues, read/write files, list and create branches, inspect Actions runs. Complements the read-only `github_search` tool."
+    requires_service: null
+    default_enabled: false
+    api_key_required: true
+    api_key_url: "https://github.com/settings/personal-access-tokens/new"
+
+  android_mcp:
+    file: tools/android_mcp.py
+    group: desktop
+    subgroup: mobile
+    title: "Android-MCP — adb Bridge"
+    description: "Drive a connected Android device or emulator via adb: list devices, install/uninstall APKs (gated), send keyevents/taps/swipes, dump UI hierarchy, take screenshots, push/pull files. Requires Android Platform Tools on PATH."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+    api_key_url: "https://developer.android.com/tools/releases/platform-tools"
+
+  windows_mcp:
+    file: tools/windows_mcp.py
+    group: desktop
+    subgroup: system
+    title: "Windows-MCP — Native Windows Automation"
+    description: "Windows control surface: list/focus windows, send keystrokes, click coordinates, list processes/services, manage scheduled tasks (gated), read/write registry (gated), clipboard, optional PowerShell escape hatch (gated)."
+    requires_service: host_processes
+    default_enabled: false
+    api_key_required: false
+
+  pdf_viewer:
+    file: tools/pdf_viewer.py
+    group: desktop
+    subgroup: documents
+    title: "PDF Viewer — Read, Search, Extract"
+    description: "Read local or remote PDFs, extract per-page text with [page N] anchors, list metadata, search substrings across pages, dump table of contents. Uses pypdf."
+    requires_service: host_filesystem
+    default_enabled: false
+    api_key_required: false
+    requirements: pypdf
