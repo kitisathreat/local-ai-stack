@@ -265,10 +265,16 @@ def test_build_argv_no_ot_when_field_empty():
 
 # ── build_argv: speculative-decode flags ──────────────────────────────────────
 
-def test_build_argv_emits_draft_flags_when_draft_set():
-    """When draft_gguf_path is set, -md/-ngld/--draft-max/--draft-min appear."""
+def test_build_argv_emits_draft_flags_when_draft_set(tmp_path):
+    """When draft_gguf_path is set and the file exists, -md/-ngld/--draft-max/--draft-min appear."""
     from backend.config import TierConfig
     from backend.backends.llama_cpp import build_argv
+
+    # build_argv() defensively checks that the draft GGUF actually exists
+    # on disk before emitting -md (a missing file would crash llama-server
+    # mid-startup), so the test must pre-create it.
+    draft_path = tmp_path / "draft.gguf"
+    draft_path.write_bytes(b"")
 
     tier = TierConfig(
         name="t",
@@ -276,7 +282,7 @@ def test_build_argv_emits_draft_flags_when_draft_set():
         gguf_path="/tmp/fake.gguf",
         port=9999,
         draft_model_tag="qwen3-0.6b",
-        draft_gguf_path="/tmp/draft.gguf",
+        draft_gguf_path=str(draft_path),
         draft_n_gpu_layers=-1,
         draft_max=8,
         draft_min=4,
@@ -285,7 +291,7 @@ def test_build_argv_emits_draft_flags_when_draft_set():
     # -md exists exactly once with the draft path immediately after
     md_idxs = [i for i, a in enumerate(argv) if a == "-md"]
     assert len(md_idxs) == 1
-    assert argv[md_idxs[0] + 1] == "/tmp/draft.gguf"
+    assert argv[md_idxs[0] + 1] == str(draft_path)
     # tunables are emitted as flag/value pairs
     ngld_idxs = [i for i, a in enumerate(argv) if a == "-ngld"]
     assert len(ngld_idxs) == 1
