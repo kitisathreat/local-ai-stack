@@ -42,3 +42,11 @@ huggingface_hub==0.26.2
 # stable identifying name (`lai-backend`, `lai-resolver-coding`, etc.)
 # that surfaces in the OS process listing on Windows + Linux + macOS.
 setproctitle==1.3.3
+
+# Eval framework reads vendored benchmark datasets (HumanEval, GSM8K,
+# AIME 2024, MMLU subset) which ship as parquet — pandas + pyarrow are
+# the smallest combo that loads them efficiently. pandas was previously
+# installed transitively via huggingface_hub's optional deps; pin both
+# explicitly so a fresh venv after `-Setup` has them.
+pandas==3.0.2
+pyarrow==18.0.0
