@@ -75,6 +75,29 @@ tiers:
       revision: "main"
       file: "Qwen3.5-9B-UD-Q4_K_XL.gguf"
 
+  # DeepSeek-R1-0528-Qwen3-8B — Qwen3-8B fine-tuned on chain-of-thought
+  # traces from the full 671B R1-0528. Same Qwen3 vocab so the existing
+  # Qwen3-0.6B speculative draft works. UD-Q4_K_XL is 4.77 GB.
+  fast_r1_distill:
+    source: huggingface
+    repo: "unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "DeepSeek-R1-0528-Qwen3-8B-UD-Q4_K_XL.gguf"
+
+  # Phi-4-reasoning-plus — Microsoft SFT+RL on Phi-4 14B dense. Phi vocab
+  # is NOT Qwen3-compatible, so no spec-decode draft. UD-Q4_K_XL is 8.33 GB.
+  fast_phi4:
+    source: huggingface
+    repo: "unsloth/Phi-4-reasoning-plus-GGUF"
+    file: "*UD-Q4_K_XL.gguf"
+    tracking: latest
+    pinned:
+      revision: "main"
+      file: "Phi-4-reasoning-plus-UD-Q4_K_XL.gguf"
+
   # Qwen3-Coder-Next 80B-A3B — SWE-bench trained. unsloth's release.
   # Note: the official Qwen/Qwen3-Coder-Next-GGUF ships sharded
   # (00001-of-00004 ... 00004-of-00004), which the resolver doesn't

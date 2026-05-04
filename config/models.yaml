@@ -489,10 +489,18 @@ tiers:
         # +1 GB for the doubled KV (3 slots × 131k q4_0 hybrid).
         vram_estimate_gb: 7.0
 
-  # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
+  # ── Fast subcategory — small models, throughput-first tier picks ─────────
+  # Three tiers grouped under category "Fast" in the chat-UI dropdown:
+  #   - fast              Qwen3.5 9B dense, multi-agent worker default
+  #   - fast_r1_distill   DeepSeek-R1-0528-Qwen3-8B distill, reasoning-capable
+  #   - fast_phi4         Phi-4-reasoning-plus, math/science specialist
+  # The default `fast` stays on plain Q4_K_M for max throughput; the
+  # other two are UD quants (small enough that the size cost is invisible).
+
   fast:
-    name: "Fast (Qwen3.5 9B)"
-    description: "Small, fully GPU-offloaded. Multiple instances share VRAM via --parallel — used as multi-agent workers."
+    category: "Fast"
+    name: "Fast · 9B · throughput (~71 t/s)"
+    description: "Qwen3.5 9B dense + spec-decode. Multi-agent worker default; runs at ~71 t/s with parallel_slots=4. General-purpose chat, no thinking by default."
     backend: llama_cpp
     port: 8012
     model_tag: "qwen3.5-9b"
@@ -523,6 +531,88 @@ tiers:
     # rationale as the versatile tier: q4_0 K/V is lossless here.
     cache_type_k: q4_0
     cache_type_v: q4_0
+
+  # ── Fast / R1-Distill — small reasoning specialist ──────────────────────────
+  # DeepSeek-R1-0528-Qwen3-8B: Qwen3-8B fine-tuned on chain-of-thought
+  # traces from the full 671B R1-0528. Surpasses Qwen3-8B and Qwen3-32B
+  # on AIME, matches Qwen3-235B-thinking on reasoning benchmarks. Inherits
+  # R1's reasoning capability while lacking V3.x's general-purpose breadth.
+  # Use for: hard math/logic problems where you want fast turnaround.
+  # Don't use for: general chat (verbose; emits long <think> blocks).
+  #
+  # Same Qwen3 vocab as the rest of the family — Qwen3-0.6B speculative
+  # draft works.
+  fast_r1_distill:
+    category: "Fast"
+    name: "Fast · R1-distill 8B · reasoning (TBD t/s)"
+    description: "DeepSeek-R1-0528-Qwen3-8B distill. Surpasses Qwen3-32B on AIME, matches 235B on reasoning. Small model with R1-class chain-of-thought; thinking mode on by default."
+    backend: llama_cpp
+    port: 8017
+    model_tag: "deepseek-r1-0528-qwen3-8b"
+    context_window: 65536                # native 128k; 65k is plenty
+    think_default: true                  # reasoning model — thinking on
+    think_supported: true
+    preserve_thinking: true
+    params:
+      temperature: 0.6                  # R1 distill recommendation
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 8192                 # reasoning chains can be long
+    vram_estimate_gb: 7.5                # 5 GB weights at UD-Q4_K_XL + KV +
+                                         # 0.5 GB Qwen3-0.6B draft.
+    parallel_slots: 1                    # single-stream reasoning, not parallel workers
+    # Qwen3-0.6B spec-decode draft (same vocab as the parent Qwen3-8B).
+    draft_model_tag: "draft_qwen3_06b"
+    draft_n_gpu_layers: -1
+    draft_max: 8
+    draft_min: 4
+    n_gpu_layers: -1
+    flash_attention: true
+    # Qwen3-8B is dense (no hybrid attention). q4_0 KV is fine for
+    # standard attention on this scale.
+    cache_type_k: q4_0
+    cache_type_v: q4_0
+
+  # ── Fast / Phi-4-reasoning-plus — math/science specialist ───────────────────
+  # Microsoft's SFT+RL pipeline on Phi-4 (14 B dense). Outperforms
+  # DeepSeek-R1-Distill-Llama-70B (5× larger) on math/science/coding/
+  # planning benchmarks. Caveats:
+  #   - 32K context (small for a reasoning model — keep prompts focused)
+  #   - Notoriously bad at general chat: a "Hello!" prompt can blow
+  #     through token limits because the model can't stop reasoning
+  #     about how to greet you. Math/science specialist, not a
+  #     general-purpose tier.
+  # No spec-decode (Phi-4 vocab is not Qwen3-compatible).
+  fast_phi4:
+    category: "Fast"
+    name: "Fast · Phi-4 14B · math/sci (TBD t/s)"
+    description: "Microsoft Phi-4-reasoning-plus. SFT+RL on Phi-4 14B dense. Outperforms 70B distills on math/science/coding/planning. Specialist — not for general chat (verbose). 32k ctx."
+    backend: llama_cpp
+    port: 8018
+    model_tag: "phi-4-reasoning-plus"
+    context_window: 32768                # native 32k — max for this model
+    think_default: true                  # reasoning model
+    think_supported: true
+    preserve_thinking: true
+    params:
+      temperature: 0.8                  # MS recommendation for Phi-4-reasoning
+      top_p: 0.95
+      top_k: 50
+      min_p: 0.0
+      repeat_penalty: 1.0
+      num_predict: 8192
+    vram_estimate_gb: 10                 # 8.3 GB weights at UD-Q4_K_XL +
+                                         # KV at 32k. No draft (vocab mismatch).
+    parallel_slots: 1
+    # NO spec-decode — Phi-4 vocab is not Qwen3-compatible.
+    n_gpu_layers: -1
+    flash_attention: true
+    # Phi-4 is dense standard attention; q8_0 KV recommended for safety
+    # at this size (q4_0 untested for Phi family).
+    cache_type_k: q8_0
+    cache_type_v: q8_0
 
   # ── Coding — Qwen3-Coder-Next 80B-A3B, RL-trained on PRs ────────────────────
   # Was Qwen3-Coder-Next-80B-A3B which couldn't fit on a 24 GB GPU
