@@ -26,6 +26,7 @@ param(
     [Parameter(ParameterSetName = 'SetupGui')]        [switch]$SetupGui,
     [Parameter(ParameterSetName = 'Start')]           [switch]$Start,
     [Parameter(ParameterSetName = 'Stop')]            [switch]$Stop,
+    [Parameter(ParameterSetName = 'Status')]          [switch]$Status,
     [Parameter(ParameterSetName = 'Build')]           [switch]$Build,
     [Parameter(ParameterSetName = 'BuildInstaller')]  [switch]$BuildInstaller,
     [Parameter(ParameterSetName = 'InitEnv')]         [switch]$InitEnv,
@@ -264,6 +265,10 @@ Daily use
                                         Skip HF polling.
   .\LocalAIStack.ps1 -CheckUpdates      Re-poll, list pending updates.
   .\LocalAIStack.ps1 -Stop              Terminate all tracked child processes.
+  .\LocalAIStack.ps1 -Status            Show every observability-registered
+                                        process (PID, port, log path, git
+                                        SHA) plus the last 5 lines of each
+                                        component's log.
   .\LocalAIStack.ps1 -Build             Compile this script to LocalAIStack.exe.
 
 Cloudflared
@@ -821,6 +826,68 @@ function Invoke-Stop {
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
 }
 
+# ── Status (read data/runtime/*.json + tail logs) ───────────────────────────
+# Diagnostic command. Surfaces every observability-registered process
+# (backend, resolver-*, bench, watchdog, eval-*) with its PID, port, log
+# path, git SHA, and liveness. Use this instead of grep'ing tasklist + ps
+# during incident triage.
+function Invoke-Status {
+    $runtime = Join-Path $DataDir 'runtime'
+    if (-not (Test-Path $runtime)) {
+        Write-Warn2 "No runtime dir at $runtime — nothing to report (no processes have called observability.install())."
+        return
+    }
+    $files = @(Get-ChildItem -Path $runtime -Filter *.json -ErrorAction SilentlyContinue)
+    if (-not $files) {
+        Write-Warn2 "Runtime dir is empty — no live processes have registered."
+        return
+    }
+
+    Write-Host ''
+    Write-Host '── Live components ────────────────────────────────────────────────' -ForegroundColor Cyan
+    foreach ($f in $files) {
+        try {
+            $j = Get-Content -Raw -Path $f.FullName | ConvertFrom-Json
+        } catch {
+            Write-Warn2 "skipping malformed $($f.Name): $($_.Exception.Message)"
+            continue
+        }
+        $alive = $false
+        try { $alive = $null -ne (Get-Process -Id $j.pid -ErrorAction Stop) } catch { }
+        $aliveTxt  = if ($alive) { 'ALIVE' } else { 'DEAD ' }
+        $aliveCol  = if ($alive) { 'Green' } else { 'Red' }
+        $portTxt   = if ($j.port) { ":$($j.port)" } else { '       ' }
+        $branch    = if ($j.git -and $j.git.branch) { $j.git.branch } else { '?' }
+        $sha       = if ($j.git -and $j.git.sha) { $j.git.sha.Substring(0,7) } else { '???????' }
+        $dirty     = if ($j.git -and $j.git.dirty) { '+dirty' } else { '' }
+        Write-Host "  " -NoNewline
+        Write-Host $aliveTxt -ForegroundColor $aliveCol -NoNewline
+        Write-Host ("  pid=" + ("{0,-7}" -f $j.pid) + "  " + ("{0,-30}" -f $j.full_name) + "  " + $portTxt + "  " + ("{0}@{1}{2}" -f $branch, $sha, $dirty))
+        Write-Host ("              started: " + $j.started_at_iso + "   log: " + $j.log_path) -ForegroundColor DarkGray
+    }
+    Write-Host ''
+
+    # Tail the last 5 lines of each component's log so triage can spot
+    # the most recent error without separate `tail` invocations.
+    Write-Host '── Recent log lines ──────────────────────────────────────────────' -ForegroundColor Cyan
+    foreach ($f in $files) {
+        try {
+            $j = Get-Content -Raw -Path $f.FullName | ConvertFrom-Json
+            if (-not $j.log_path -or -not (Test-Path $j.log_path)) { continue }
+            Write-Host ''
+            Write-Host ("  --- $($j.full_name) ($([System.IO.Path]::GetFileName($j.log_path))) ---") -ForegroundColor DarkCyan
+            Get-Content -Path $j.log_path -Tail 5 -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "    $_" -ForegroundColor DarkGray
+            }
+        } catch { }
+    }
+    Write-Host ''
+    Write-Host 'Logs dir:    ' -NoNewline -ForegroundColor DarkGray
+    Write-Host (Join-Path $DataDir 'logs')
+    Write-Host 'Runtime dir: ' -NoNewline -ForegroundColor DarkGray
+    Write-Host $runtime
+}
+
 # ── Test (health-check suite) ────────────────────────────────────────────────
 function Invoke-Test {
     Apply-Env (Read-EnvFile)
@@ -957,6 +1024,7 @@ if ($InitEnv)          { Invoke-InitEnv;          return }
 if ($Setup)            { Invoke-Setup;             return }
 if ($SetupGui)         { Invoke-SetupGui;          return }
 if ($Stop)             { Invoke-Stop;              return }
+if ($Status)           { Invoke-Status;            return }
 if ($Build)            { Invoke-Build;             return }
 if ($BuildInstaller)   { Invoke-BuildInstaller;    return }
 if ($CheckUpdates)     { Invoke-CheckUpdates;      return }

@@ -768,10 +768,6 @@ def pull_missing_hf_files(
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 def _main() -> int:
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
     parser = argparse.ArgumentParser(prog="backend.model_resolver")
     sub = parser.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("resolve", help="resolve tiers, write data/resolved-models.json")
@@ -795,6 +791,13 @@ def _main() -> int:
              "Aliases: 'embed' → 'embedding'.",
     )
     args = parser.parse_args()
+    # Install observability AFTER argparse so the suffix can encode which
+    # tiers this run targets — useful when several resolve --pull --tier <X>
+    # invocations run concurrently (each writes its own runtime state file
+    # and gets its own log + proctitle suffix).
+    from . import observability as _obs
+    _suffix = ",".join(args.tiers) if args.tiers else "all"
+    _obs.install("resolver", suffix=_suffix)
 
     if args.cmd == "resolve":
         result = resolve(force=args.force, offline=args.offline, tiers=args.tiers)

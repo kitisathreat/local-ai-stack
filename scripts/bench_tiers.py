@@ -149,6 +149,21 @@ def filter_to_available(api_base: str, candidates: list[str]) -> list[str]:
 
 
 def main() -> int:
+    # Process identification + log file under data/logs/bench-<date>.log.
+    # Imported lazily so the script still works for users who haven't
+    # `pip install`-ed the new requirements.txt yet (setproctitle missing
+    # is tolerated inside observability.install()).
+    try:
+        # Repo-root sys.path tweak so this script works whether invoked
+        # as `python scripts/bench_tiers.py` (top-level) or via `-m`.
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        from backend import observability as _obs
+        _obs.install("bench")
+    except Exception:  # noqa: BLE001 — observability is best-effort
+        pass
+
     p = argparse.ArgumentParser()
     p.add_argument("--api", default="http://127.0.0.1:18000")
     p.add_argument(
