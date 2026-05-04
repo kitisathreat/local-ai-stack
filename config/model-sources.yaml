@@ -234,14 +234,21 @@ tiers:
   # Q4_K_M is the canonical performant 4-bit (the same llama-server
   # --hf-repo default), well-supported across versions, and lossless
   # enough for the reasoning workload.
+  # Switched 2026-05-03 from bartowski/...Q4_K_M to unsloth's UD-Q4_K_XL
+  # variant. UD ("Unsloth Dynamic") keeps attention + embed + output
+  # layers at 6-8 bit while the bulk stays at 4-bit — meaningful quality
+  # lift on hard reasoning where output-projection precision matters.
+  # Same total size (~58.7 GB sharded ×2). No spec-decode draft for this
+  # tier (GPT-OSS uses o200k_harmony, not Qwen3 vocab), so quality of the
+  # output projection is the only lever we have.
   reasoning_max:
     source: huggingface
-    repo: "bartowski/openai_gpt-oss-120b-GGUF"
-    file: "openai_gpt-oss-120b-Q4_K_M/openai_gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"
+    repo: "unsloth/gpt-oss-120b-GGUF"
+    file: "UD-Q4_K_XL/gpt-oss-120b-UD-Q4_K_XL-00001-of-00002.gguf"
     tracking: latest
     pinned:
       revision: "main"
-      file: "openai_gpt-oss-120b-Q4_K_M/openai_gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"
+      file: "UD-Q4_K_XL/gpt-oss-120b-UD-Q4_K_XL-00001-of-00002.gguf"
 
   # Qwen3-0.6B-Instruct — universal speculative-decode draft for every
   # Qwen3-family chat tier (highest_quality, versatile, fast, coding, vision).

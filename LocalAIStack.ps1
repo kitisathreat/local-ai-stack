@@ -122,7 +122,7 @@ $Script:PidFile   = Join-Path $AppData 'pids.json'
 # verification (dev only). Ship updated hashes when bumping versions.
 $Script:QdrantVersion    = if ($env:LAI_QDRANT_VERSION)    { $env:LAI_QDRANT_VERSION }    else { 'v1.12.4' }
 $Script:QdrantSha256     = if ($env:LAI_QDRANT_SHA256)     { $env:LAI_QDRANT_SHA256 }     else { '' }
-$Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b8992' }
+$Script:LlamaCppVersion  = if ($env:LAI_LLAMACPP_VERSION)  { $env:LAI_LLAMACPP_VERSION }  else { 'b9012' }
 $Script:LlamaCppSha256   = if ($env:LAI_LLAMACPP_SHA256)   { $env:LAI_LLAMACPP_SHA256 }   else { '' }
 
 # ── Tiny helpers (dedupe pattern from setup.ps1/launcher) ────────────────────

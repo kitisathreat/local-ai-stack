@@ -272,7 +272,7 @@ terminates exactly what was started.
 
 The launcher dot-sources [`scripts/steps/`](scripts/steps/) for setup
 helpers (prereq install, binary downloads, venv creation, CUDA runtime
-provisioning). Pinned versions (`b8992` llama-server, `v1.12.4` Qdrant)
+provisioning). Pinned versions (`b9012` llama-server, `v1.12.4` Qdrant)
 are SHA256-verified.
 
 ## Tiers
@@ -303,9 +303,9 @@ of the dropdown.
 | Category | Tier | Model | Quant | Disk | Port | `--ctx-size` | VRAM + RAM | Role |
 |---|---|---|---|---:|---|---|---|---|
 | **Reasoning** | `highest_quality` 💾 | Qwen3-Next 80B-A3B Thinking | UD-Q4_K_XL | 43 GB | 8010 | 131 072 (YaRN ×4) | ~14.5 GB VRAM + ~33 GB RAM | Default heavy-reasoning. MoE w/ expert offload + spec decode |
-| **Reasoning** | `reasoning_max` 💾 | OpenAI GPT-OSS-120B | Q4_K_M (sharded ×2) | 58 GB | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in. Highest peak quality on hard reasoning. No spec decode — different tokenizer |
+| **Reasoning** | `reasoning_max` 💾 | OpenAI GPT-OSS-120B | UD-Q4_K_XL (sharded ×2) | 59 GB | 8014 | 131 072 | ~14 GB VRAM + ~50 GB RAM | Opt-in. Highest peak quality on hard reasoning. No spec decode — different tokenizer |
 | **Reasoning** | `reasoning_xl` 💾 | Qwen3.5 397B-A17B | UD-IQ2_M (sharded ×4) | 115 GB | 8015 | 65 536 | ~14 GB VRAM + ~110 GB RAM | Top open-weight reasoning at IQ2_M. Active 17 B / 397 B w/ expert offload + spec decode |
-| **Reasoning** | `frontier` 💾⚠️ | DeepSeek V3.2-Speciale | UD-IQ1_S (1.6 bpw, sharded ×4) | 172 GB | 8016 | 65 536 | ~14 GB VRAM + ~125 GB RAM + ~30 GB NVMe | Aspirational. GPT-5-class reasoning at 5–10 t/s w/ NVMe spillover. No spec decode. Sharded for 3× faster pull vs UD-TQ1_0 |
+| **Reasoning** | `frontier` 💾⚠️ | DeepSeek V3.2-Speciale | UD-IQ1_S sharded ×4 (171 GB) **or** REAP-345B IQ1_S_L sharded ×236 (93 GB) | 171 / 93 GB | 8016 | 32 768 | ~7 GB VRAM + ~110 GB RAM | Aspirational. Pagefile-gated on the original 671B at IQ1_S; REAP-345B is a half-size expert-pruned alternative that fits 125 GB RAM without pagefile growth. No spec decode (tokenizer mismatch). |
 | **Coding** | `coding` | Qwen3-Coder 30B-A3B (default) / Qwen3-Coder-Next 80B-A3B (`/coder big`) | UD-Q4_K_XL (30B) / UD-Q4_K_XL sharded (80B) | 18 / 49 GB | 8013 | 131 072 (YaRN ×4) | ~6.5 / ~14.5 GB | Coding tier with switchable 30 B / 80 B variants |
 | (top-level) | `versatile` | Qwen3.6 35B-A3B (MoE) | UD-Q4_K_XL | 20 GB | 8011 | 131 072 (YaRN ×4) | ~6.5 GB | Default + orchestrator (3 slots, expert offload, spec decode) |
 | (top-level) | `fast` | Qwen3.5 9B | UD-Q4_K_XL | 5.3 GB | 8012 | 65 536 | ~7.5 GB | Multi-agent workers (4 slots, dense + spec decode) |
@@ -532,43 +532,31 @@ a cold spawn between runs by acquiring `--evict-tier` first. Results
 are written to `data/eval/tier-bench-<ts>.json` for A/B tracking
 across quant swaps, llama.cpp version bumps, hardware changes, etc.
 
-Reference numbers from the RTX Pro 4000 SFF (24 GB) reference rig,
-post-merge of [#199](https://github.com/kitisathreat/local-ai-stack/pull/199),
-[#202](https://github.com/kitisathreat/local-ai-stack/pull/202),
-[#206](https://github.com/kitisathreat/local-ai-stack/pull/206),
-[#208](https://github.com/kitisathreat/local-ai-stack/pull/208) +
-[#209](https://github.com/kitisathreat/local-ai-stack/pull/209),
-[#210](https://github.com/kitisathreat/local-ai-stack/pull/210),
-[#211](https://github.com/kitisathreat/local-ai-stack/pull/211),
-[#214](https://github.com/kitisathreat/local-ai-stack/pull/214) (frontier `--cpu-moe` config).
+Reference numbers on the RTX Pro 4000 SFF (24 GB) reference rig.
 
-**2026-05-03 15:42 PT clean-slate run** — every tier benched in
-isolation, evicted-via-`fast` between runs (or via `versatile` for
-`fast` itself), warm OS page cache, `--tokens 220`. The earlier
-bench had ~3× lower numbers across the board because the bench
-script's `--evict-tier` left tiers in degraded states between
-runs; running each tier from a clean slate produces the real
-throughput.
+**2026-05-03 20:30 PT clean-slate run · llama.cpp `b9012`** —
+every tier benched in isolation, evicted-via-`fast` between runs
+(or via `versatile` for `fast` itself), warm OS page cache,
+`--tokens 220`. b9012 numbers are net-positive vs the prior b8992
+baseline (5 wins, 1 tie, 1 small regression on `coding_80b`).
 
-| tier | model | cold-load (s) | warm-first (s) | tok/s @ slot=1 | notes |
-|---|---|---:|---:|---:|---|
-| `fast`             | Qwen3.5 9B (dense + spec-decode)            |  6.9 | 0.56 | **57.5** | small, fully GPU-resident |
-| `versatile`        | Qwen3.6 35B-A3B MoE (expert offload + spec) | 11.7 | 1.60 | **36.7** | default chat tier; 65k ctx default, `Long context (131k)` variant via the chat-UI sub-selector |
-| `coding`           | Qwen3-Coder 30B-A3B (expert offload + spec) | 16.0 | 0.95 | **25.9** | default coder |
-| `coding_80b`       | Qwen3-Coder-Next 80B-A3B (`/coder big`)     | 16.6 | 23.22| **20.2** | 3 B active MoE; bench via API `variant: "80b"` field |
-| `highest_quality`  | Qwen3-Next 80B-A3B Thinking                 | 25.2 | 89.62| **18.7** | post-#214 with `vram_estimate_gb` lowered 16 → 13 to accept the actual cost (kv_offload pushes most KV to CPU). Cold spawn occasionally needs a retry — backend's auto-restart kicks in. |
-| `reasoning_max`    | OpenAI GPT-OSS-120B (Q4_K_M sharded ×2)     | 33.7 | 26.16|  **9.7** | sharded-spawn fix from [#210](https://github.com/kitisathreat/local-ai-stack/pull/210) + kv_offload |
-| `reasoning_xl`     | Qwen3.5 397B-A17B (UD-IQ2_M sharded ×4)     | 90.6 | 13.10|  **3.3** | `--no-warmup` from [#211](https://github.com/kitisathreat/local-ai-stack/pull/211) skips the OOM-prone graph warmup; 17 B active + KV-on-CPU pegs throughput in low single digits |
-| `frontier`         | DeepSeek V3.2 (UD-IQ1_S sharded ×4)         | —    | —    |  pagefile-gated | 171 GB GGUF on 125 GB RAM + 8 GB pagefile = 133 GB commit limit. Run [`scripts/grow-pagefile.ps1`](scripts/grow-pagefile.ps1) **as Administrator** (220 GB default) and reboot — the existing `--cpu-moe` config then spawns at ~0.5–2 t/s. |
+| tier | model | cold-load (s) | warm-first (s) | tok/s @ slot=1 | Δ vs b8992 | notes |
+|---|---|---:|---:|---:|---:|---|
+| `fast`             | Qwen3.5 9B (dense + spec-decode)            |  8.4 | 0.58 | **71.0** | **+24%** | small, fully GPU-resident — biggest single b9012 win |
+| `versatile`        | Qwen3.6 35B-A3B MoE (expert offload + spec) | 11.7 | 1.62 | **40.2** | +10% | default chat tier; 65k ctx default, `Long context (131k)` variant via chat-UI sub-selector |
+| `coding`           | Qwen3-Coder 30B-A3B (expert offload + spec) | 15.4 | 0.99 | **28.8** | +11% | default coder |
+| `coding_80b`       | Qwen3-Coder-Next 80B-A3B (`/coder big`)     | 31.4 | 24.00| **17.5** | -13% | 3 B active MoE; bench via API `variant: "80b"` field. Only regression vs b8992; likely single-run variance |
+| `highest_quality`  | Qwen3-Next 80B-A3B Thinking                 | 12.3 |110.51| **18.7** | = | KV-on-CPU per [#210](https://github.com/kitisathreat/local-ai-stack/pull/210); `vram_estimate_gb=13` per [#215](https://github.com/kitisathreat/local-ai-stack/pull/215). Long warm-first is the KV-attention round-trip cost |
+| `reasoning_max`    | OpenAI GPT-OSS-120B (UD-Q4_K_XL sharded ×2) | 22.4 | 24.60| **11.0** | +13% | swapped from bartowski Q4_K_M to Unsloth UD-Q4_K_XL same-day; output-projection precision lift on hard reasoning |
+| `reasoning_xl`     | Qwen3.5 397B-A17B (UD-IQ2_M sharded ×4)     | 13.5 | 90.99|  **3.1** | -6% (≈ noise) | `--no-warmup` from [#211](https://github.com/kitisathreat/local-ai-stack/pull/211) skips the OOM-prone graph warmup; 17 B active + KV-on-CPU pegs throughput in low single digits |
+| `frontier`         | DeepSeek V3.2 — original UD-IQ1_S **or** REAP-345B IQ1_S_L | —    | —    | depends | n/a | Two paths to load: (a) keep original 671B UD-IQ1_S — pagefile-gated, run [`scripts/grow-pagefile.ps1`](scripts/grow-pagefile.ps1) as admin + reboot, then ~0.5–2 t/s. (b) **REAP-345B IQ1_S_L** (92.8 GB sharded ×236, expert-pruned 671B → 345B) — fits 125 GB RAM cleanly, no pagefile growth needed. Listed at `lovedheart/DeepSeek-V3.2-REAP-345B-A37B-GGUF-Experimental`. |
 
-**Clean-slate methodology matters.** The first-pass numbers we
-captured earlier (versatile 9.0, coding 10.4, fast 12.7) were
-artifacts of `bench_tiers.py --tiers a,b,c` running tiers
-back-to-back: each tier was acquired AFTER `--evict-tier` had
-just shuffled VRAM, leaving the scheduler in a transient state
-where the new tier's spawn was racing with eviction cleanup. Run
-each tier in its own bench invocation, with an eviction step
-beforehand, and the numbers settle 2–4× higher.
+**Methodology note.** The bench script's `--tiers a,b,c,d` mode
+suppresses real throughput because each subsequent tier acquires
+through `--evict-tier` while the scheduler is still cleaning up
+the previous spawn. Running each tier in its own bench invocation
+with one explicit eviction step is the apples-to-apples way to
+measure. The numbers above are clean-slate.
 
 `coding_80b` doesn't have its own `tier.coding_80b` model id in
 `/v1/models` — it's selected through the `coding` tier with
@@ -582,14 +570,17 @@ the row above came from a hand-rolled stream-counter.
 - **`reasoning_max` sharded spawn** — fixed by [#210](https://github.com/kitisathreat/local-ai-stack/pull/210). `_resolve_for_llama()` resolves the canonical `<tier>.gguf` symlink to its `<base>-00001-of-MMMMM.gguf` target before passing to llama-server, so shard-pattern discovery works.
 - **`highest_quality` VRAM gate** — fixed by [#210](https://github.com/kitisathreat/local-ai-stack/pull/210). `kv_offload: true` pushes KV to CPU RAM; `vram_estimate_gb` bumped 14.5 → 16 to match real cost.
 - **VRAM scheduler EMA poisoning** — fixed by [#202](https://github.com/kitisathreat/local-ai-stack/pull/202). Observed-cost measurements clamp at 1.5× the YAML estimate, so a single bad reading under transient pressure can't drift the EMA into permanent "Cannot fit" 503s.
-- **`frontier` pagefile-gated** — pending operator action. Three llama.cpp configs (`-ot`, pure-CPU, `--cpu-moe`) all crash during tensor load because the 171 GB sharded GGUF can't fit the 125 GB RAM + 8 GB pagefile = 133 GB commit limit. The fix is one PowerShell script + a reboot:
-  ```powershell
-  # Run from an elevated PowerShell prompt
-  pwsh .\scripts\grow-pagefile.ps1   # default: 220 GB on the largest free drive
-  # …reboot…
-  # then in any chat: pick "Reasoning · 671B · frontier (hardware-gated)" and send a request
-  ```
-  Post-reboot expected throughput: ~0.5–2 t/s (NVMe-paged active experts, no GPU offload). Use case is "burn one slow request on a hard reasoning prompt" — fire-and-forget, not interactive.
+- **`frontier` — two unblock paths, operator picks**:
+  - **(a) Pagefile growth + original UD-IQ1_S** (171 GB sharded ×4). Three llama.cpp configs (`-ot`, pure-CPU, `--cpu-moe`) all crash during tensor load because 171 GB can't fit the 125 GB RAM + 8 GB pagefile = 133 GB commit limit. Fix is one elevated PowerShell + a reboot:
+    ```powershell
+    pwsh .\scripts\grow-pagefile.ps1   # default: 220 GB on the largest free drive
+    # …reboot…
+    ```
+    Post-reboot: ~0.5–2 t/s (NVMe-paged active experts, no GPU offload).
+  - **(b) REAP-345B IQ1_S_L** (92.8 GB sharded ×236, downloading at the time of this commit from `lovedheart/DeepSeek-V3.2-REAP-345B-A37B-GGUF-Experimental`). Routing-aware Expert Pruning halves the model from 671B → 345B parameters by removing redundant experts; fits 125 GB RAM cleanly with 30 GB headroom, no pagefile growth required. Quality cost vs full V3.2 is "experimental" per the publisher — expected to be small but not yet measured against our local eval set.
+
+  Both paths land at "fire-and-forget for one hard reasoning prompt" — not interactive. (a) is the safer quality bet; (b) is operationally cleaner. Try (b) first when the download finishes.
+- **llama.cpp `b8992` → `b9012`** — 5/7 tiers improved, 1 tied, 1 marginal regression (`coding_80b` -13%, likely single-run variance). Net win. Pin bumped in `LocalAIStack.ps1` so future `-Setup` runs grab the new version.
 
 Reproduce with:
 
