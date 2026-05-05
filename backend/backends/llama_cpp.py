@@ -141,6 +141,66 @@ def _resolve_for_llama(gguf_path: str) -> str:
         return gguf_path
 
 
+# ── Bench-mode helpers ──────────────────────────────────────────────
+# Cache the bench-process scan so spawning N tiers in quick succession
+# doesn't shell out N times. 5s TTL aligns with admin._bench_is_running.
+_BENCH_SCAN_TTL_S = 5.0
+_bench_scan_cache: dict = {"checked_at": 0.0, "active": False}
+
+
+def _is_bench_active() -> bool:
+    """Cheap-ish check for an in-flight scripts/run_full_bench.py.
+
+    Prefers the centralised admin helper when available (one cache for
+    the whole process); falls back to a local WMI / /proc scan when
+    imported in isolation (test fixtures, standalone llama-server
+    spawn during -Setup, etc.)."""
+    now = time.time()
+    if (now - _bench_scan_cache["checked_at"]) < _BENCH_SCAN_TTL_S:
+        return _bench_scan_cache["active"]
+    found = False
+    try:
+        from .. import admin as _admin
+        found = _admin._scan_for_bench_process()
+    except Exception:
+        # Local fallback so this module stays importable without admin.
+        try:
+            if os.name == "nt":
+                cmd = (
+                    "powershell.exe -NoProfile -Command "
+                    "\"Get-CimInstance Win32_Process -Filter 'Name=\\\"python.exe\\\"' "
+                    "| Where-Object { $_.CommandLine -like '*run_full_bench*' } "
+                    "| Select-Object -First 1 ProcessId\""
+                )
+                r = subprocess.run(cmd, shell=True, capture_output=True,
+                                   text=True, timeout=4)
+                found = bool(r.stdout and "ProcessId" in r.stdout)
+            else:
+                for d in Path("/proc").iterdir():
+                    if not d.name.isdigit():
+                        continue
+                    try:
+                        cl = (d / "cmdline").read_text(errors="ignore")
+                    except (OSError, PermissionError):
+                        continue
+                    if "run_full_bench" in cl:
+                        found = True
+                        break
+        except Exception:
+            pass
+    _bench_scan_cache["checked_at"] = now
+    _bench_scan_cache["active"] = found
+    return found
+
+
+def _is_serving_role(tier: TierConfig) -> bool:
+    """True for non-chat tiers where parallel slots are functionally
+    necessary (embedding, reranker, vision). Bench-mode parallel
+    override skips these."""
+    role = getattr(tier, "role", None)
+    return role in ("embedding", "reranker", "vision")
+
+
 def build_argv(tier: TierConfig) -> list[str]:
     """Produce the llama-server argv for `tier`."""
     if not tier.gguf_path:
@@ -164,6 +224,17 @@ def build_argv(tier: TierConfig) -> list[str]:
     # parallel_slots=8 used to give EACH slot only 2048 tokens of
     # context, rejecting every needle prompt.
     parallel = max(1, tier.parallel_slots)
+    # Bench-mode override: when run_full_bench.py is the active driver
+    # we run requests serially, so reserving 4-8 KV slots per chat tier
+    # is just wasted VRAM. Detect the bench process and force
+    # parallel=1 for chat tiers — saves ~6 GB on fast/coding/versatile
+    # and keeps the 24 GB card from OOMing when the bigger tiers
+    # (highest_quality, reasoning_max, reasoning_xl) load. Skips
+    # embedding/reranker because those have their own concurrency
+    # needs (multiple tools query embeddings in parallel for a single
+    # chat turn). Cached for 5s — same TTL as admin._bench_is_running.
+    if _is_bench_active() and not _is_serving_role(tier):
+        parallel = 1
     total_ctx = tier.context_window * parallel
     argv: list[str] = [
         llama_server_binary(),
