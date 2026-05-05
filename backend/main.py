@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from pathlib import Path
 
-from . import admin, airgap, auth, db, history_store, kv_cache_manager, memory, metrics, rag
+from . import admin, airgap, auth, db, history_store, kv_cache_manager, memory, metrics, oauth, rag
 from .backends.llama_cpp import LlamaCppClient, ToolCallAccumulator
 from .config import AppConfig, CompiledSignals
 from .middleware.clarification import (
@@ -310,6 +310,10 @@ async def lifespan(app: FastAPI):
         loaders={"llama_cpp": _llama_load},
         unloaders={"llama_cpp": _llama_unload},
     )
+    # Expose the llama_cpp client to the scheduler for liveness reconciliation
+    # (the scheduler peeks at the per-tier proc handle on every acquire to
+    # detect mid-cell crashes and force respawn — see vram_scheduler.acquire).
+    state.scheduler._llama_cpp_client = state.llama_cpp
     # Wire the periodic orphan-reap callback into the sweeper so the
     # scheduler self-heals from leaked llama-server processes without
     # the operator having to hit POST /admin/vram/kill-orphans manually.
@@ -365,6 +369,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Local AI Stack Backend", lifespan=lifespan)
 app.include_router(admin.router)
+app.include_router(oauth.router)
 
 # Serve the minimal vanilla-JS chat UI at / so cloudflared fronting
 # chat.mylensandi.com lands on a real page. No build step; no SPA.
@@ -421,22 +426,48 @@ if _static_dir.exists():
 
     @app.get("/", include_in_schema=False)
     async def chat_index():
+        """Serve chat.html in-place at the root URL — no redirect, no
+        ``?v=`` suffix.
+
+        Cache-busting now relies on response headers instead of a
+        versioned query string: ``Cache-Control: no-cache, must-revalidate``
+        forces the browser to revalidate via If-None-Match / If-Modified-Since
+        on every page load. The ``ETag`` header (auto-set by FileResponse)
+        becomes the build-id surrogate — it changes whenever chat.html's
+        bytes change, and the server returns 304 Not Modified when the
+        client's cached copy still matches. Net effect: clean URL, full
+        cache benefit, instant pickup of new deploys.
+
+        The build-id is also surfaced as an X-Build-Id response header
+        for ops/diagnostics.
+        """
         path = _static_dir / "chat.html"
         if not path.exists():
             return Response(status_code=404)
-        # Redirect to the versioned URL so browsers re-fetch after every
-        # `git pull` -> `refresh-backend.ps1` cycle (which restarts the
-        # process and recomputes _BUILD_ID), but normal cache continues
-        # to work between deploys. Using 302 (not 301) so the redirect
-        # itself isn't permanently cached against a future build-id.
-        # Also send Cache-Control: no-store on the redirect so a browser
-        # that DID cache an older 302 doesn't keep pinning to a stale
-        # build-id.
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(
-            url=f"/static/chat.html?v={_BUILD_ID}",
-            status_code=302,
-            headers={"Cache-Control": "no-store"},
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            str(path),
+            media_type="text/html; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache, must-revalidate",
+                "X-Build-Id": _BUILD_ID,
+            },
+        )
+
+    @app.get("/bench", include_in_schema=False)
+    async def bench_index():
+        """Clean URL for the bench dashboard. Same caching strategy as ``/``."""
+        path = _static_dir / "bench-progress.html"
+        if not path.exists():
+            return Response(status_code=404)
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            str(path),
+            media_type="text/html; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache, must-revalidate",
+                "X-Build-Id": _BUILD_ID,
+            },
         )
 
 
@@ -482,7 +513,12 @@ async def security_headers(request: Request, call_next):
     Only meaningful when served behind HTTPS (Cloudflare Tunnel)."""
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["X-Frame-Options"] = "DENY"
+    # SAMEORIGIN (was DENY) so the chat UI can iframe its own /bench
+    # dashboard for the per-user settings tab. CSP frame-ancestors stays
+    # 'self' as the modern equivalent — together they keep cross-origin
+    # framing blocked while allowing same-origin embedding.
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    resp.headers.setdefault("Content-Security-Policy", "frame-ancestors 'self'")
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if os.getenv("PUBLIC_BASE_URL", "").startswith("https://"):
         resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -919,7 +955,8 @@ async def chat_completions(
     inject_system_context(req.messages)
     inject_clarification_instruction(req.messages)
     inject_response_mode(req.messages, req.response_mode, req.plan_text)
-    await inject_web_results(req.messages)
+    if not req.disable_web_search:
+        await inject_web_results(req.messages, always=bool(req.force_web_search))
     if user:
         await _inject_user_context(req, user)
 
@@ -1170,6 +1207,7 @@ async def _to_non_streaming_response(
 
 def _openai_chunk(
     content: str, model: str, done: bool = False, logprobs: dict | None = None,
+    reasoning: bool = False,
 ) -> str:
     """Format a streaming chunk in OpenAI's SSE shape.
 
@@ -1177,10 +1215,16 @@ def _openai_chunk(
     upstream llama-server already ships an OpenAI-compatible logprobs
     object per chunk: {"content": [{"token", "logprob", "bytes",
     "top_logprobs": [...]}, ...]}.
+
+    `reasoning=True` emits the chunk as a `reasoning_content` delta instead
+    of `content`. Used to forward llama-server's chain-of-thought when
+    `enable_thinking=true` — eval clients aggregate both fields so the
+    grader sees the full output (thinking + answer).
     """
+    delta_field = "reasoning_content" if reasoning else "content"
     choice: dict = {
         "index": 0,
-        "delta": {} if done else {"content": content},
+        "delta": {} if done else {delta_field: content},
         "finish_reason": "stop" if done else None,
     }
     if logprobs is not None:
@@ -1409,6 +1453,18 @@ async def _single_agent_sse(
                     extra_options["top_logprobs"] = int(req.top_logprobs)
             if tool_choice_extra:
                 extra_options.update(tool_choice_extra)
+            # Per-request sampling overrides — forwarded verbatim to
+            # llama-server. Only included when the caller explicitly set
+            # them; otherwise the tier's YAML defaults take over inside
+            # ``LlamaCppClient.chat_stream``. Used by the auto-tuner
+            # (data/eval/tuned_params.json overlays) and the eval
+            # runner's per-cell parameter forwarding.
+            for fld in ("temperature", "top_p", "top_k", "max_tokens",
+                        "min_p", "repeat_penalty",
+                        "frequency_penalty", "presence_penalty"):
+                v = getattr(req, fld, None)
+                if v is not None:
+                    extra_options[fld] = v
             try:
                 async for chunk in client.chat_stream(
                     tier, msg_payload, think=decision.think,
@@ -1418,12 +1474,22 @@ async def _single_agent_sse(
                     for choice in chunk.get("choices", []):
                         delta = choice.get("delta") or {}
                         text = delta.get("content")
+                        rc = delta.get("reasoning_content")
                         # Pass logprobs through verbatim — llama-server
                         # already ships them in OpenAI's documented shape.
                         chunk_logprobs = choice.get("logprobs") if req.logprobs else None
                         if text:
                             assembled_text.append(text)
                             yield _openai_chunk(text, model_id, logprobs=chunk_logprobs)
+                        if rc:
+                            # Forward llama-server's reasoning_content so
+                            # benchmark clients (and any UI that opts in)
+                            # see the model's chain-of-thought when
+                            # enable_thinking=true. Without this the
+                            # eval grader sees an empty content for
+                            # thinking-tuned models that emit their
+                            # answer mid-think and run out of budget.
+                            yield _openai_chunk(rc, model_id, reasoning=True)
                         accumulator.feed(delta.get("tool_calls"))
             finally:
                 await state.scheduler.release(decision.tier_name)
@@ -1786,7 +1852,8 @@ async def v1_completions(req: dict, request: Request, user: dict | None = Depend
         inject_system_context(chat_req.messages)
         inject_clarification_instruction(chat_req.messages)
         inject_response_mode(chat_req.messages, chat_req.response_mode, chat_req.plan_text)
-        await inject_web_results(chat_req.messages)
+        if not chat_req.disable_web_search:
+            await inject_web_results(chat_req.messages, always=bool(chat_req.force_web_search))
         if user:
             await _inject_user_context(chat_req, user)
 

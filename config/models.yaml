@@ -54,11 +54,17 @@ tiers:
     backend: llama_cpp
     port: 8010
     model_tag: "qwen3-next-80b-a3b-thinking"
-    context_window: 131072               # 131k via YaRN factor 4.0 below; the
-                                         # model is native 256K but we cap here
-                                         # to keep KV cache bounded at parallel=1.
-                                         # ~2-3 GB KV cache at q4_0 on the 12 full-
-                                         # attn layers of the 48-layer hybrid stack.
+    context_window: 32768                # was 131072 — bench-mode cap. With 9 GB
+                                         # baseline GPU use (DWM + Chrome +
+                                         # desktop apps), the headroom for a 80B
+                                         # tier on a 24 GB card is ~15 GB; at
+                                         # 131k ctx the KV growth under thinking
+                                         # mode pushes us to OOM mid-cell. 32k
+                                         # is plenty for MMLU/GSM8K (<5k tok)
+                                         # and long_context bench (max 65k —
+                                         # which gets truncated to 32k here,
+                                         # surfacing the yarn-extension issue
+                                         # cleanly rather than as an OOM).
     think_default: true                  # Thinking variant — defaults on; user
                                          # can opt out via the Think checkbox.
     think_supported: true
@@ -78,7 +84,9 @@ tiers:
     # gives the scheduler a tight-but-workable estimate; the EMA
     # clamp from #202 keeps it from drifting up if a load happens
     # to overshoot.
-    vram_estimate_gb: 13
+    vram_estimate_gb: 13                 # was bumped to 17 then reverted — with
+                                         # context_window now capped at 32k
+                                         # (above), 13 GB matches the real load.
     parallel_slots: 1
     # Speculative decoding: Qwen3-0.6B draft. Lossless rejection-sampling
     # against this 80B target — output distribution is exact-equal to
@@ -113,7 +121,8 @@ tiers:
                                          # non-expert MLP) stays on the GPU.
     rope_scaling:
       type: yarn
-      factor: 4.0
+      factor: 1.0                       # was 4.0 — context_window is now 32768
+                                        # which matches orig_ctx; no YaRN extension.
       orig_ctx: 32768
 
   # ── Reasoning Max — GPT-OSS-120B, opt-in for hardest reasoning ──────────────
@@ -141,7 +150,11 @@ tiers:
     backend: llama_cpp
     port: 8014
     model_tag: "gpt-oss-120b"
-    context_window: 131072               # native context
+    context_window: 32768                # was 131072 (native) — bench-mode cap
+                                         # to fit on 24 GB GPU with 9 GB
+                                         # baseline external use. KV at 131k
+                                         # for a 120B w/ standard attention
+                                         # blows past available VRAM.
     think_default: true
     think_supported: true
     preserve_thinking: true
@@ -153,11 +166,12 @@ tiers:
       repeat_penalty: 1.0
       num_predict: 8192
     # 120 B at Q8_0 KV w/ 131k ctx and standard attention is heavier
-    # on KV than the hybrid Qwen3 tiers — 14 GB was the GPU-resident
-    # weights estimate without KV being offloaded. With kv_offload
-    # below, KV moves to CPU RAM and the GPU footprint stabilises at
-    # ~14 GB; bumping the estimate to 15 covers small overheads.
-    vram_estimate_gb: 15
+    # on KV than the hybrid Qwen3 tiers. With ctx now capped to 32k
+    # for bench-mode (above) and KV staying on GPU (per vram.yaml
+    # enable_kv_offload=false), the real footprint settles at
+    # ~13 GB — fits in the 14.9 GB headroom on a 24 GB card after
+    # baseline 9 GB external consumption.
+    vram_estimate_gb: 13
     parallel_slots: 1
     n_gpu_layers: -1                      # base case = everything to GPU; -ot
                                           # below pulls experts back to CPU.
@@ -430,8 +444,10 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 4096
-    vram_estimate_gb: 5.5                # 65k ctx × 3 slots q4_0 hybrid KV ≈ 0.5 GB,
-                                         # weights+attention ~4.5 GB, draft ~0.5 GB.
+    vram_estimate_gb: 11                 # was 5.5 — measured 10–15 GB at 65k ctx ×
+                                         # 3 slots after orphan reaping. Bumped so
+                                         # the scheduler's 1.5× clamp doesn't reject
+                                         # observed values during tier swaps.
     is_orchestrator: true
     # Speculative decoding: Qwen3-0.6B draft (same Qwen3 tokenizer). Note that
     # at parallel_slots=3 spec-decode speedup is reduced — concurrent slots
@@ -492,7 +508,7 @@ tiers:
       standard:
         name: "Standard (65k)"
         model_tag: "qwen3.6-35b-a3b"
-        vram_estimate_gb: 5.5
+        vram_estimate_gb: 11
       long:
         name: "Long context (131k)"
         model_tag: "qwen3.6-35b-a3b"
@@ -502,8 +518,8 @@ tiers:
           type: yarn
           factor: 4.0
           orig_ctx: 32768
-        # +1 GB for the doubled KV (3 slots × 131k q4_0 hybrid).
-        vram_estimate_gb: 7.0
+        # +2 GB for the doubled KV (3 slots × 131k q4_0 hybrid).
+        vram_estimate_gb: 13
 
   # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
   fast:
@@ -521,8 +537,14 @@ tiers:
       top_k: 20
       repeat_penalty: 1.0
       num_predict: 2048
-    vram_estimate_gb: 7.5                # 7 GB weights + KV plus 0.5 GB
-                                         # for the spec-decode draft.
+    vram_estimate_gb: 12                 # was 13 — caused VRAMExhausted with
+                                         # embedding+reranker pinned (8.9 GB).
+                                         # 13 + 1.5 headroom = 14.5 > free of
+                                         # ~15.1 with margin too thin. Measured
+                                         # peak at 65k ctx × 4 slots q4_0 KV is
+                                         # 9–15 GB; 12 sits at the realistic
+                                         # mid-band and lets fast load on a
+                                         # 24 GB card without orphan-reaping.
     parallel_workers_max: 3
     parallel_slots: 4
     # Speculative decoding: Qwen3-0.6B draft. Smaller draft-max (6) since the
@@ -627,11 +649,11 @@ tiers:
       min_p: 0.0
       repeat_penalty: 1.0
       num_predict: 8192
-    vram_estimate_gb: 7.2                # was 6.5 — bigger 1.7B draft adds
-                                         # ~0.7 GB vs the 0.6B (~1.2 GB resident
-                                         # vs ~0.5 GB). Experts still spill to
-                                         # RAM via -ot. GPU holds attention +
-                                         # KV + embeddings + draft. The 80b
+    vram_estimate_gb: 13                 # was 7.2 — measured 13–14 GB at 131k ctx
+                                         # × 1 slot q8/q4 hybrid KV after orphan
+                                         # reaping. Bumped so the scheduler's
+                                         # 1.5× clamp doesn't reject observed
+                                         # values during tier swaps. The 80b
                                          # variant bumps this to ~15.2 GB
                                          # (also includes the bigger draft).
     reasoning_format: none              # strip <think> tags from API output
@@ -689,7 +711,7 @@ tiers:
         # gguf_path from the parent coding tier's model_resolver entry.
         name: "30B · fast (~26 t/s)"
         model_tag: "qwen3-coder-30b-a3b"
-        vram_estimate_gb: 7.2
+        vram_estimate_gb: 13
       80b:
         # The big variant — points at the `coding_80b` entry in
         # model-sources.yaml. Re-uses the same -ot pattern (configured

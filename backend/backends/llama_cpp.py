@@ -477,6 +477,23 @@ class LlamaCppClient:
             t0 = time.monotonic()
             if proc and proc.is_alive():
                 return 0.0
+            # Pre-spawn orphan reap: a previous evict() may have logged
+            # "Evicted tier X" but the llama-server process can survive
+            # the terminate() and keep ~10–15 GB of VRAM allocated until
+            # we forcibly kill it. Reaping NOW (before we spawn this
+            # tier) means the new process loads into clean VRAM rather
+            # than triggering the residency planner's KV→CPU cascade
+            # because the GPU looks falsely full. Skipped silently if
+            # there's nothing to reap.
+            try:
+                killed = await self.kill_orphans()
+                if killed:
+                    logger.warning(
+                        "Pre-spawn reap killed %d stray llama-server PID(s) "
+                        "before loading %s: %s", len(killed), tier.name, killed,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Pre-spawn reap failed for %s: %s", tier.name, exc)
             # Adopt a pre-spawned external process, if any.
             if await self._port_is_serving(endpoint):
                 logger.info("Adopting external llama-server for tier %s on %s", tier.name, endpoint)
@@ -542,12 +559,21 @@ class LlamaCppClient:
                 argv=argv,
             )
             await proc.start()
+            # Register in self.processes BEFORE wait_ready: the 80B
+            # tiers take 25–30s to become HTTP-ready, and the periodic
+            # orphan-reap (every ~30s) would otherwise see the live
+            # PID with no registry entry and SIGKILL it as a stray.
+            # Observed May 2026: highest_quality (pid 26616, port 8010)
+            # was killed mid-spawn, breaking the cell with tok=0
+            # cascades. Registering early closes the race; if
+            # wait_ready fails we still pop+stop in the except.
+            self.processes[tier.name] = proc
             try:
                 await proc.wait_ready(timeout=timeout)
             except Exception:
+                self.processes.pop(tier.name, None)
                 await proc.stop(timeout=5.0)
                 raise
-            self.processes[tier.name] = proc
             return time.monotonic() - t0
 
     async def unload(self, tier: TierConfig) -> None:
@@ -556,6 +582,22 @@ class LlamaCppClient:
             if proc is None:
                 return
             await proc.stop()
+        # After stop(), the popen handle is gone but Windows can leave the
+        # llama-server process briefly in zombie state, OR — as observed
+        # during May 2026 benches — the process can survive terminate()
+        # entirely (especially with -ot expert offload + KV pinning) and
+        # keep its VRAM allocated. Sweep llama-server PIDs not tracked by
+        # the registry and SIGKILL anything that isn't the embedding /
+        # reranker / vision tier the launcher pre-spawned.
+        try:
+            killed = await self.kill_orphans()
+            if killed:
+                logger.warning(
+                    "Post-unload reap killed %d stray llama-server PID(s) after "
+                    "evicting %s: %s", len(killed), tier.name, killed,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Post-unload reap failed for %s: %s", tier.name, exc)
 
     async def list_running(self) -> list[dict]:
         return [
@@ -595,7 +637,14 @@ class LlamaCppClient:
 
         Returns the list of PIDs killed.
         """
-        preserve_ports = preserve_ports or set()
+        preserve_ports = set(preserve_ports or set())
+        # Always preserve the launcher's pre-spawned support tiers
+        # (vision 8089, embedding 8090, reranker 8091). They're spawned
+        # by LocalAIStack.ps1 before the backend starts and only get
+        # adopted into self.processes lazily on first request, so a
+        # pre-spawn reap that runs before adoption would kill them and
+        # silently break embeddings + retrieval.
+        preserve_ports.update({8089, 8090, 8091})
         # Tracked PIDs from our own subprocess.Popen handles.
         tracked: set[int] = set()
         for proc in self.processes.values():

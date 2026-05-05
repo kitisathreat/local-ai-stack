@@ -5,24 +5,526 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <title>Local AI Stack — Chat</title>
+  <!-- IBM Plex Sans (user-selectable body face) + IBM Plex Mono (sign-in
+       page only — not user-selectable). Hosted by Google Fonts; falls
+       back to system mono / sans if the page is loaded on an airgapped
+       network. preconnect hints prime the TLS handshake. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
   <style>
+    /* Default theme = dark. The palette adds 8 categorical colors plus
+       a 6-stop heatmap gradient. `data-theme="light"` and `data-palette=...`
+       on <html> swap the variables; controls in the sidebar set those
+       attributes and persist the choice to localStorage.
+
+       Theme bg/panel/border are mixed with the palette accent at low
+       alpha (color-mix), so changing the palette also subtly tints the
+       chrome — the "active palette" is visible everywhere, not just in
+       saturated elements. The mix uses `--accent` which is itself
+       palette-derived (see palette blocks below), so the mix updates
+       automatically when the user picks a different palette. */
+    :root, html[data-theme="dark"] {
+      --bg-base: #0f1014;
+      --panel-base: #181a21;
+      --panel-2-base: #22252e;
+      --border-base: #2a2d36;
+      /* Solid pre-palette defaults so the page isn't blank if color-mix
+         can't resolve --accent on first paint (e.g., before _initThemePalette
+         runs). The palette block below overrides these once it applies. */
+      --bg: #0f1014;
+      --panel: #181a21;
+      --panel-2: #22252e;
+      --border: #2a2d36;
+      --fg: #e8e8e8;
+      --muted: #888;
+      --danger: #c44;
+      --hm-text: #ffffff;
+      --hm-na-bg: #1c2129;
+    }
+    html[data-theme="dark"][data-palette] {
+      --fg: color-mix(in srgb, #e8e8e8, var(--accent) var(--tint-fg));
+      --muted: color-mix(in srgb, #888, var(--accent) var(--tint-muted));
+      --hm-na-bg: color-mix(in srgb, var(--bg-base), var(--accent) var(--tint-na));
+      --bg: color-mix(in srgb, var(--bg-base), var(--accent) var(--tint-bg));
+      --panel: color-mix(in srgb, var(--panel-base), var(--accent) var(--tint-panel));
+      --panel-2: color-mix(in srgb, var(--panel-2-base), var(--accent) var(--tint-panel-2));
+      --border: color-mix(in srgb, var(--border-base), var(--accent) var(--tint-border));
+    }
+    html[data-theme="light"] {
+      --bg-base: #f5f6f8;
+      --panel-base: #ffffff;
+      --panel-2-base: #eef0f3;
+      --border-base: #d0d4dc;
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --panel-2: #eef0f3;
+      --border: #d0d4dc;
+      --fg: #1a1c22;
+      --muted: #5b6271;
+      --danger: #b22a2a;
+      /* Light-mode gradient stops are pale, so heatmap labels need dark text */
+      --hm-text: #1a1c22;
+      --hm-na-bg: #e3e6ec;
+    }
+    html[data-theme="light"][data-palette] {
+      --fg: color-mix(in srgb, #1a1c22, var(--accent) var(--tint-fg));
+      --muted: color-mix(in srgb, #5b6271, var(--accent) var(--tint-muted));
+      --hm-na-bg: color-mix(in srgb, var(--bg-base), var(--accent) var(--tint-na));
+      --bg: color-mix(in srgb, var(--bg-base), var(--accent) var(--tint-bg));
+      --panel: color-mix(in srgb, var(--panel-base), var(--accent) var(--tint-panel));
+      --panel-2: color-mix(in srgb, var(--panel-2-base), var(--accent) var(--tint-panel-2));
+      --border: color-mix(in srgb, var(--border-base), var(--accent) var(--tint-border));
+    }
+    /* Tint strength is a 5-step dial (1=minimal accessibility, 5=maximum)
+       picked in the settings panel. Each level scales how much the palette
+       accent bleeds into bg/panel/border/fg. Default (level 4) was chosen
+       to make the active palette obvious without hurting legibility;
+       level 1 strips it down to a 4-8% blend for users who prefer plain
+       dark/light chrome (also serves the "colorblind / high-contrast"
+       use case the previous toggle handled). */
+    :root {
+      /* Default = level 2 (light tint). Users can crank to 4-5 for a
+         heavily-palette-tinted UI or drop to 1 for plain dark/light
+         chrome via the Settings → Appearance dropdown. Keep these in
+         sync with the html[data-tint="2"] block below. */
+      --tint-bg: 4%;
+      --tint-panel: 7%;
+      --tint-panel-2: 9%;
+      --tint-border: 13%;
+      --tint-fg: 2%;
+      --tint-muted: 5%;
+      --tint-na: 8%;
+    }
+    /* Tint 1: bg pure white/black (no accent in canvas), only minimal
+       tint on panels/borders so sidebar still reads as a separate
+       surface. Tint 5: saturated. 2-4 are smooth interpolations.
+       Default is data-tint="2" (set by JS) — gentle accent throughout. */
+    html[data-tint="1"] {
+      --tint-bg: 0%;  --tint-panel: 2%;  --tint-panel-2: 3%;
+      --tint-border: 5%;  --tint-fg: 0%; --tint-muted: 0%; --tint-na: 4%;
+    }
+    html[data-tint="2"] {
+      --tint-bg: 4%;  --tint-panel: 7%;  --tint-panel-2: 9%;
+      --tint-border: 13%; --tint-fg: 2%; --tint-muted: 5%; --tint-na: 8%;
+    }
+    html[data-tint="3"] {
+      --tint-bg: 9%;  --tint-panel: 13%; --tint-panel-2: 17%;
+      --tint-border: 22%; --tint-fg: 7%; --tint-muted: 12%; --tint-na: 14%;
+    }
+    html[data-tint="4"] {
+      --tint-bg: 15%; --tint-panel: 21%; --tint-panel-2: 26%;
+      --tint-border: 35%; --tint-fg: 12%; --tint-muted: 19%; --tint-na: 22%;
+    }
+    html[data-tint="5"] {
+      --tint-bg: 22%; --tint-panel: 30%; --tint-panel-2: 38%;
+      --tint-border: 50%; --tint-fg: 18%; --tint-muted: 28%; --tint-na: 32%;
+    }
+    /* ── Color palettes ────────────────────────────────────────────────
+       Three colorblind-aware palettes from publication standards:
+       - okabe_ito  : Okabe & Ito (2008), 8 categorical hues
+       - nejm       : New England Journal of Medicine (8 hues)
+       - jama       : Journal of the American Medical Assoc (7 hues)
+       Each palette also defines a 6-stop heatmap gradient (for pass-rate
+       cells). Light/dark mode adjusts gradient stops so the stops stay
+       legible against the background. */
+    :root, html[data-palette="okabe_ito"] {
+      --p1:#000000; --p2:#E69F00; --p3:#56B4E9; --p4:#009E73;
+      --p5:#F0E442; --p6:#0072B2; --p7:#D55E00; --p8:#CC79A7;
+      /* Semantic role colors from palette indices (varies per palette).
+         The whole UI's accent / success / warn / danger inherit these. */
+      --accent: var(--p3);
+      --accent-strong: var(--p6);
+      --success: var(--p4);
+      --warn: var(--p2);
+      --danger: var(--p7);
+      --hm-0: #4d2418; --hm-20:#73411e; --hm-40:#9c6a23;
+      --hm-60:#a07b1a; --hm-75:#3a7a5a; --hm-90:#1f7e3e;
+    }
+    html[data-palette="okabe_ito"][data-theme="light"] {
+      --hm-0: #f7d9c8; --hm-20:#f6c6a0; --hm-40:#f3b876;
+      --hm-60:#e0c46a; --hm-75:#7ec0a5; --hm-90:#3aa86b;
+    }
+    html[data-palette="nejm"] {
+      --p1:#BC3C29; --p2:#0072B5; --p3:#E18727; --p4:#20854E;
+      --p5:#7876B1; --p6:#6F99AD; --p7:#FFDC91; --p8:#EE4C97;
+      --accent: var(--p2);
+      --accent-strong: var(--p2);
+      --success: var(--p4);
+      --warn: var(--p3);
+      --danger: var(--p1);
+      --hm-0: #4a1c19; --hm-20:#6a2925; --hm-40:#8a3e35;
+      --hm-60:#7d6a3a; --hm-75:#3a6a52; --hm-90:#20854E;
+    }
+    html[data-palette="nejm"][data-theme="light"] {
+      --hm-0: #f4cdc8; --hm-20:#f3b6ad; --hm-40:#ec9183;
+      --hm-60:#e2c885; --hm-75:#7eb89a; --hm-90:#3a9165;
+    }
+    html[data-palette="jama"] {
+      --p1:#374E55; --p2:#DF8F44; --p3:#00A1D5; --p4:#B24745;
+      --p5:#79AF97; --p6:#6A6599; --p7:#80796B; --p8:#374E55;
+      --accent: var(--p3);
+      --accent-strong: var(--p1);
+      --success: var(--p5);
+      --warn: var(--p2);
+      --danger: var(--p4);
+      --hm-0: #4d2c2c; --hm-20:#6a3835; --hm-40:#8a4942;
+      --hm-60:#7d5a3c; --hm-75:#3a7a5c; --hm-90:#20825d;
+    }
+    html[data-palette="jama"][data-theme="light"] {
+      --hm-0: #f6cdcb; --hm-20:#f1b3ad; --hm-40:#e0938a;
+      --hm-60:#dcb57c; --hm-75:#84b89e; --hm-90:#4ea980;
+    }
+    /* Viridis — perceptually uniform sequential (matplotlib default).
+       Maps low→high as dark-purple → blue → green → yellow. Excellent
+       for heatmaps and as a general accent palette. */
+    html[data-palette="viridis"] {
+      --p1:#440154; --p2:#482878; --p3:#3E4989; --p4:#31688E;
+      --p5:#26828E; --p6:#1F9E89; --p7:#6DCD59; --p8:#FDE725;
+      --accent: var(--p4);
+      --accent-strong: var(--p2);
+      --success: var(--p7);
+      --warn: var(--p8);
+      --danger: var(--p1);
+      --hm-0: #2a0a35; --hm-20:#3b1f5c; --hm-40:#3d4d7e;
+      --hm-60:#26828E; --hm-75:#1F9E89; --hm-90:#6DCD59;
+    }
+    html[data-palette="viridis"][data-theme="light"] {
+      --hm-0: #d6c0e0; --hm-20:#b3a4d2; --hm-40:#7e92c0;
+      --hm-60:#4faaa6; --hm-75:#82c987; --hm-90:#cad14b;
+    }
+    /* Magma — perceptually uniform sequential (matplotlib).
+       Maps low→high as black → purple → magenta → orange → cream.
+       High contrast on both dark and light backgrounds. */
+    html[data-palette="magma"] {
+      --p1:#000004; --p2:#1C1044; --p3:#51127C; --p4:#822681;
+      --p5:#B73779; --p6:#E65164; --p7:#FB8861; --p8:#FCFDBF;
+      --accent: var(--p5);
+      --accent-strong: var(--p3);
+      --success: var(--p7);
+      --warn: var(--p6);
+      --danger: var(--p4);
+      --hm-0: #1c0a2e; --hm-20:#3a0e4a; --hm-40:#671067;
+      --hm-60:#9c2479; --hm-75:#d65760; --hm-90:#f9a85f;
+    }
+    html[data-palette="magma"][data-theme="light"] {
+      --hm-0: #d6c1d8; --hm-20:#bba1ce; --hm-40:#9e80c5;
+      --hm-60:#c47dab; --hm-75:#e89684; --hm-90:#f3c780;
+    }
+    /* NPG (Nature Publishing Group) — categorical, broad medical/biology
+       publication palette. 10 hues; first 8 used for --p1..--p8. */
+    html[data-palette="npg"] {
+      --p1:#E64B35; --p2:#4DBBD5; --p3:#00A087; --p4:#3C5488;
+      --p5:#F39B7F; --p6:#8491B4; --p7:#DC0000; --p8:#7E6148;
+      --accent: var(--p2);
+      --accent-strong: var(--p4);
+      --success: var(--p3);
+      --warn: var(--p5);
+      --danger: var(--p7);
+      --hm-0: #4d1a14; --hm-20:#732a1c; --hm-40:#9c4321;
+      --hm-60:#806820; --hm-75:#2f7d6a; --hm-90:#00A087;
+    }
+    html[data-palette="npg"][data-theme="light"] {
+      --hm-0: #f6cdc6; --hm-20:#f1b3a0; --hm-40:#eb9379;
+      --hm-60:#e0c089; --hm-75:#7eb8a1; --hm-90:#3aa890;
+    }
+    /* AAAS (Science journal) — saturated categorical with strong primaries.
+       Pick: deep blue, red, green, purple, teal, dark red, slate, magenta. */
+    html[data-palette="aaas"] {
+      --p1:#3B4992; --p2:#EE0000; --p3:#008B45; --p4:#631879;
+      --p5:#008280; --p6:#BB0021; --p7:#5F559B; --p8:#A20056;
+      --accent: var(--p1);
+      --accent-strong: var(--p7);
+      --success: var(--p3);
+      --warn: var(--p6);
+      --danger: var(--p2);
+      --hm-0: #4d1414; --hm-20:#6e1a1a; --hm-40:#8a1c25;
+      --hm-60:#835020; --hm-75:#2f6f4e; --hm-90:#008B45;
+    }
+    html[data-palette="aaas"][data-theme="light"] {
+      --hm-0: #f6caca; --hm-20:#f1adad; --hm-40:#e09494;
+      --hm-60:#dcc385; --hm-75:#7eb89a; --hm-90:#3a9968;
+    }
+    /* Lancet journal — vibrant clinical palette, 8 hues. */
+    html[data-palette="lancet"] {
+      --p1:#00468B; --p2:#ED0000; --p3:#42B540; --p4:#0099B4;
+      --p5:#925E9F; --p6:#FDAF91; --p7:#AD002A; --p8:#ADB6B6;
+      --accent: var(--p1);
+      --accent-strong: var(--p4);
+      --success: var(--p3);
+      --warn: var(--p6);
+      --danger: var(--p2);
+      --hm-0: #4d1414; --hm-20:#6e1c1c; --hm-40:#94221d;
+      --hm-60:#b07a3a; --hm-75:#2f7e3e; --hm-90:#42B540;
+    }
+    html[data-palette="lancet"][data-theme="light"] {
+      --hm-0: #f6cccc; --hm-20:#f3aeae; --hm-40:#ef9088;
+      --hm-60:#f3c5a5; --hm-75:#86c789; --hm-90:#4dba63;
+    }
+    /* IBM Carbon — WCAG AA accessible categorical palette designed for
+       both light and dark themes. Pick 8 from the 10 hues. */
+    html[data-palette="ibm_carbon"] {
+      --p1:#8A3FFC; --p2:#33B1FF; --p3:#007D79; --p4:#FF7EB6;
+      --p5:#FA4D56; --p6:#6FDC8C; --p7:#4589FF; --p8:#D2A106;
+      --accent: var(--p7);
+      --accent-strong: var(--p1);
+      --success: var(--p6);
+      --warn: var(--p8);
+      --danger: var(--p5);
+      --hm-0: #4a1518; --hm-20:#6c2226; --hm-40:#8e3439;
+      --hm-60:#806820; --hm-75:#357f4a; --hm-90:#6FDC8C;
+    }
+    html[data-palette="ibm_carbon"][data-theme="light"] {
+      --hm-0: #f6c9cd; --hm-20:#f1adb1; --hm-40:#e6918c;
+      --hm-60:#e0c489; --hm-75:#84c98e; --hm-90:#5fc678;
+    }
+    /* Bloomberg Terminal — semantic palette observed from actual terminal
+       screens. Black + white are bg / text; amber (#FFA028) is the
+       signature primary. Roles per the Workspace mapping: up = green,
+       down = red, command = magenta, link = cyan, accent = blue,
+       header = dark red, label = yellow. */
+    html[data-palette="bloomberg"] {
+      --p1:#FFA028; --p2:#FFFF00; --p3:#00FF66; --p4:#FF3333;
+      --p5:#FF44CC; --p6:#00DDFF; --p7:#0099FF; --p8:#8B0000;
+      --accent: var(--p1);
+      --accent-strong: var(--p7);
+      --success: var(--p3);
+      --warn: var(--p1);
+      --danger: var(--p4);
+      --hm-0: #4d1414; --hm-20:#7a1a1a; --hm-40:#a92424;
+      --hm-60:#b07014; --hm-75:#2c8e3a; --hm-90:#00FF66;
+    }
+    html[data-palette="bloomberg"][data-theme="light"] {
+      --hm-0: #f6c0c0; --hm-20:#f29393; --hm-40:#ec7373;
+      --hm-60:#f3c879; --hm-75:#74d488; --hm-90:#6fe09a;
+    }
+    /* Bloomberg-specific dark-mode overrides — direct vars, NOT
+       color-mix-tinted. Bloomberg Terminal's hallmark is amber-on-black
+       with semantic role colors (green=up, red=down, yellow=labels,
+       magenta=cmd, cyan=link). To preserve that aesthetic regardless of
+       tint level, this block overrides --bg/--fg/--border with concrete
+       values; the tint dial is intentionally bypassed here. Higher
+       specificity than html[data-theme="dark"][data-palette] (3 attr
+       selectors vs 2 + 1) so these win. */
+    html[data-palette="bloomberg"][data-theme="dark"] {
+      --bg-base:        #000000;
+      --panel-base:     #0a0a0a;
+      --panel-2-base:   #161616;
+      --border-base:    #FFA028;
+      --bg:             #000000;
+      --panel:          #0a0a0a;
+      --panel-2:        #161616;
+      /* Amber dominates: text, outlines, dividers. Body fg = amber so
+         labels, headers, table cells, status text all render amber by
+         default. */
+      --fg:             #FFA028;
+      --muted:          #B87513;
+      --border:         #FFA028;
+      --hm-text:        #FFFFFF;
+      --hm-na-bg:       #1a1a1a;
+    }
+    html[data-palette="bloomberg"][data-theme="light"] {
+      /* Light mode (rare for Bloomberg fans, but supported). Inverts to
+         amber-on-paper. */
+      --bg-base:        #FFFFFF;
+      --panel-base:     #FFFAF0;
+      --panel-2-base:   #FFF4E0;
+      --border-base:    #B87513;
+      --bg:             #FFFFFF;
+      --panel:          #FFFAF0;
+      --panel-2:        #FFF4E0;
+      --fg:             #8A4F00;
+      --muted:          #B87513;
+      --border:         #B87513;
+      --hm-text:        #1a1c22;
+    }
+    /* Bloomberg semantic detailing — chat & UI surfaces that
+       reference hardcoded colors switch to terminal-style equivalents.
+       Most palettes don't need these per-element overrides because they
+       use --fg / --accent for everything; Bloomberg's role-coded scheme
+       benefits from a few targeted tweaks. */
+    html[data-palette="bloomberg"] .msg.user {
+      /* Yellow = "label" / interactive-input row in real terminal */
+      color: #FFFF00;
+    }
+    html[data-palette="bloomberg"] .msg.assistant { color: var(--fg); }
+    html[data-palette="bloomberg"] header {
+      /* Header bar: pure black to match the rest of the terminal canvas;
+         only the bottom border carries the amber accent. */
+      background: #000000;
+      border-bottom: 1px solid #FFA028;
+    }
+    html[data-palette="bloomberg"] .stat.warn .val { color: #FFFF00; }
+    html[data-palette="bloomberg"] .stat.crit .val { color: #FF3333; }
+    html[data-palette="bloomberg"] .msg pre {
+      background: #0a0a0a; border: 1px solid #FFA028; color: #FFFFFF;
+    }
+    html[data-palette="bloomberg"] .msg code {
+      background: #161616; color: #00DDFF;  /* cyan code = link semantic */
+    }
+    html[data-palette="bloomberg"] a, html[data-palette="bloomberg"] a:visited {
+      color: #00DDFF;  /* cyan link */
+    }
+    html[data-palette="bloomberg"] .conv-item.active {
+      background: #1a0a0a; border-left-color: #FFA028;
+    }
+    html[data-palette="bloomberg"] #composer-wrap {
+      background: #0a0a0a; border-color: #FFA028;
+    }
+    html[data-palette="bloomberg"] header select,
+    html[data-palette="bloomberg"] header button {
+      background: #0a0a0a; color: #FFA028; border-color: #FFA028;
+    }
+    /* Tableau 10 (Stone et al.) — Tableau's default categorical palette.
+       8 selected for --p1..--p8 from the 10 hues. */
+    html[data-palette="tableau10"] {
+      --p1:#4E79A7; --p2:#F28E2B; --p3:#E15759; --p4:#76B7B2;
+      --p5:#59A14F; --p6:#EDC948; --p7:#B07AA1; --p8:#FF9DA7;
+      --accent: var(--p1);
+      --accent-strong: var(--p7);
+      --success: var(--p5);
+      --warn: var(--p6);
+      --danger: var(--p3);
+      --hm-0: #4a2222; --hm-20:#6c2c2c; --hm-40:#8a3a37;
+      --hm-60:#807028; --hm-75:#3c7340; --hm-90:#59A14F;
+    }
+    html[data-palette="tableau10"][data-theme="light"] {
+      --hm-0: #f6cdca; --hm-20:#f1b1ae; --hm-40:#e89691;
+      --hm-60:#e8d088; --hm-75:#9bc88c; --hm-90:#74b873;
+    }
+    /* Set1 (ColorBrewer) — classic qualitative R/ggplot2 palette. */
+    html[data-palette="set1"] {
+      --p1:#E41A1C; --p2:#377EB8; --p3:#4DAF4A; --p4:#984EA3;
+      --p5:#FF7F00; --p6:#FFFF33; --p7:#A65628; --p8:#F781BF;
+      --accent: var(--p2);
+      --accent-strong: var(--p4);
+      --success: var(--p3);
+      --warn: var(--p5);
+      --danger: var(--p1);
+      --hm-0: #4d1414; --hm-20:#701c1d; --hm-40:#952520;
+      --hm-60:#b06222; --hm-75:#3a8a3a; --hm-90:#4DAF4A;
+    }
+    html[data-palette="set1"][data-theme="light"] {
+      --hm-0: #f6caca; --hm-20:#f1aaaa; --hm-40:#e39189;
+      --hm-60:#f5be7c; --hm-75:#83c98a; --hm-90:#5cbe5b;
+    }
+    /* Set2 (ColorBrewer) — softer pastel-leaning qualitative palette. */
+    html[data-palette="set2"] {
+      --p1:#66C2A5; --p2:#FC8D62; --p3:#8DA0CB; --p4:#E78AC3;
+      --p5:#A6D854; --p6:#FFD92F; --p7:#E5C494; --p8:#B3B3B3;
+      --accent: var(--p1);
+      --accent-strong: var(--p3);
+      --success: var(--p5);
+      --warn: var(--p6);
+      --danger: var(--p2);
+      --hm-0: #4d2620; --hm-20:#7a3424; --hm-40:#9e4a30;
+      --hm-60:#836728; --hm-75:#4a8c4f; --hm-90:#66C2A5;
+    }
+    html[data-palette="set2"][data-theme="light"] {
+      --hm-0: #f7d3c4; --hm-20:#f6b89c; --hm-40:#f1a07f;
+      --hm-60:#e8cc89; --hm-75:#9bce92; --hm-90:#82d3b6;
+    }
+    /* Tol Vibrant — saturated 7-hue palette originally for TensorBoard.
+       Pad p8 with the gray shown in the source palette (#BBBBBB). */
+    html[data-palette="tol_vibrant"] {
+      --p1:#0077BB; --p2:#33BBEE; --p3:#009988; --p4:#EE7733;
+      --p5:#CC3311; --p6:#EE3377; --p7:#BBBBBB; --p8:#BBBBBB;
+      --accent: var(--p1);
+      --accent-strong: var(--p3);
+      --success: var(--p3);
+      --warn: var(--p4);
+      --danger: var(--p5);
+      --hm-0: #4a141a; --hm-20:#6f1d1c; --hm-40:#94331f;
+      --hm-60:#b06b1f; --hm-75:#00786a; --hm-90:#009988;
+    }
+    html[data-palette="tol_vibrant"][data-theme="light"] {
+      --hm-0: #f6c8cb; --hm-20:#f1adac; --hm-40:#ef9784;
+      --hm-60:#f4c388; --hm-75:#7fc8bc; --hm-90:#4dbab2;
+    }
+    /* Tol Muted — softer 9-hue academic palette (10 if you count gray).
+       Pick 8 for --p1..--p8. */
+    html[data-palette="tol_muted"] {
+      --p1:#332288; --p2:#88CCEE; --p3:#44AA99; --p4:#117733;
+      --p5:#999933; --p6:#DDCC77; --p7:#CC6677; --p8:#882255;
+      --accent: var(--p1);
+      --accent-strong: var(--p2);
+      --success: var(--p3);
+      --warn: var(--p6);
+      --danger: var(--p7);
+      --hm-0: #401822; --hm-20:#5e1c2e; --hm-40:#7a2939;
+      --hm-60:#6e6024; --hm-75:#2f7a5d; --hm-90:#44AA99;
+    }
+    html[data-palette="tol_muted"][data-theme="light"] {
+      --hm-0: #f0c9d2; --hm-20:#e9adb5; --hm-40:#df9098;
+      --hm-60:#e3d488; --hm-75:#86c1ae; --hm-90:#5fbfa7;
+    }
     :root {
       --bg: #0f1014;
       --panel: #181a21;
+      --panel-2: #22252e;
       --fg: #e8e8e8;
       --muted: #888;
       --border: #2a2d36;
       --accent: #3794ff;
       --danger: #c44;
+      --hm-text: #ffffff;
+      --hm-na-bg: #1c2129;
     }
     * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
+    html, body {
+      height: 100%; margin: 0;
+      /* iOS Safari shrinks/grows 100vh as the address bar slides; height:
+         100% on html+body usually does the right thing, but on iPad
+         landscape we sometimes still see a sliver gap. dvh = the actual
+         visible viewport height; ignored gracefully on browsers that
+         don't support it. */
+      min-height: 100vh; min-height: 100dvh;
+      /* Kill the gray flash iOS Safari paints over <button> on tap; the
+         palette-aware focus ring + hover state already give plenty of
+         feedback without it. */
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* Text selection (highlight) and link colors are palette-derived so
+       changing the palette propagates everywhere — including ::selection
+       which most browsers don't respect inheriting via currentColor. */
+    ::selection {
+      background: color-mix(in srgb, var(--accent) 70%, transparent);
+      color: var(--hm-text);
+    }
+    ::-moz-selection {
+      background: color-mix(in srgb, var(--accent) 70%, transparent);
+      color: var(--hm-text);
+    }
+    a, a:visited { color: var(--accent); }
+    a:hover { color: var(--accent-strong, var(--accent)); }
+    code { color: var(--accent); }
+    /* Inputs use palette-tinted focus ring */
+    input:focus, select:focus, textarea:focus, button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
     body {
       background: var(--bg); color: var(--fg);
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-family: var(--ui-font, 'Segoe UI', system-ui, -apple-system, sans-serif);
       font-size: 14px;
       display: flex; flex-direction: column;
       -webkit-font-smoothing: antialiased;
+    }
+    /* Typeface dial — controlled by html[data-typeface]. Default ("system")
+       leaves the body face as the cross-platform sans stack; "times" and
+       "ibm_plex_sans" override via the --ui-font custom property so child
+       elements that use `font: inherit` pick it up automatically.
+       Bloomberg's sign-in page sets its own face directly (IBM Plex Mono)
+       and is unaffected by this. */
+    html[data-typeface="system"], html:not([data-typeface]) {
+      --ui-font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    html[data-typeface="times"] {
+      --ui-font: 'Times New Roman', 'Liberation Serif', Times, serif;
+    }
+    html[data-typeface="ibm_plex_sans"] {
+      --ui-font: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
     }
     header {
       display: flex; align-items: center; gap: 12px;
@@ -225,23 +727,65 @@
       font: inherit;
     }
     #send:disabled { opacity: 0.6; cursor: not-allowed; }
-    #signin {
-      max-width: 360px; margin: 10vh auto; padding: 24px;
-      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    /* Sign-in page is intentionally hard-coded to the Bloomberg
+       Terminal aesthetic + IBM Plex Mono — the user isn't authenticated
+       yet, so we don't know whose palette to use. Black bg, amber
+       accent, monospace face. These rules use direct color values
+       (NOT --bg/--fg) so they aren't overridden by whatever palette
+       the previous user left selected on this device. */
+    body:has(#signin:not(.hidden)) {
+      background: #000000;
     }
-    #signin h1 { font-size: 18px; margin: 0 0 16px 0; }
-    #signin label { display: block; font-size: 12px; color: var(--muted); margin-top: 10px; }
+    #signin {
+      max-width: 380px; margin: 10vh auto; padding: 28px 32px;
+      background: #0a0a0a;
+      border: 1px solid #FFA028;
+      border-radius: 4px;  /* Bloomberg uses sharper corners */
+      color: #FFA028;
+      font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+      box-shadow: 0 0 0 1px #FFA028 inset, 0 12px 40px rgba(255,160,40,0.12);
+    }
+    #signin h1 {
+      font-size: 18px; margin: 0 0 18px 0;
+      color: #FFA028; letter-spacing: 0.04em; text-transform: uppercase;
+      font-weight: 600;
+      border-bottom: 1px solid #FFA028; padding-bottom: 10px;
+    }
+    #signin label {
+      display: block; font-size: 11px; color: #B87513;
+      margin-top: 12px;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      font-family: inherit;
+    }
     #signin input {
-      width: 100%; background: #22252e; color: var(--fg);
-      border: 1px solid var(--border); border-radius: 6px;
-      padding: 8px 10px; font: inherit; margin-top: 4px;
+      width: 100%;
+      background: #000000; color: #FFA028;
+      border: 1px solid #B87513;
+      border-radius: 2px;
+      padding: 8px 10px; margin-top: 4px;
+      font-family: inherit; font-size: 14px;
+      caret-color: #FFA028;
+    }
+    #signin input:focus {
+      outline: 0; border-color: #FFA028;
+      box-shadow: 0 0 0 1px #FFA028 inset;
     }
     #signin button {
-      width: 100%; margin-top: 16px; background: var(--accent);
-      color: white; border: 0; border-radius: 6px; padding: 10px;
-      font: inherit; cursor: pointer;
+      width: 100%; margin-top: 18px;
+      background: #FFA028; color: #000000;
+      border: 0; border-radius: 2px;
+      padding: 10px 14px;
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      cursor: pointer;
     }
-    #signin-err { color: var(--danger); margin-top: 10px; font-size: 13px; min-height: 18px; }
+    #signin button:hover { background: #FFB048; }
+    #signin button:active { background: #E08A18; }
+    #signin-err {
+      color: #FF3333; margin-top: 12px;
+      font-size: 12px; min-height: 18px;
+      font-family: inherit;
+    }
     .hidden { display: none !important; }
     /* Admin dashboard — shown only after a sign-in where /admin/me
        reports is_admin=true. Replaces the chat log pane in place; the
@@ -257,11 +801,20 @@
     .dash-tabs {
       display: flex; gap: 4px; border-bottom: 1px solid var(--border);
       margin-bottom: 14px;
+      /* Make the tab row independently horizontally scrollable so the
+         page itself doesn't overflow on narrow screens. */
+      overflow-x: auto;
+      overflow-y: hidden;
+      flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
     }
     .dash-tab {
       background: transparent; color: var(--muted);
       border: 0; border-bottom: 2px solid transparent;
       padding: 8px 14px; cursor: pointer; font: inherit; font-size: 13px;
+      white-space: nowrap;
+      flex: 0 0 auto;
     }
     .dash-tab:hover { color: var(--fg); }
     .dash-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
@@ -317,10 +870,25 @@
     .dash-empty { color: var(--muted); padding: 20px 0; font-style: italic; }
     .dash-banner {
       padding: 10px 12px; border-radius: 6px;
-      background: #1f2a3a; border: 1px solid #3a4a6a;
-      color: #cfe1ff; font-size: 13px; margin-bottom: 14px;
+      background: color-mix(in srgb, var(--bg) 80%, var(--accent) 20%);
+      border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+      color: var(--fg); font-size: 13px; margin-bottom: 14px;
     }
-    .dash-banner.warn { background: #2a2415; border-color: #6a5a3a; color: #e0c060; }
+    .dash-banner.warn {
+      background: color-mix(in srgb, var(--bg) 75%, var(--warn) 25%);
+      border-color: color-mix(in srgb, var(--warn) 60%, var(--border));
+      color: var(--fg);
+    }
+    .dash-banner.danger {
+      background: color-mix(in srgb, var(--bg) 75%, var(--danger) 25%);
+      border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
+      color: var(--fg);
+    }
+    .dash-banner.success {
+      background: color-mix(in srgb, var(--bg) 75%, var(--success) 25%);
+      border-color: color-mix(in srgb, var(--success) 60%, var(--border));
+      color: var(--fg);
+    }
     /* Conversation sidebar — lists the user's past chats. Click an
        item to resume; the chat history is repopulated and subsequent
        sends include conversation_id so the backend persists messages
@@ -370,8 +938,191 @@
       cursor: pointer; padding: 6px 10px; font-size: 12px; text-align: left;
       border-top: 1px solid var(--border);
     }
-    #archived-toggle:hover { color: #fff; background: #22252e; }
+    #archived-toggle:hover { color: var(--fg); background: var(--panel-2); }
     #archived-toggle.active { color: var(--accent); }
+    /* Settings gear button at sidebar footer (replaces inline panel) */
+    #settings-btn {
+      width: 100%; background: transparent; color: var(--muted); border: none;
+      cursor: pointer; padding: 8px 10px; font-size: 12px; text-align: left;
+      border-top: 1px solid var(--border); font-family: inherit;
+    }
+    #settings-btn:hover { color: var(--fg); background: var(--panel-2); }
+    /* Settings modal — slides up from the bottom on phones, fades in
+       centered on desktop. Backdrop closes on click. */
+    #settings-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 60;
+    }
+    #settings-modal {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(560px, 92vw); max-height: 88vh; overflow-y: auto;
+      background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 10px; z-index: 61;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+    }
+    #settings-modal.hidden, #settings-backdrop.hidden { display: none; }
+    .settings-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+    }
+    .settings-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    #settings-close {
+      background: transparent; border: 0; color: var(--muted); cursor: pointer;
+      font-size: 18px; padding: 4px 8px; border-radius: 4px; font-family: inherit;
+    }
+    #settings-close:hover { color: var(--fg); background: var(--panel-2); }
+    .settings-body { padding: 14px 18px; }
+    .settings-tabs {
+      display: flex; gap: 4px; padding: 0 18px;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto; flex-wrap: nowrap;
+    }
+    .settings-tab {
+      background: transparent; color: var(--muted);
+      border: 0; border-bottom: 2px solid transparent;
+      padding: 8px 14px; cursor: pointer; font: inherit; font-size: 13px;
+      white-space: nowrap; flex: 0 0 auto;
+    }
+    .settings-tab:hover { color: var(--fg); }
+    .settings-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+    .settings-pane { display: none; }
+    .settings-body[data-active-tab="general"]   .settings-pane[data-pane="general"],
+    .settings-body[data-active-tab="connectors"] .settings-pane[data-pane="connectors"],
+    .settings-body[data-active-tab="skills"]    .settings-pane[data-pane="skills"],
+    .settings-body[data-active-tab="benchmark"] .settings-pane[data-pane="benchmark"] {
+      display: block;
+    }
+    .settings-section {
+      padding: 12px 0; border-bottom: 1px solid var(--border);
+    }
+    .settings-section:last-child { border-bottom: 0; }
+    .settings-section h3 {
+      margin: 0 0 6px 0; font-size: 13px; font-weight: 600; color: var(--fg);
+    }
+    .settings-help {
+      margin: 0 0 10px 0; font-size: 12px; color: var(--muted); line-height: 1.5;
+    }
+    .settings-stub {
+      padding: 8px 12px; font-size: 12px; color: var(--muted);
+      background: var(--panel-2); border: 1px dashed var(--border); border-radius: 6px;
+      font-style: italic;
+    }
+    .plugin-row {
+      display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px;
+      border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px;
+      background: var(--panel-2);
+    }
+    .plugin-row .plugin-icon { font-size: 18px; line-height: 1; min-width: 22px; }
+    .plugin-row .plugin-meta { flex: 1; min-width: 0; }
+    .plugin-row .plugin-title { font-size: 13px; font-weight: 600; color: var(--fg); }
+    .plugin-row .plugin-desc {
+      font-size: 11px; color: var(--muted); margin-top: 2px;
+      overflow-wrap: break-word;
+    }
+    .plugin-row .plugin-counts {
+      font-size: 10px; color: var(--muted); margin-top: 4px;
+      letter-spacing: 0.04em; text-transform: uppercase;
+    }
+    .plugin-row .plugin-toggle {
+      flex-shrink: 0;
+      padding: 4px 10px; font-size: 11px; border-radius: 12px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer; font-family: inherit;
+    }
+    .plugin-row .plugin-toggle.enabled {
+      background: var(--success); color: #fff; border-color: var(--success);
+    }
+    .connector-badge {
+      display: inline-block; padding: 1px 8px; border-radius: 10px;
+      font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+      margin-right: 6px;
+    }
+    .connector-portal-link {
+      display: inline-block; padding: 6px 10px; margin: 8px 0;
+      background: var(--panel-2); color: var(--accent);
+      border: 1px solid var(--border); border-radius: 6px;
+      text-decoration: none; font-size: 12px;
+    }
+    .connector-portal-link:hover {
+      background: color-mix(in srgb, var(--panel-2) 80%, var(--accent) 20%);
+    }
+    #connector-config-modal input[type="password"] {
+      width: 100%; padding: 6px 10px; margin-top: 4px; font-size: 13px;
+      background: var(--panel-2); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 6px;
+      font-family: inherit;
+    }
+    #settings-display-name {
+      width: 100%; padding: 6px 10px; font-size: 13px; border-radius: 6px;
+      background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+      font-family: inherit;
+    }
+    #settings-display-name:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .demo-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px;
+    }
+    .demo-row { display: flex; flex-direction: column; gap: 3px; }
+    .demo-row input {
+      padding: 5px 8px; font-size: 12px; border-radius: 5px;
+      background: var(--panel-2); color: var(--fg);
+      border: 1px solid var(--border); font-family: inherit;
+    }
+    .demo-row input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+    @media (max-width: 480px) {
+      .demo-grid { grid-template-columns: 1fr; }
+    }
+    .settings-foot {
+      display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+      padding: 12px 18px; border-top: 1px solid var(--border);
+      background: var(--panel);
+      position: sticky; bottom: 0;
+    }
+    .settings-status {
+      font-size: 12px; color: var(--muted); flex: 1;
+    }
+    .settings-status.success { color: var(--success); }
+    .settings-status.error { color: var(--danger); }
+    #settings-save {
+      background: var(--accent); color: white; border: 0;
+      padding: 8px 16px; border-radius: 6px; cursor: pointer;
+      font-family: inherit; font-size: 13px; font-weight: 500;
+    }
+    #settings-save:hover { filter: brightness(1.1); }
+    #settings-save:disabled { opacity: 0.6; cursor: not-allowed; }
+    @media (max-width: 640px) {
+      #settings-modal {
+        left: 8px; right: 8px; top: 50%; transform: translate(0, -50%);
+        width: auto;
+      }
+    }
+    .tc-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px;
+    }
+    .tc-label {
+      font-size: 11px; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.04em; flex-shrink: 0;
+    }
+    #theme-toggle { display: flex; gap: 2px; }
+    .tc-pill {
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      padding: 4px 8px; font-size: 11px; cursor: pointer; border-radius: 12px;
+      font-family: inherit;
+    }
+    .tc-pill.active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+    .tc-pill:hover:not(.active) { color: var(--fg); border-color: var(--fg); }
+    #palette-select {
+      background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+      padding: 4px 6px; font-size: 12px; border-radius: 4px; cursor: pointer;
+      flex: 1; max-width: 130px;
+    }
+    #palette-swatches {
+      display: flex; gap: 2px; height: 12px; border-radius: 3px; overflow: hidden;
+    }
+    #palette-swatches > span {
+      flex: 1; min-width: 8px;
+    }
     #new-conv-btn {
       margin: 6px; padding: 8px;
       background: var(--accent); color: white; border: 0;
@@ -390,10 +1141,15 @@
       header { padding: 8px 10px; gap: 6px; flex-wrap: wrap; }
       header .brand { font-size: 13px; }
       header select { max-width: 140px; font-size: 13px; }
-      /* Status indicators and the username eat space on a phone — hide
-         them; the user can pull up /admin in a separate tab if they
-         need raw VRAM numbers. */
-      #vram-stat, #ctx-stat, #who { display: none; }
+      /* Username eats too much width on a phone — keep it hidden. The
+         VRAM and CTX status pills stay visible so the user can see
+         resource state at a glance; they wrap onto a second row when
+         the header gets full thanks to header's flex-wrap. */
+      #who { display: none; }
+      #vram-stat, #ctx-stat {
+        font-size: 10px;
+        padding: 0 4px;
+      }
       header label { font-size: 12px; }
       #menu-btn {
         display: inline-flex; align-items: center; justify-content: center;
@@ -446,6 +1202,48 @@
         left: 0; right: 0; min-width: 0; max-height: 50vh;
       }
     }
+    /* ── Touch-only fallbacks (iPad, iPhone, any coarse-pointer device) ─
+       Hover-gated controls are unreachable on touch — show them all the
+       time. Also widen tap targets for the small icon buttons inside the
+       conversation list. */
+    @media (hover: none), (pointer: coarse) {
+      .conv-item .conv-actions { display: flex !important; }
+      .conv-item .conv-actions button {
+        padding: 6px 8px;
+        font-size: 15px;
+      }
+    }
+    /* ── iPad / tablet landscape (≥641px wide, coarse pointer) ─────────
+       The phone-only @media block above doesn't fire here (iPad in
+       landscape is 1080-1366px wide), so the desktop layout applies —
+       which mostly works, but a few touch-friendly tweaks help: bigger
+       composer, iOS safe-area padding, header wrapping when the model +
+       team selectors don't all fit, and full-width send button. */
+    @media (pointer: coarse) and (min-width: 641px) {
+      header { flex-wrap: wrap; row-gap: 6px; }
+      #composer { font-size: 16px; min-height: 52px; }
+      #send { min-height: 44px; padding: 10px 18px; }
+      .icon-btn { min-height: 36px; padding: 8px 12px; }
+      footer {
+        padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+      }
+      /* iOS adds a bottom toolbar overlay that hides the absolute-bottom
+         row of any tall scrollable element. Pad the chat log so the last
+         message doesn't disappear under the URL bar / home indicator. */
+      #log {
+        padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+      }
+      /* iOS Safari clips fixed/absolute popovers if their height exceeds
+         the visual viewport; cap with dvh so they shrink instead of
+         scrolling under the URL bar. */
+      #tools-popover { max-height: 60dvh; }
+      /* Settings modal can run off the bottom on iPad landscape since
+         portrait was the design target; constrain to the visual viewport
+         and let internal panes scroll. */
+      #settings-modal {
+        max-height: 90dvh;
+      }
+    }
     /* Refresh banner — shown when /healthz fails (typical cause: backend
        restart triggered by post-merge hook after a `git pull`). Polls
        /healthz on a tight schedule and reveals what's happening + ETA so
@@ -494,8 +1292,190 @@
     <aside id="sidebar">
       <button id="new-conv-btn">+ New chat</button>
       <div id="conv-list"></div>
-      <button id="archived-toggle" type="button" title="Show archived chats">📦 Show archived</button>
+      <button id="archived-toggle" type="button" title="Show archived chats">Show archived</button>
+      <button id="settings-btn" type="button" title="Settings">Settings</button>
     </aside>
+    <!-- Settings modal: theme, palette, display name, connectors, memory/RAG.
+         Slides in from the left on click, dismisses on backdrop or ESC. -->
+    <div id="settings-backdrop" class="hidden"></div>
+    <div id="settings-modal" class="hidden" role="dialog" aria-labelledby="settings-title" aria-modal="true">
+      <div class="settings-head">
+        <h2 id="settings-title">Settings</h2>
+        <button id="settings-close" type="button" aria-label="Close settings">✕</button>
+      </div>
+      <div class="settings-tabs" role="tablist">
+        <button class="settings-tab active" data-tab="general"   type="button">General</button>
+        <button class="settings-tab"        data-tab="connectors" type="button">Connectors</button>
+        <button class="settings-tab"        data-tab="skills"     type="button">Skills</button>
+        <button class="settings-tab"        data-tab="benchmark"  type="button">Benchmark</button>
+      </div>
+      <div class="settings-body" data-active-tab="general">
+        <div class="settings-pane" data-pane="general">
+        <section class="settings-section">
+          <h3>Appearance</h3>
+          <div class="tc-row">
+            <label class="tc-label">Theme</label>
+            <div id="theme-toggle" role="group">
+              <button class="tc-pill" data-theme="dark"  type="button" title="Dark theme">Dark</button>
+              <button class="tc-pill" data-theme="light" type="button" title="Light theme">Light</button>
+            </div>
+          </div>
+          <div class="tc-row">
+            <label class="tc-label" for="palette-select">Palette</label>
+            <select id="palette-select" title="Color palette — colorblind-friendly options from peer-reviewed publication standards">
+              <optgroup label="Colorblind-safe">
+                <option value="okabe_ito">Okabe-Ito</option>
+                <option value="ibm_carbon">IBM Carbon</option>
+                <option value="tol_vibrant">Tol Vibrant</option>
+                <option value="tol_muted">Tol Muted</option>
+              </optgroup>
+              <optgroup label="Sequential / continuous">
+                <option value="viridis">Viridis</option>
+                <option value="magma">Magma</option>
+              </optgroup>
+              <optgroup label="Clinical / scientific journals">
+                <option value="nejm">NEJM (New England J Med)</option>
+                <option value="jama">JAMA</option>
+                <option value="lancet">Lancet</option>
+                <option value="npg">NPG (Nature)</option>
+                <option value="aaas">AAAS (Science)</option>
+              </optgroup>
+              <optgroup label="Categorical / general">
+                <option value="tableau10">Tableau 10</option>
+                <option value="set1">Set1 (ggplot2)</option>
+                <option value="set2">Set2 (pastel)</option>
+                <option value="bloomberg">Bloomberg Terminal</option>
+              </optgroup>
+            </select>
+          </div>
+          <div id="palette-swatches" title="Palette preview"></div>
+          <div class="tc-row" style="margin-top:8px">
+            <label class="tc-label" for="tint-strength">Tint strength</label>
+            <select id="tint-strength" title="How much the palette tints the page chrome (bg/panel/text). 1=minimal (accessibility) ↔ 5=maximum.">
+              <option value="1">1 — minimal (accessibility)</option>
+              <option value="2" selected>2 — light (default)</option>
+              <option value="3">3 — medium</option>
+              <option value="4">4 — strong</option>
+              <option value="5">5 — maximum</option>
+            </select>
+          </div>
+          <div class="tc-row" style="margin-top:8px">
+            <label class="tc-label" for="typeface-select">Typeface</label>
+            <select id="typeface-select" title="Body typeface used across the chat UI">
+              <option value="system">Default (system sans)</option>
+              <option value="times">Times New Roman</option>
+              <option value="ibm_plex_sans">IBM Plex Sans</option>
+            </select>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h3>How the assistant addresses you</h3>
+          <p class="settings-help">The AI will call you by this name in its responses. Leave blank to use your sign-in name.</p>
+          <input id="settings-display-name" type="text" placeholder="Your preferred name" maxlength="64" />
+        </section>
+        </div><!-- /.settings-pane[general]-incomplete-marker — closed below -->
+
+        <div class="settings-pane" data-pane="skills">
+        <section class="settings-section">
+          <h3>Skills</h3>
+          <p class="settings-help">
+            Skills are reusable instruction sets the assistant applies to a
+            turn — they ship as <code>SKILL.md</code> packs in <code>skills/</code>.
+            Trigger one via <code>/skill &lt;slug&gt;</code> or by typing one of the skill's
+            keywords. Tools (which the model calls during a turn) live in
+            the chat composer's Tools popover, not here.
+          </p>
+          <div id="settings-skills-list">
+            <div class="settings-stub">Loading skills…</div>
+          </div>
+        </section>
+        </div><!-- /.settings-pane[skills] -->
+
+        <div class="settings-pane" data-pane="connectors">
+        <section class="settings-section">
+          <h3>Connectors</h3>
+          <p class="settings-help">
+            Connectors authenticate the assistant to external services
+            (Gmail, Drive, Notion, etc.) so it can read your data. Each
+            requires an API key or OAuth token in the backend's <code>.env</code>
+            — set those up via the Open WebUI Tool Valves (admin only).
+          </p>
+          <div id="settings-connectors-list">
+            <div class="settings-stub">Loading connectors…</div>
+          </div>
+        </section>
+        </div><!-- /.settings-pane[connectors] -->
+
+        <div class="settings-pane" data-pane="general">
+        <section class="settings-section">
+          <h3>Memory &amp; documents</h3>
+          <p class="settings-help">The assistant remembers things across chats and can search your uploaded documents. Coming soon.</p>
+          <div class="settings-stub">— Memory / RAG config UI not yet implemented —</div>
+        </section>
+        <section class="settings-section">
+          <h3>About you (optional, encrypted)</h3>
+          <p class="settings-help">
+            This information helps the assistant personalize its responses (e.g., explain things in age-appropriate ways).
+            <strong>Encrypted in transit (HTTPS) and at rest (Fernet)</strong> on the backend machine only —
+            never persisted in your browser, never sent to any cloud service, never committed to git.
+            All fields optional, leave blank what you don't want to share.
+          </p>
+          <div class="demo-grid">
+            <div class="demo-row">
+              <label class="tc-label" for="demo-age">Age</label>
+              <input id="demo-age" type="number" min="0" max="150" placeholder="e.g. 32" />
+            </div>
+            <div class="demo-row">
+              <label class="tc-label" for="demo-pronouns">Pronouns</label>
+              <input id="demo-pronouns" type="text" maxlength="32" placeholder="e.g. she/her, they/them" />
+            </div>
+            <div class="demo-row">
+              <label class="tc-label" for="demo-gender">Gender identity</label>
+              <input id="demo-gender" type="text" maxlength="64" placeholder="e.g. woman, non-binary, man" />
+            </div>
+            <div class="demo-row">
+              <label class="tc-label" for="demo-sexuality">Sexuality</label>
+              <input id="demo-sexuality" type="text" maxlength="64" placeholder="optional" />
+            </div>
+            <div class="demo-row">
+              <label class="tc-label" for="demo-race">Race / ethnicity</label>
+              <input id="demo-race" type="text" maxlength="128" placeholder="optional" />
+            </div>
+            <div class="demo-row">
+              <label class="tc-label" for="demo-employment">Employment / role</label>
+              <input id="demo-employment" type="text" maxlength="128" placeholder="e.g. software engineer, student" />
+            </div>
+            <div class="demo-row">
+              <label class="tc-label" for="demo-location">Location</label>
+              <input id="demo-location" type="text" maxlength="128" placeholder="e.g. San Francisco, US" />
+            </div>
+          </div>
+        </section>
+        </div><!-- /.settings-pane[general] -->
+
+        <div class="settings-pane" data-pane="benchmark">
+          <section class="settings-section" style="border-bottom:0">
+            <h3>Benchmark dashboard</h3>
+            <p class="settings-help">
+              Live + historical capability bench results — pass-rate per (tier × capability),
+              Wilson 95% CIs, two-proportion z-tests for condition comparisons.
+              Same data the admin dashboard shows; rendered here for all signed-in users.
+            </p>
+            <div style="overflow:hidden;border:1px solid var(--border);border-radius:6px;background:var(--panel-2);width:100%">
+              <iframe id="settings-bench-iframe" src="about:blank" loading="lazy"
+                      style="display:block;width:100%;height:60vh;border:0;background:transparent"></iframe>
+            </div>
+            <div style="margin-top:6px;font-size:11px;color:var(--muted);text-align:right">
+              <a href="/bench" target="_blank" rel="noopener" style="color:var(--accent)">Open in new tab</a>
+            </div>
+          </section>
+        </div>
+      </div>
+      <div class="settings-foot">
+        <span id="settings-status" class="settings-status"></span>
+        <button id="settings-save" type="button">Save changes</button>
+      </div>
+    </div>
     <div style="display:flex; flex-direction:column; flex:1; min-width:0;">
       <header>
         <button id="menu-btn" type="button" aria-label="Open conversations" title="Conversations">☰</button>
@@ -530,7 +1510,7 @@
           <span class="lbl">CTX</span> <span class="val" id="ctx-val">—</span>
         </span>
         <span id="who" style="color:var(--muted);"></span>
-        <button id="admin-btn" type="button" title="Open backend dashboard">⚙ Admin</button>
+        <button id="admin-btn" type="button" title="Open backend dashboard">Admin</button>
         <button id="logout">Sign out</button>
       </header>
       <div id="main">
@@ -542,8 +1522,8 @@
         <textarea id="composer" placeholder="Type a message. Enter to send, Shift+Enter for newline." rows="1"></textarea>
         <div id="attached-list"></div>
         <div class="composer-tools">
-          <button class="icon-btn" id="tools-btn" title="Enable tools">🔧 Tools <span id="tools-count" style="color:var(--muted);"></span></button>
-          <button class="icon-btn" id="attach-btn" title="Attach files">📎 Attach</button>
+          <button class="icon-btn" id="tools-btn" title="Enable tools">Tools <span id="tools-count" style="color:var(--muted);"></span></button>
+          <button class="icon-btn" id="attach-btn" title="Attach files">Attach</button>
           <input type="file" id="attach-input" multiple>
           <div id="tools-popover" class="hidden">
             <input type="text" class="tool-search" id="tool-search" placeholder="Filter tools…">
@@ -685,11 +1665,38 @@
         const r = await api('/admin/me');
         if (r.ok) {
           const me = await r.json();
+          // Per-user state isolation: bind the AES key namespace to
+          // *this* user, then wipe device-shared UI-pref localStorage
+          // so the previous user's choices don't paint while the
+          // server hydrate is in flight. /admin/me may not include
+          // user_id on backends that haven't been restarted with the
+          // schema update yet — fall back to GET /me which has always
+          // returned `id`.
+          let uid = me.user_id;
+          if (uid == null) {
+            try {
+              const rootMe = await api('/me');
+              if (rootMe.ok) uid = (await rootMe.json()).id;
+            } catch (_) {}
+          }
+          _setCurrentUserId(uid);
+          _clearUiPrefsLocalStorage();
+          _userSettingsCache = null;
+          _oauthStatusCache = {};
           whoEl.textContent = me.username;
           applyAdminFlag(me.is_admin);
           await loadModels();
           await loadTools();
           await loadConversations();
+          // Pre-fetch user settings so the landing greeting + chat
+          // personalization can render synchronously. AES key is now
+          // namespaced to me.user_id so contents are isolated per-user.
+          await _fetchUserSettings();
+          // Server-side UI prefs always wins. If this user has none
+          // saved yet, _hydrateUiPrefsFromServer applies defaults
+          // rather than letting localStorage leftovers stick.
+          await _hydrateUiPrefsFromServer();
+          _renderLandingGreeting(me);
           pollVram();
           signinBox.classList.add('hidden');
           app.classList.remove('hidden');
@@ -699,6 +1706,39 @@
         }
       } catch (_) {}
     }
+
+    // Personalized landing greeting. Shown when the log is empty (fresh
+    // session or new chat). Uses the user's preferred display_name from
+    // settings; falls back to username from /admin/me.
+    let _meCache = null;
+    function _renderLandingGreeting(me) {
+      if (me) _meCache = me;
+      // Only render if log is empty AND no conversation is loaded.
+      if (!logEl || logEl.children.length > 0) return;
+      if (typeof history !== 'undefined' && history && history.length > 0) return;
+      const name = (_userSettingsCache && _userSettingsCache.display_name)
+        || (_meCache && (_meCache.username || _meCache.email)) || 'there';
+      const safeName = String(name).replace(/[<>&]/g, c =>
+        c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;');
+      logEl.innerHTML = `
+        <div id="landing-greeting" style="
+          display:flex; flex-direction:column; align-items:center; justify-content:center;
+          padding:60px 20px; min-height:50vh; text-align:center; gap:14px;
+        ">
+          <div style="font-size:28px; font-weight:600; color:var(--fg)">Hello ${safeName}</div>
+          <div style="font-size:18px; color:var(--muted)">What would you like to talk about?</div>
+        </div>
+      `;
+    }
+    function _refreshLandingGreeting() { _renderLandingGreeting(); }
+    // Hide greeting once messages are flowing — the actual message-render
+    // path overwrites #log via appendChild, but the greeting div may still
+    // be the first child. Watch for inserts.
+    const _greetingObs = new MutationObserver(() => {
+      const g = document.getElementById('landing-greeting');
+      if (g && logEl.children.length > 1) g.remove();
+    });
+    _greetingObs.observe(logEl, { childList: true });
 
     // Re-warm when the tab becomes visible after being hidden — covers
     // the "left for lunch, came back" pattern where loaded tiers may
@@ -760,11 +1800,46 @@
         return;
       }
       const info = await r.json();
+      // Pull /admin/me to get user_id so we can namespace the AES key
+      // and pull the right encrypted settings blob. Login response
+      // alone doesn't include user_id. /admin/me may also be missing
+      // the user_id field on backends that haven't been restarted with
+      // the schema update yet — fall back to GET /me which has always
+      // returned `id`.
+      let me = info;
+      let uid = null;
+      try {
+        const meR = await api('/admin/me');
+        if (meR.ok) {
+          me = await meR.json();
+          uid = me.user_id;
+        }
+      } catch (_) {}
+      if (uid == null) {
+        try {
+          const rootMe = await api('/me');
+          if (rootMe.ok) uid = (await rootMe.json()).id;
+        } catch (_) {}
+      }
+      // Per-user state isolation — same flow as bootstrap(): bind AES
+      // key to this user, clear device-shared UI prefs, drop in-memory
+      // caches so previous user's data can't leak into the new session.
+      _setCurrentUserId(uid);
+      _clearUiPrefsLocalStorage();
+      _userSettingsCache = null;
+      _oauthStatusCache = {};
+      _oauthProvidersCache = {};
       whoEl.textContent = info.username;
       applyAdminFlag(info.is_admin);
       await loadModels();
       await loadTools();
       await loadConversations();
+      // Hydrate this user's encrypted settings + plaintext UI prefs
+      // before showing the chat so the landing greeting + chrome use
+      // their values, not the previous occupant's.
+      await _fetchUserSettings();
+      await _hydrateUiPrefsFromServer();
+      _renderLandingGreeting(me);
       pollVram();
       err.textContent = '';
       signinBox.classList.add('hidden');
@@ -777,6 +1852,18 @@
       logEl.innerHTML = '';
       applyAdminFlag(false);
       hideDashboard();
+      // Per-user isolation on sign-out: clear UI prefs so the next
+      // user (or the same user re-logging in) doesn't see leftovers
+      // before the server hydrate. Drop in-memory caches and the
+      // bound user_id so the next signin re-binds correctly. We do
+      // NOT clear the per-user AES key slot — those stay so the
+      // user can come back and decrypt their data.
+      _clearUiPrefsLocalStorage();
+      _userSettingsCache = null;
+      _oauthStatusCache = {};
+      _oauthProvidersCache = {};
+      _setCurrentUserId(null);
+      _resetUiToDefaults();
       app.classList.add('hidden');
       signinBox.classList.remove('hidden');
     });
@@ -827,14 +1914,14 @@
       const when = ts ? new Date(ts * 1000).toLocaleString(undefined, {
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
       }) : '';
-      const archiveLabel = c.archived ? '↩' : '📦';
+      const archiveLabel = c.archived ? 'Unarchive' : 'Archive';
       const archiveTitle = c.archived ? 'Unarchive' : 'Archive';
       div.innerHTML =
         `<div class="conv-title">${escapeHtml(title)}</div>`
         + (when ? `<div class="conv-meta">${escapeHtml(when)}${c.tier ? ' • ' + escapeHtml(c.tier) : ''}</div>` : '')
         + `<div class="conv-actions">`
         + `  <button class="archive" title="${archiveTitle}">${archiveLabel}</button>`
-        + `  <button class="delete" title="Delete (keeps a memory summary)">🗑</button>`
+        + `  <button class="delete" title="Delete (keeps a memory summary)">Delete</button>`
         + `</div>`;
       div.addEventListener('click', (ev) => {
         // Action buttons handle their own clicks; ignore bubbles.
@@ -882,8 +1969,8 @@
         convViewMode = convViewMode === 'archived' ? 'active' : 'archived';
         btn.classList.toggle('active', convViewMode === 'archived');
         btn.textContent = convViewMode === 'archived'
-          ? '↩ Back to active'
-          : '📦 Show archived';
+          ? 'Back to active'
+          : 'Show archived';
         loadConversations();
       });
     }
@@ -933,6 +2020,7 @@
         el => el.classList.remove('active')
       );
       updateCtxIndicator();
+      _renderLandingGreeting();
     }
 
     $('new-conv-btn').addEventListener('click', newConversation);
@@ -1946,9 +3034,86 @@
     });
     sendEl.addEventListener('click', sendMessage);
 
+    // Bench-running state — short-circuit submission while a bench is
+    // hammering the backend so user requests don't compete with eval
+    // traffic. No banner; the bench tab in the admin dashboard is the
+    // discoverable status surface.
+    let benchRunning = false;
+    function _renderBenchBanner() {
+      let banner = document.getElementById('bench-running-banner');
+      if (benchRunning) {
+        if (!banner) {
+          banner = document.createElement('div');
+          banner.id = 'bench-running-banner';
+          banner.style.cssText = `
+            background: color-mix(in srgb, var(--bg) 75%, var(--warn) 25%);
+            border-bottom: 1px solid color-mix(in srgb, var(--warn) 60%, var(--border));
+            color: var(--fg); padding: 8px 14px; font-size: 13px;
+            display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+          `;
+          banner.innerHTML = `
+            <strong>Capability bench is running</strong>
+            <span style="color:var(--muted)">— chat is paused so eval traffic isn't disturbed.</span>
+            <span style="flex:1"></span>
+            <a href="/bench" target="_blank" style="color:var(--accent);font-size:12px">Live progress</a>
+          `;
+          // Insert above #main (NOT inside it). #main is display:flex
+          // row, so a banner inside it becomes a column item next to
+          // #log — squeezing chat into a sliver on phones. Sitting
+          // outside #main keeps it as a full-width horizontal strip
+          // between header and chat body.
+          const main = document.getElementById('main');
+          if (main && main.parentNode) main.parentNode.insertBefore(banner, main);
+        }
+      } else if (banner) {
+        banner.remove();
+      }
+      // Grey out + disable send button + composer while bench runs.
+      // Send button has id="send" (no -btn suffix).
+      const sendBtn = document.getElementById('send') ||
+                      (typeof sendEl !== 'undefined' ? sendEl : null);
+      const composer = document.getElementById('composer');
+      if (sendBtn) {
+        sendBtn.disabled = !!benchRunning;
+        sendBtn.style.opacity = benchRunning ? '0.5' : '';
+        sendBtn.title = benchRunning ? 'Disabled while bench is running' : '';
+      }
+      if (composer) {
+        composer.disabled = !!benchRunning;
+        composer.placeholder = benchRunning
+          ? 'Chat paused while capability bench is running…'
+          : 'Type a message. Enter to send, Shift+Enter for newline.';
+      }
+    }
+    async function pollBenchStatus() {
+      const prev = benchRunning;
+      try {
+        const r = await fetch('/admin/bench/status', { cache: 'no-store' });
+        if (r.ok) {
+          const j = await r.json();
+          benchRunning = !!j.running;
+        }
+      } catch (_) { /* ignore — assume not running */ }
+      if (prev !== benchRunning) _renderBenchBanner();
+    }
+    pollBenchStatus().then(_renderBenchBanner);
+    setInterval(pollBenchStatus, 10000);
+
     let streaming = false;
     async function sendMessage() {
       if (streaming) return;
+      if (benchRunning) {
+        // Visible feedback when bench is running — short flash on the
+        // banner instead of swallowing the input silently.
+        const banner = document.getElementById('bench-running-banner');
+        if (banner) {
+          banner.style.transition = 'background 0.2s';
+          const orig = banner.style.background;
+          banner.style.background = 'color-mix(in srgb, var(--bg) 50%, var(--warn) 50%)';
+          setTimeout(() => { banner.style.background = orig; }, 300);
+        }
+        return;
+      }
       const text = composerEl.value.trim();
       if (!text && attached.length === 0) return;
       composerEl.value = '';
@@ -2225,7 +3390,18 @@
     const adminBtn = $('admin-btn');
     const composerFooter = document.querySelector('footer');
     let dashboardOpen = false;
-    let dashboardActiveTab = 'overview';
+    let dashboardActiveTab = (function() {
+      // Restore from URL hash (#dash:bench, #dash:overview, etc.) so a
+      // page reload returns to the same view the user was on. Falls back
+      // to localStorage as a secondary persistence layer.
+      try {
+        const m = (location.hash || '').match(/^#dash:([\w-]+)$/);
+        if (m) return m[1];
+        const ls = localStorage.getItem('lai_dash_active_tab');
+        if (ls) return ls;
+      } catch (_) {}
+      return 'overview';
+    })();
 
     function showDashboard() {
       if (dashboardOpen) return;
@@ -2250,6 +3426,26 @@
       else showDashboard();
     });
 
+    // Reload-persistence for the page-level view (chat vs dashboard).
+    // We track open/closed in sessionStorage (per-tab) so a refresh keeps
+    // the user on whichever view they were on. New tabs default to chat.
+    try {
+      const wasDash = sessionStorage.getItem('lai_dash_open') === '1';
+      if (wasDash) showDashboard();
+    } catch (_) {}
+    // Mirror dashboard open/close state into sessionStorage for the
+    // reload check above.
+    const _origShowDashboard = showDashboard;
+    showDashboard = function () {
+      _origShowDashboard.apply(null, arguments);
+      try { sessionStorage.setItem('lai_dash_open', '1'); } catch (_) {}
+    };
+    const _origHideDashboard = hideDashboard;
+    hideDashboard = function () {
+      _origHideDashboard.apply(null, arguments);
+      try { sessionStorage.setItem('lai_dash_open', '0'); } catch (_) {}
+    };
+
     function renderDashboardShell() {
       dashboardEl.innerHTML = `
         <h2>Backend dashboard</h2>
@@ -2259,12 +3455,14 @@
           <button class="dash-tab" data-tab="tools">Tools</button>
           <button class="dash-tab" data-tab="airgap">Airgap</button>
           <button class="dash-tab" data-tab="errors">Errors</button>
+          <button class="dash-tab" data-tab="bench">Bench</button>
         </div>
         <div id="dash-pane-overview" class="dash-pane"></div>
         <div id="dash-pane-users" class="dash-pane"></div>
         <div id="dash-pane-tools" class="dash-pane"></div>
         <div id="dash-pane-airgap" class="dash-pane"></div>
         <div id="dash-pane-errors" class="dash-pane"></div>
+        <div id="dash-pane-bench" class="dash-pane"></div>
       `;
       dashboardEl.querySelectorAll('.dash-tab').forEach(btn => {
         btn.addEventListener('click', () => switchDashboardTab(btn.dataset.tab));
@@ -2273,6 +3471,14 @@
 
     function switchDashboardTab(tab) {
       dashboardActiveTab = tab;
+      // Persist the LAST viewed tab so the next dashboard open lands here,
+      // but DON'T mutate location.hash — that breaks the chat ↔ dashboard
+      // distinction on reload (user lands on dashboard even if they
+      // closed it before reloading). The hash is reserved for the
+      // page-level decision (dashboard open vs chat).
+      try {
+        localStorage.setItem('lai_dash_active_tab', tab);
+      } catch (_) {}
       dashboardEl.querySelectorAll('.dash-tab').forEach(b => {
         b.classList.toggle('active', b.dataset.tab === tab);
       });
@@ -2285,9 +3491,676 @@
         tools: loadDashTools,
         airgap: loadDashAirgap,
         errors: loadDashErrors,
+        bench: loadDashBench,
       };
       const fn = loaders[tab];
       if (fn) fn();
+    }
+
+    // ── Bench tab — inline dashboard rendering. We don't iframe the
+    //   standalone /bench page because Cloudflare's default
+    //   X-Frame-Options blocks same-origin embedding through the tunnel.
+    //   Instead we fetch /admin/bench/results JSON on a 10s poll and
+    //   render heatmap, tier bars, condition deltas, z-tests, and the
+    //   Wilson-CI cell table directly into the admin shell.
+    const BENCH_TIERS = [
+      "swarm", "fast", "versatile", "coding",
+      "highest_quality", "reasoning_max", "reasoning_xl",
+      // Multi-agent virtual tiers — orchestrator + N workers.
+      // Worker tier listed in the suffix; orchestrator defaults to versatile.
+      "multi_swarm", "multi_fast",
+    ];
+    const BENCH_CAPS = [
+      "knowledge", "knowledge_specialized", "math", "math_competition",
+      "reasoning", "coding", "coding_basic", "intent", "clarity", "long_context"
+    ];
+    let _benchPoll = null;
+    // Refresh cadence for the inline bench dashboard. Persisted across
+    // dashboard re-opens so the user's last choice survives reload.
+    // Stored client-side because a remote backend has no opinion on UI
+    // refresh rate. Mirrors the standalone /bench page's <select#cadence>.
+    let _benchPollSeconds = (() => {
+      try {
+        const v = parseInt(localStorage.getItem('lai_bench_poll_secs') || '10', 10);
+        return [5, 10, 30, 60].includes(v) ? v : 10;
+      } catch (_) { return 10; }
+    })();
+    // Sequential gradient stops per palette, used for horizontal bars
+    // (tier averages, live progress) where the browser interpolates
+    // automatically. For categorical palettes (okabe-ito, NEJM, JAMA)
+    // we pick a semantic low → high ordering; viridis/magma use their
+    // full perceptually-uniform stops.
+    const SEQ_PALETTE = {
+      okabe_ito:   ['#D55E00', '#E69F00', '#F0E442', '#009E73'],
+      nejm:        ['#BC3C29', '#E18727', '#FFDC91', '#20854E'],
+      jama:        ['#B24745', '#DF8F44', '#80796B', '#79AF97'],
+      viridis:     ['#440154', '#482878', '#3E4989', '#31688E', '#26828E', '#1F9E89', '#6DCD59', '#FDE725'],
+      magma:       ['#000004', '#1C1044', '#51127C', '#822681', '#B73779', '#E65164', '#FB8861', '#FCFDBF'],
+      // Categorical palettes ordered low → high (red/poor → yellow/mid →
+      // green/good) so horizontal gradient bars read left-to-right as a
+      // semantic performance ramp.
+      npg:         ['#DC0000', '#E64B35', '#F39B7F', '#91D1C2', '#00A087'],
+      aaas:        ['#EE0000', '#BB0021', '#A20056', '#5F559B', '#008280', '#008B45'],
+      lancet:      ['#ED0000', '#AD002A', '#FDAF91', '#0099B4', '#42B540'],
+      ibm_carbon:  ['#FA4D56', '#FF7EB6', '#D12771', '#D2A106', '#08BDBA', '#6FDC8C'],
+      bloomberg:   ['#8B0000', '#FF3333', '#FFA028', '#FFFF00', '#00FF66'],
+      tableau10:   ['#E15759', '#FF9DA7', '#F28E2B', '#EDC948', '#76B7B2', '#59A14F'],
+      set1:        ['#E41A1C', '#FF7F00', '#FFFF33', '#A65628', '#377EB8', '#4DAF4A'],
+      set2:        ['#FC8D62', '#E78AC3', '#FFD92F', '#E5C494', '#8DA0CB', '#66C2A5', '#A6D854'],
+      tol_vibrant: ['#CC3311', '#EE7733', '#EE3377', '#33BBEE', '#0077BB', '#009988'],
+      tol_muted:   ['#882255', '#CC6677', '#AA4499', '#DDCC77', '#999933', '#88CCEE', '#117733', '#44AA99'],
+    };
+    function _seqGradientCss(palette) {
+      // Returns a CSS linear-gradient string with stops evenly spaced
+      // across the palette's sequential colors.
+      const stops = SEQ_PALETTE[palette] || SEQ_PALETTE.okabe_ito;
+      const n = stops.length;
+      const parts = stops.map((c, i) => `${c} ${(100 * i / (n - 1)).toFixed(1)}%`);
+      return `linear-gradient(90deg, ${parts.join(', ')})`;
+    }
+    // Heatmap: discrete buckets keyed off the per-theme --hm-* CSS
+    // variables. (Rolled back from the runtime RGB interpolation —
+    // discrete stops match the legend better and stay tied to the
+    // theme-aware --hm-0/--hm-90 ramp.)
+    function _benchPctColor(pct) {
+      const cs = getComputedStyle(document.documentElement);
+      if (pct == null) return cs.getPropertyValue('--hm-na-bg').trim() || '#1c2129';
+      const buckets = ['--hm-90', '--hm-75', '--hm-60', '--hm-40', '--hm-20', '--hm-0'];
+      const cuts = [90, 75, 60, 40, 20, 0];
+      for (let i = 0; i < cuts.length; i++) {
+        if (pct >= cuts[i]) return cs.getPropertyValue(buckets[i]).trim() || 'var(--success)';
+      }
+      return cs.getPropertyValue('--hm-0').trim() || '#2d2418';
+    }
+    function _fmtSec(s) {
+      if (!s) return '—';
+      if (s < 90) return Math.round(s) + 's';
+      if (s < 3600) return Math.round(s/60) + 'm';
+      return (s/3600).toFixed(1) + 'h';
+    }
+    function _benchRenderInline(data) {
+      const pane = $('dash-pane-bench');
+      const totalCells = BENCH_TIERS.length * BENCH_CAPS.length * 4;
+      const finished = data.cells.filter(c => c.finished).length;
+      const cur = data.current;
+
+      // Snapshot which <details> drop-downs are currently expanded so we
+      // can restore them after innerHTML wipes them out. Key by the row's
+      // tier/cap context — falls back to summary text if no row context.
+      // Also snapshot the horizontal scroll position of any scrollable
+      // child container so the user's scroll position survives the update.
+      const _openDetails = new Set();
+      const _scrollPositions = new Map();
+      function _detailsKey(d) {
+        const sum = d.querySelector(':scope > summary');
+        const summaryText = sum ? sum.textContent.trim() : '';
+        const tr = d.closest('tr');
+        let group = '';
+        if (tr) {
+          const prevTr = tr.previousElementSibling;
+          if (prevTr) {
+            const strong = prevTr.querySelector('td strong');
+            if (strong) group = strong.textContent.trim();
+          }
+        }
+        return group + '|' + summaryText;
+      }
+      pane.querySelectorAll('details[open]').forEach(d => {
+        const key = _detailsKey(d);
+        _openDetails.add(key);
+        // Capture scrollLeft of every scrolling child inside this details.
+        const scrollers = d.querySelectorAll('div[style*="overflow-x"]');
+        scrollers.forEach((s, idx) => {
+          if (s.scrollLeft > 0) _scrollPositions.set(key + '#' + idx, s.scrollLeft);
+        });
+      });
+      // Also snapshot top-level scrollers (heatmap, latency tables) keyed
+      // by their preceding <h4> heading so they survive the re-render.
+      pane.querySelectorAll(':scope > div[style*="overflow-x"], :scope div[style*="overflow-x"]').forEach((s, idx) => {
+        if (s.scrollLeft <= 0) return;
+        // Find the nearest preceding heading sibling for a stable key
+        let heading = '';
+        let n = s.previousElementSibling;
+        while (n) {
+          if (n.tagName && /^H[1-6]$/.test(n.tagName)) { heading = n.textContent.trim(); break; }
+          n = n.previousElementSibling;
+        }
+        if (!heading) {
+          // Fallback to parent's preceding heading
+          let p = s.parentElement;
+          while (p && p !== pane) {
+            n = p.previousElementSibling;
+            while (n) {
+              if (n.tagName && /^H[1-6]$/.test(n.tagName)) { heading = n.textContent.trim(); break; }
+              n = n.previousElementSibling;
+            }
+            if (heading) break;
+            p = p.parentElement;
+          }
+        }
+        _scrollPositions.set('top#' + heading + '#' + idx, s.scrollLeft);
+      });
+      const all = data.cells.concat(cur ? [cur] : []);
+
+      // Refresh-cadence control bar — sticky at the top so the user can
+      // tune the poll rate without scrolling. Mirrors the standalone
+      // /bench page; binds to _benchPollSeconds + _restartBenchPoll.
+      const cadenceOpts = [5, 10, 30, 60].map(s =>
+        `<option value="${s}"${s === _benchPollSeconds ? ' selected' : ''}>${s}s</option>`
+      ).join('');
+      const ctrlBar = `<div class="bench-ctrl-bar" style="display:flex;align-items:center;gap:10px;padding:6px 8px;margin:0 0 10px 0;border:1px solid var(--border);border-radius:6px;background:var(--panel-2);font-size:13px;flex-wrap:wrap">
+        <span style="color:var(--muted)">Refresh</span>
+        <select id="bench-cadence" title="Dashboard refresh rate" style="background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font:inherit">
+          ${cadenceOpts}
+        </select>
+        <button id="bench-refresh-now" type="button" title="Refresh now" style="background:var(--accent);color:#fff;border:0;border-radius:4px;padding:3px 10px;cursor:pointer;font:inherit">↻</button>
+        <span style="flex:1"></span>
+        <span style="color:var(--muted);font-size:12px">${finished} / ${totalCells} cells</span>
+      </div>`;
+
+      // Heatmap (tier × capability avg across conditions). Layout adapts
+      // to viewport width: ≥720px gets the full grid with vertical
+      // headers and one cell per (tier,cap); narrow screens get a
+      // horizontally-scrollable compact grid so the whole matrix fits
+      // without losing data. JS measures the viewport on each render
+      // and on the `resize` event so the dashboard tracks live as the
+      // user rotates / drags the window.
+      const grouped = {};
+      for (const c of all) {
+        if (c.passed + c.failed + c.errors === 0) continue;
+        const k = c.tier + '|' + c.capability;
+        grouped[k] = grouped[k] || [];
+        grouped[k].push(c.pass_rate * 100);
+      }
+      const vw = window.innerWidth || 800;
+      const compact = vw < 720;
+      const cellW = compact ? 32 : 48;
+      const tierColW = compact ? 80 : 130;
+      const headerH = compact ? 110 : 150;
+      const fontSz = compact ? '0.7em' : '0.85em';
+      const tierFontSz = compact ? '0.85em' : '0.95em';
+      const lit = (data.lit_baselines && data.lit_baselines.tiers) || {};
+      const hist = (data.historical_baselines && data.historical_baselines.tiers) || {};
+      // Heatmap shows current-run pass-rate only — single number per
+      // cell, colored by performance. Baseline comparisons (current vs
+      // prev best vs published) live in their own panel below.
+      let heat = `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px;padding:4px">
+        <table style="border-collapse:separate;border-spacing:1px;table-layout:fixed;font-size:${fontSz}">
+          <thead><tr><th style="min-width:${tierColW}px;width:${tierColW}px"></th>`;
+      for (const cap of BENCH_CAPS) {
+        heat += `<th title="${cap}" style="vertical-align:bottom;height:${headerH}px;padding:4px 0;width:${cellW}px;color:var(--muted);font-weight:400;font-size:${compact?'0.7em':'0.78em'}">
+          <div style="writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;display:inline-block">${cap}</div>
+        </th>`;
+      }
+      heat += `</tr></thead><tbody>`;
+      for (const tier of BENCH_TIERS) {
+        heat += `<tr><th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:500;white-space:nowrap;font-size:${tierFontSz}">${tier}</th>`;
+        for (const cap of BENCH_CAPS) {
+          const samples = grouped[tier + '|' + cap];
+          if (!samples) {
+            heat += `<td class="num" style="background:var(--hm-na-bg);color:var(--muted);padding:8px 2px;width:${cellW}px">—</td>`;
+          } else {
+            const avg = samples.reduce((a,b)=>a+b,0) / samples.length;
+            heat += `<td class="num" style="background:${_benchPctColor(avg)};color:var(--hm-text);padding:8px 2px;width:${cellW}px;border-radius:3px;font-weight:500" title="${tier} × ${cap}: ${avg.toFixed(1)}% (${samples.length} cell${samples.length===1?'':'s'})">${avg.toFixed(0)}</td>`;
+          }
+        }
+        heat += `</tr>`;
+      }
+      heat += `</tbody></table></div>`;
+
+      // Baseline comparisons panel — collapsed per-tier view with
+      // expandable per-capability breakdown. The visible row averages
+      // current / prev / published across all caps for that tier. Click
+      // to expand the details, which list every (tier, cap) pair with
+      // its individual deltas.
+      let baselineHtml = '';
+      const tierRows = [];
+      for (const tier of BENCH_TIERS) {
+        const litMetrics = ((lit[tier] || {}).metrics) || {};
+        const histMetrics = ((hist[tier] || {}).metrics) || {};
+        const subRows = [];
+        for (const cap of BENCH_CAPS) {
+          const samples = grouped[tier + '|' + cap];
+          if (!samples) continue;
+          const cur = samples.reduce((a,b)=>a+b,0) / samples.length;
+          const litVal = (litMetrics[cap] && litMetrics[cap].value);
+          const histVal = (histMetrics[cap] && histMetrics[cap].value);
+          subRows.push({cap, cur, litVal, histVal});
+        }
+        if (subRows.length === 0) continue;
+        // Compute averages across caps that have a value in each baseline
+        const nCur = subRows.length;
+        const avgCur = subRows.reduce((a,b)=>a+b.cur,0) / nCur;
+        const histVals = subRows.filter(r => r.histVal != null).map(r => ({cur:r.cur, base:r.histVal}));
+        const litVals = subRows.filter(r => r.litVal != null).map(r => ({cur:r.cur, base:r.litVal}));
+        const avgHistBase = histVals.length ? histVals.reduce((a,b)=>a+b.base,0)/histVals.length : null;
+        const avgLitBase  = litVals.length  ? litVals.reduce((a,b)=>a+b.base,0)/litVals.length   : null;
+        // Average of per-cap deltas (so each cap weighted equally)
+        const avgDHist = histVals.length ? histVals.reduce((a,b)=>a+(b.cur-b.base),0)/histVals.length : null;
+        const avgDLit  = litVals.length  ? litVals.reduce((a,b)=>a+(b.cur-b.base),0)/litVals.length  : null;
+        tierRows.push({tier, nCur, avgCur, avgHistBase, avgLitBase, avgDHist, avgDLit, subRows});
+      }
+      if (tierRows.length === 0) {
+        baselineHtml = '<div class="dash-empty">Baseline deltas appear once at least one cell finishes.</div>';
+      } else {
+        // Sort tiers by largest absolute Δ vs prev (most-regressed first)
+        tierRows.sort((a, b) => {
+          const aRef = a.avgDHist != null ? Math.abs(a.avgDHist) : (a.avgDLit != null ? Math.abs(a.avgDLit) : 0);
+          const bRef = b.avgDHist != null ? Math.abs(b.avgDHist) : (b.avgDLit != null ? Math.abs(b.avgDLit) : 0);
+          return bRef - aRef;
+        });
+        baselineHtml = `<div style="overflow-x:auto"><table class="dash-table"><thead><tr>
+          <th>model</th><th class="num">cells</th>
+          <th class="num">avg current</th>
+          <th class="num">avg prev</th><th class="num">avg Δ vs prev</th>
+          <th class="num">avg pub</th><th class="num">avg Δ vs pub</th>
+          <th></th>
+        </tr></thead><tbody>`;
+        for (const r of tierRows) {
+          const colH = r.avgDHist == null ? 'var(--muted)' : (r.avgDHist >= 0 ? 'var(--success)' : 'var(--danger)');
+          const colL = r.avgDLit  == null ? 'var(--muted)' : (r.avgDLit  >= 0 ? 'var(--success)' : 'var(--danger)');
+          // Build the expandable per-capability sub-table
+          let sub = `<tr><td colspan="8" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
+            <summary style="cursor:pointer;color:var(--muted);font-size:0.85em">per-capability breakdown</summary>
+            <table class="dash-table" style="margin-top:6px"><thead><tr>
+              <th>capability</th>
+              <th class="num">current</th>
+              <th class="num">prev</th><th class="num">Δ</th>
+              <th class="num">pub</th><th class="num">Δ</th>
+            </tr></thead><tbody>`;
+          for (const sr of r.subRows) {
+            const dH = sr.histVal != null ? sr.cur - sr.histVal : null;
+            const dL = sr.litVal  != null ? sr.cur - sr.litVal  : null;
+            const cH = dH == null ? 'var(--muted)' : (dH >= 0 ? 'var(--success)' : 'var(--danger)');
+            const cL = dL == null ? 'var(--muted)' : (dL >= 0 ? 'var(--success)' : 'var(--danger)');
+            sub += `<tr>
+              <td>${sr.cap}</td>
+              <td class="num">${sr.cur.toFixed(1)}%</td>
+              <td class="num" style="color:var(--accent)">${sr.histVal != null ? sr.histVal.toFixed(1) : '—'}</td>
+              <td class="num" style="color:${cH}">${dH != null ? (dH >= 0 ? '+' : '') + dH.toFixed(1) : '—'}</td>
+              <td class="num" style="color:var(--warn)">${sr.litVal != null ? sr.litVal.toFixed(1) : '—'}</td>
+              <td class="num" style="color:${cL}">${dL != null ? (dL >= 0 ? '+' : '') + dL.toFixed(1) : '—'}</td>
+            </tr>`;
+          }
+          sub += `</tbody></table></details></td></tr>`;
+          baselineHtml += `<tr style="border-top:2px solid var(--border)">
+            <td><strong>${r.tier}</strong></td>
+            <td class="num">${r.nCur}</td>
+            <td class="num"><strong>${r.avgCur.toFixed(1)}%</strong></td>
+            <td class="num" style="color:var(--accent)">${r.avgHistBase != null ? r.avgHistBase.toFixed(1) + '%' : '—'}</td>
+            <td class="num" style="color:${colH};font-weight:500">${r.avgDHist != null ? (r.avgDHist >= 0 ? '+' : '') + r.avgDHist.toFixed(1) + 'pp' : '—'}</td>
+            <td class="num" style="color:var(--warn)">${r.avgLitBase != null ? r.avgLitBase.toFixed(1) + '%' : '—'}</td>
+            <td class="num" style="color:${colL};font-weight:500">${r.avgDLit != null ? (r.avgDLit >= 0 ? '+' : '') + r.avgDLit.toFixed(1) + 'pp' : '—'}</td>
+            <td></td>
+          </tr>${sub}`;
+        }
+        baselineHtml += `</tbody></table></div>
+          <div style="font-size:0.8em;color:var(--muted);padding:6px 0">
+            One row per model. Click "per-capability breakdown" to expand.
+            <span style="color:var(--accent)">prev</span> = our prior best run.
+            <span style="color:var(--warn)">pub</span> = published model-card baseline.
+            Models sorted by largest |Δ| so regressions surface first.
+          </div>`;
+      }
+
+      // Tier averages
+      let tierBars = `<table class="dash-table"><tbody>`;
+      for (const tier of BENCH_TIERS) {
+        const samples = all.filter(c => c.tier === tier && c.passed + c.failed > 0);
+        if (samples.length === 0) {
+          tierBars += `<tr><td>${tier}</td><td colspan="2" class="num" style="color:var(--muted)">no data yet</td></tr>`;
+          continue;
+        }
+        const avg = samples.reduce((a,b) => a + b.pass_rate * 100, 0) / samples.length;
+        const _seqBg = _seqGradientCss(document.documentElement.getAttribute('data-palette') || 'okabe_ito');
+        tierBars += `<tr><td>${tier}</td>
+          <td><div style="width:200px;height:14px;background:var(--panel-2);border-radius:7px;overflow:hidden">
+            <div style="width:${avg}%;height:100%;background:${_seqBg};background-size:${100*100/Math.max(1,avg)}% 100%;background-position:left center"></div>
+          </div></td>
+          <td class="num">${avg.toFixed(1)}% (${samples.length})</td></tr>`;
+      }
+      tierBars += `</tbody></table>`;
+
+      // Condition deltas — tier-grouped with collapsible per-capability
+      // breakdown (parallel to baseline-comparisons layout). Shows for each
+      // tier: avg pass-rate per condition (off/off, off/auto, on/off, on/auto)
+      // plus Δpp vs that tier's own off/off baseline. Click row to expand
+      // into per-capability rows showing each condition for each cap.
+      const condTier = {};
+      for (const c of all) {
+        if (c.passed + c.failed === 0) continue;
+        const k = `${c.think}|${c.tools}`;
+        condTier[c.tier] = condTier[c.tier] || {};
+        condTier[c.tier][c.capability] = condTier[c.tier][c.capability] || {};
+        condTier[c.tier][c.capability][k] = c.pass_rate * 100;
+      }
+      const condKeys = ['off|off','off|auto','on|off','on|auto'];
+      const condLabels = {
+        'off|off': 'off/off', 'off|auto': 'off/auto',
+        'on|off': 'on/off', 'on|auto': 'on/auto',
+      };
+      let deltas = '';
+      const tiersWithCondData = BENCH_TIERS.filter(t => condTier[t]);
+      if (tiersWithCondData.length === 0) {
+        deltas = '<div class="dash-empty">Condition deltas appear once at least one cell finishes.</div>';
+      } else {
+        deltas = `<div style="overflow-x:auto"><table class="dash-table"><thead><tr>
+          <th>model</th>
+          <th class="num"><div style="line-height:1.2"><span style="color:var(--muted);font-size:0.75em">think:</span>off<br><span style="color:var(--muted);font-size:0.75em">tools:</span>off</div></th>
+          <th class="num"><div style="line-height:1.2"><span style="color:var(--muted);font-size:0.75em">think:</span>off<br><span style="color:var(--muted);font-size:0.75em">tools:</span>auto</div></th><th class="num">Δ</th>
+          <th class="num"><div style="line-height:1.2"><span style="color:var(--muted);font-size:0.75em">think:</span>on<br><span style="color:var(--muted);font-size:0.75em">tools:</span>off</div></th><th class="num">Δ</th>
+          <th class="num"><div style="line-height:1.2"><span style="color:var(--muted);font-size:0.75em">think:</span>on<br><span style="color:var(--muted);font-size:0.75em">tools:</span>auto</div></th><th class="num">Δ</th>
+          <th></th>
+        </tr></thead><tbody>`;
+        for (const tier of tiersWithCondData) {
+          const caps = condTier[tier];
+          // Per-tier averages: average each condition across all this tier's caps
+          const tierAvgs = {};
+          for (const k of condKeys) {
+            const vals = Object.values(caps).map(c => c[k]).filter(v => v != null);
+            tierAvgs[k] = vals.length ? vals.reduce((a,b)=>a+b,0) / vals.length : null;
+          }
+          const baseline = tierAvgs['off|off'];
+          const fmtCell = (v) => v == null ? '—' : v.toFixed(1);
+          const fmtDelta = (v) => {
+            if (v == null || baseline == null) return '<td class="num">—</td>';
+            const d = v - baseline;
+            const c = d >= 0 ? 'var(--success)' : 'var(--danger)';
+            return `<td class="num" style="color:${c}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</td>`;
+          };
+          // Build the expandable per-capability sub-table
+          let sub = `<tr><td colspan="9" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
+            <summary style="cursor:pointer;color:var(--muted);font-size:0.85em">per-capability breakdown</summary>
+            <table class="dash-table" style="margin-top:6px"><thead><tr>
+              <th>capability</th>
+              <th class="num">off/off</th>
+              <th class="num">off/auto</th><th class="num">Δ</th>
+              <th class="num">on/off</th><th class="num">Δ</th>
+              <th class="num">on/auto</th><th class="num">Δ</th>
+            </tr></thead><tbody>`;
+          for (const cap of BENCH_CAPS) {
+            const c = caps[cap];
+            if (!c) continue;
+            const cBase = c['off|off'];
+            const cFmtD = (v) => {
+              if (v == null || cBase == null) return '<td class="num">—</td>';
+              const d = v - cBase;
+              const col = d >= 0 ? 'var(--success)' : 'var(--danger)';
+              return `<td class="num" style="color:${col}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</td>`;
+            };
+            sub += `<tr><td>${cap}</td>
+              <td class="num">${fmtCell(c['off|off'])}</td>
+              <td class="num">${fmtCell(c['off|auto'])}</td>${cFmtD(c['off|auto'])}
+              <td class="num">${fmtCell(c['on|off'])}</td>${cFmtD(c['on|off'])}
+              <td class="num">${fmtCell(c['on|auto'])}</td>${cFmtD(c['on|auto'])}</tr>`;
+          }
+          sub += `</tbody></table></details></td></tr>`;
+          deltas += `<tr><td><strong>${tier}</strong></td>
+            <td class="num">${fmtCell(tierAvgs['off|off'])}</td>
+            <td class="num">${fmtCell(tierAvgs['off|auto'])}</td>${fmtDelta(tierAvgs['off|auto'])}
+            <td class="num">${fmtCell(tierAvgs['on|off'])}</td>${fmtDelta(tierAvgs['on|off'])}
+            <td class="num">${fmtCell(tierAvgs['on|auto'])}</td>${fmtDelta(tierAvgs['on|auto'])}
+            <td style="color:var(--muted);font-size:0.85em">${Object.keys(caps).length} caps</td>
+          </tr>` + sub;
+        }
+        deltas += `</tbody></table></div>`;
+      }
+
+      // z-tests
+      const zT = data.z_tests || {};
+      const zLabels = {
+        "think_on_vs_off_tools_off": "think on vs off (tools=off)",
+        "tools_auto_vs_off_think_off": "tools auto vs off (think=off)",
+        "tools_auto_vs_off_think_on": "tools auto vs off (think=on)",
+        "think_on_tools_auto_vs_baseline": "on+auto vs baseline (off/off)",
+      };
+      let zHtml = `<table class="dash-table"><thead><tr><th>comparison</th><th class="num">Δpp</th><th class="num">z</th><th class="num">p</th><th>verdict</th></tr></thead><tbody>`;
+      let zAny = false;
+      for (const k of Object.keys(zLabels)) {
+        const t = zT[k]; if (!t) continue;
+        zAny = true;
+        const dColor = t.delta_pp >= 0 ? 'var(--success)' : 'var(--danger)';
+        zHtml += `<tr><td>${zLabels[k]}</td>
+          <td class="num" style="color:${dColor}">${t.delta_pp >= 0 ? '+' : ''}${t.delta_pp.toFixed(1)}</td>
+          <td class="num">${t.z.toFixed(2)}</td>
+          <td class="num">${t.p < 0.0001 ? '<.0001' : t.p.toFixed(4)}</td>
+          <td>${t.significant ? '<span class="pill" style="background:#2ea043;color:#fff">significant</span>' : '<span class="pill" style="color:var(--muted)">n.s.</span>'}</td></tr>`;
+      }
+      zHtml += `</tbody></table>`;
+      if (!zAny) zHtml = `<div class="dash-empty">Need cells from ≥2 conditions to compute. Tests appear once condition 2 starts.</div>`;
+
+      // Cell table (Wilson CI). Full column names — no abbreviations.
+      let table = `<details><summary>Cell results with Wilson 95% CI (${all.length} cells) — click to expand</summary>
+        <div style="overflow-x:auto"><table class="dash-table"><thead><tr>
+          <th>tier</th><th>capability</th><th>think</th><th>tools</th>
+          <th class="num">n done / total</th><th class="num">passed</th>
+          <th class="num">pass rate</th>
+          <th class="num">95% Wilson CI</th><th class="num">CI half-width (pp)</th>
+          <th class="num">wall time</th>
+        </tr></thead><tbody>`;
+      for (const c of all.slice().reverse()) {
+        const n = c.passed + c.failed + c.errors;
+        const rate = n > 0 ? (100 * c.passed / Math.max(1, c.passed + c.failed)) : 0;
+        const liveStyle = (cur && c === cur) ? 'background:rgba(63,185,80,0.08)' : '';
+        table += `<tr style="${liveStyle}"><td>${c.tier}</td><td>${c.capability}</td>
+          <td>${c.think}</td><td>${c.tools}</td>
+          <td class="num">${n} / ${c.n_total||n}</td>
+          <td class="num">${c.passed}</td>
+          <td class="num">${rate.toFixed(1)}%</td>
+          <td class="num">[${(c.ci_low*100).toFixed(1)}, ${(c.ci_high*100).toFixed(1)}]</td>
+          <td class="num">${(c.ci_half*100).toFixed(1)}</td>
+          <td class="num">${_fmtSec(c.wall_seconds||0)}</td></tr>`;
+      }
+      table += `</tbody></table></div></details>`;
+
+      // Live progress
+      let live = '';
+      if (cur) {
+        const cellPct = cur.n_total > 0 ? (cur.n_done / cur.n_total) * 100 : 0;
+        const passRate = (cur.passed + cur.failed) > 0 ? (100 * cur.passed / (cur.passed + cur.failed)) : 0;
+        live = `<div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px">
+          <div style="color:var(--muted);font-size:0.85em">CURRENT</div>
+          <div><strong>${cur.tier}</strong> × ${cur.capability}  <span style="color:var(--muted)">th=${cur.think} t=${cur.tools}</span></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+            <div style="flex:1;height:18px;background:#21262d;border-radius:9px;overflow:hidden">
+              <div style="width:${cellPct}%;height:100%;background:${_seqGradientCss(document.documentElement.getAttribute('data-palette')||'okabe_ito')};background-size:${100*100/Math.max(1,cellPct)}% 100%;background-position:left center;transition:width .3s"></div>
+            </div>
+            <span class="num">${cur.n_done}/${cur.n_total} (${passRate.toFixed(0)}%)</span>
+          </div>
+          <div style="color:var(--muted);font-size:0.85em;margin-top:4px">
+            Wilson CI ±${(cur.ci_half*100).toFixed(1)}pp · overall ${finished}/${totalCells}
+          </div>
+        </div>`;
+      }
+
+      // Latency-by-(tier, capability) table — mean wall-time per problem.
+      // Heat-shaded by relative latency so slow cells stand out.
+      const lats = data.latencies || [];
+      const latGrid = {};
+      let maxLat = 0;
+      for (const l of lats) {
+        latGrid[l.tier] = latGrid[l.tier] || {};
+        latGrid[l.tier][l.capability] = l.mean_s;
+        if (l.mean_s > maxLat) maxLat = l.mean_s;
+      }
+      let latHtml = '';
+      if (Object.keys(latGrid).length === 0) {
+        latHtml = '<div class="dash-empty">No latency data yet.</div>';
+      } else {
+        latHtml = `<div style="overflow-x:auto"><table class="dash-table" style="font-size:${fontSz}">
+          <thead><tr><th></th>`;
+        for (const cap of BENCH_CAPS) {
+          latHtml += `<th title="${cap}" style="vertical-align:bottom;height:${headerH}px;padding:4px 0;width:${cellW}px;color:var(--muted);font-weight:400;font-size:${compact?'0.7em':'0.78em'}">
+            <div style="writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;display:inline-block">${cap}</div>
+          </th>`;
+        }
+        latHtml += `</tr></thead><tbody>`;
+        for (const tier of BENCH_TIERS) {
+          if (!latGrid[tier]) continue;
+          latHtml += `<tr><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:${tierFontSz}">${tier}</th>`;
+          for (const cap of BENCH_CAPS) {
+            const v = latGrid[tier][cap];
+            if (v == null) {
+              latHtml += `<td class="num" style="background:var(--hm-na-bg);color:var(--muted);padding:8px 2px;width:${cellW}px">—</td>`;
+            } else {
+              // Latency heatmap: low latency = good (palette's "high pass"
+              // color), high latency = bad (palette's "low pass" color).
+              // Reuses _benchPctColor with inverted percentage so the
+              // gradient stays consistent with the active palette.
+              const intensity = Math.min(1, v / Math.max(1, maxLat));
+              // Map intensity 0..1 → pseudo-pass-rate 100..0 so the
+              // shared gradient picker yields the right end.
+              const inverted = 100 * (1 - intensity);
+              const bg = _benchPctColor(inverted);
+              latHtml += `<td class="num mono" style="background:${bg};color:var(--hm-text);padding:8px 2px;width:${cellW}px;border-radius:3px" title="${tier} × ${cap}: ${v}s/problem">${v < 100 ? v.toFixed(1) + 's' : Math.round(v) + 's'}</td>`;
+            }
+          }
+          latHtml += `</tr>`;
+        }
+        latHtml += `</tbody></table></div>`;
+      }
+
+      pane.innerHTML = `
+        ${ctrlBar}
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+          <strong>Bench Dashboard</strong>
+          <span class="pill" style="background:${data.running ? '#2ea043' : '#4a4a4a'};color:#fff">${data.running ? 'live' : 'idle'}</span>
+          <span style="color:var(--muted);font-size:0.85em">${new Date().toLocaleTimeString()}</span>
+          <span style="flex:1"></span>
+          <a href="/bench" target="_blank" style="color:var(--accent);font-size:0.85em">open in new tab</a>
+        </div>
+        ${live}
+        <h4 style="margin:6px 0;color:var(--muted)">Pass-rate heatmap (tier × capability — averaged across conditions)</h4>
+        ${heat}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:10px;margin-top:14px">
+          <div>
+            <h4 style="margin:6px 0;color:var(--muted)">Tier averages</h4>
+            ${tierBars}
+          </div>
+          <div>
+            <h4 style="margin:6px 0;color:var(--muted)">Condition Δ vs baseline (think=off, tools=off)</h4>
+            ${deltas}
+          </div>
+        </div>
+        <h4 style="margin:14px 0 6px 0;color:var(--muted)">Baseline Comparisons (current vs prev best vs published)</h4>
+        ${baselineHtml}
+        <h4 style="margin:14px 0 6px 0;color:var(--muted)">Two-proportion z-tests (α=0.05)</h4>
+        ${zHtml}
+        <h4 style="margin:14px 0 6px 0;color:var(--muted)">Mean latency per problem (tier × capability)</h4>
+        ${latHtml}
+        <div style="margin-top:14px">${table}</div>
+      `;
+
+      // Restore any drop-downs the user had expanded before this update,
+      // AND restore the horizontal scroll position of any scrolling child
+      // table inside them. Same key strategy as the snapshot above so each
+      // <details> is re-opened only if it matches a previously-open
+      // group+summary. Scroll restore happens on the next animation frame
+      // so the browser has applied layout before we set scrollLeft.
+      pane.querySelectorAll('details').forEach(d => {
+        const key = _detailsKey(d);
+        if (_openDetails.has(key)) {
+          d.open = true;
+          // Restore scrollLeft of inner scrollable containers.
+          const scrollers = d.querySelectorAll('div[style*="overflow-x"]');
+          scrollers.forEach((s, idx) => {
+            const saved = _scrollPositions.get(key + '#' + idx);
+            if (saved != null) {
+              // Use rAF so the browser has laid out the just-injected DOM.
+              requestAnimationFrame(() => { s.scrollLeft = saved; });
+            }
+          });
+        }
+      });
+      // Restore top-level scrolling containers (heatmap, latency tables).
+      pane.querySelectorAll(':scope > div[style*="overflow-x"], :scope div[style*="overflow-x"]').forEach((s, idx) => {
+        let heading = '';
+        let n = s.previousElementSibling;
+        while (n) {
+          if (n.tagName && /^H[1-6]$/.test(n.tagName)) { heading = n.textContent.trim(); break; }
+          n = n.previousElementSibling;
+        }
+        if (!heading) {
+          let p = s.parentElement;
+          while (p && p !== pane) {
+            n = p.previousElementSibling;
+            while (n) {
+              if (n.tagName && /^H[1-6]$/.test(n.tagName)) { heading = n.textContent.trim(); break; }
+              n = n.previousElementSibling;
+            }
+            if (heading) break;
+            p = p.parentElement;
+          }
+        }
+        const saved = _scrollPositions.get('top#' + heading + '#' + idx);
+        if (saved != null) {
+          requestAnimationFrame(() => { s.scrollLeft = saved; });
+        }
+      });
+
+      // Wire up the cadence + manual-refresh controls in the bar at the
+      // top of the pane. innerHTML wipes them on every render so we
+      // re-bind here instead of once at init.
+      const cadenceSel = pane.querySelector('#bench-cadence');
+      if (cadenceSel) {
+        cadenceSel.addEventListener('change', () => {
+          const v = parseInt(cadenceSel.value, 10);
+          if ([5, 10, 30, 60].includes(v)) {
+            _benchPollSeconds = v;
+            try { localStorage.setItem('lai_bench_poll_secs', String(v)); } catch (_) {}
+            _restartBenchPoll();
+            if (typeof _pushUiPref === 'function') {
+              _pushUiPref({ bench_cadence_s: String(v) });
+            }
+          }
+        });
+      }
+      const refreshBtn = pane.querySelector('#bench-refresh-now');
+      if (refreshBtn && _benchTickFn) {
+        refreshBtn.addEventListener('click', () => _benchTickFn());
+      }
+    }
+    let _benchLastData = null;
+    let _benchResizeHandler = null;
+    let _benchTickFn = null;
+    function _restartBenchPoll() {
+      if (_benchPoll) clearInterval(_benchPoll);
+      _benchPoll = setInterval(() => {
+        if (dashboardActiveTab === 'bench' && _benchTickFn) _benchTickFn();
+      }, _benchPollSeconds * 1000);
+    }
+    async function loadDashBench() {
+      const pane = $('dash-pane-bench');
+      pane.innerHTML = '<div class="dash-empty">Loading bench results…</div>';
+      async function tick() {
+        try {
+          const r = await api('/admin/bench/results');
+          if (!r.ok) throw new Error(`${r.status}`);
+          const data = await r.json();
+          _benchLastData = data;
+          _benchRenderInline(data);
+        } catch (e) {
+          pane.innerHTML = `<div class="dash-empty">Failed to load bench results: ${e.message}</div>`;
+        }
+      }
+      _benchTickFn = tick;
+      await tick();
+      // Refresh on tab activity; keep one rolling poll while the tab is open.
+      _restartBenchPoll();
+      // Window-resize listener: re-render with the cached payload so the
+      // heatmap reflows for the new viewport width without waiting for
+      // the next poll. Debounced so dragging the window doesn't thrash.
+      if (_benchResizeHandler) window.removeEventListener('resize', _benchResizeHandler);
+      let _rt = null;
+      _benchResizeHandler = () => {
+        clearTimeout(_rt);
+        _rt = setTimeout(() => {
+          if (dashboardActiveTab === 'bench' && _benchLastData) {
+            _benchRenderInline(_benchLastData);
+          }
+        }, 200);
+      };
+      window.addEventListener('resize', _benchResizeHandler);
     }
 
     function fmtBytes(n) {
@@ -2404,7 +4277,7 @@
               + `<div class="val">${escapeHtml(String(v))}</div></div>`
             ).join('')
           + '</div>'
-          + '<div class="dash-banner">Per-tool toggles live in the desktop admin window. The chat composer\'s 🔧 Tools popover toggles for the next request only.</div>'
+          + '<div class="dash-banner">Per-tool toggles live in the desktop admin window. The chat composer\'s Tools popover toggles for the next request only.</div>'
           + (tools.length === 0 ? '<div class="dash-empty">No tools registered.</div>'
               : `<table class="dash-table">
                   <thead><tr><th>Name</th><th>State</th><th>Description</th></tr></thead>
@@ -2493,6 +4366,985 @@
         pane.innerHTML = `<div class="dash-empty">Failed to load errors: ${escapeHtml(String(e))}</div>`;
       }
     }
+
+    // ── Theme + palette wiring ──────────────────────────────────────
+    // Persists user choice in localStorage. Updates the <html> element's
+    // data-theme + data-palette attributes which CSS variable cascades
+    // pick up. Default theme follows the OS prefers-color-scheme on first
+    // visit; default palette is okabe_ito (most colorblind-friendly).
+    const PALETTE_NAMES = [
+      'okabe_ito', 'nejm', 'jama', 'viridis', 'magma',
+      'npg', 'aaas', 'lancet', 'ibm_carbon', 'bloomberg',
+      'tableau10', 'set1', 'set2', 'tol_vibrant', 'tol_muted',
+    ];
+    const PALETTE_PREVIEW = {
+      okabe_ito:   ['#000000','#E69F00','#56B4E9','#009E73','#F0E442','#0072B2','#D55E00','#CC79A7'],
+      nejm:        ['#BC3C29','#0072B5','#E18727','#20854E','#7876B1','#6F99AD','#FFDC91','#EE4C97'],
+      jama:        ['#374E55','#DF8F44','#00A1D5','#B24745','#79AF97','#6A6599','#80796B'],
+      viridis:     ['#440154','#482878','#3E4989','#31688E','#26828E','#1F9E89','#6DCD59','#FDE725'],
+      magma:       ['#000004','#1C1044','#51127C','#822681','#B73779','#E65164','#FB8861','#FCFDBF'],
+      npg:         ['#E64B35','#4DBBD5','#00A087','#3C5488','#F39B7F','#8491B4','#91D1C2','#DC0000','#7E6148','#B09C85'],
+      aaas:        ['#3B4992','#EE0000','#008B45','#631879','#008280','#BB0021','#5F559B','#A20056','#808180','#1B1919'],
+      lancet:      ['#00468B','#ED0000','#42B540','#0099B4','#925E9F','#FDAF91','#AD002A','#ADB6B6'],
+      ibm_carbon:  ['#8A3FFC','#33B1FF','#007D79','#FF7EB6','#FA4D56','#6FDC8C','#4589FF','#D12771','#D2A106','#08BDBA'],
+      bloomberg:   ['#000000','#FFA028','#FFFF00','#00FF66','#FF3333','#FF44CC','#00DDFF','#0099FF','#8B0000','#FFFFFF'],
+      tableau10:   ['#4E79A7','#F28E2B','#E15759','#76B7B2','#59A14F','#EDC948','#B07AA1','#FF9DA7','#9C755F','#BAB0AC'],
+      set1:        ['#E41A1C','#377EB8','#4DAF4A','#984EA3','#FF7F00','#FFFF33','#A65628','#F781BF','#999999'],
+      set2:        ['#66C2A5','#FC8D62','#8DA0CB','#E78AC3','#A6D854','#FFD92F','#E5C494','#B3B3B3'],
+      tol_vibrant: ['#0077BB','#33BBEE','#009988','#EE7733','#CC3311','#EE3377','#BBBBBB'],
+      tol_muted:   ['#332288','#88CCEE','#44AA99','#117733','#999933','#DDCC77','#CC6677','#882255','#AA4499','#DDDDDD'],
+    };
+    // Push UI prefs to the backend (plaintext, non-sensitive). Debounced
+    // so dragging the tint dropdown doesn't fire 5 POSTs in a row. The
+    // server is the source of truth across devices — localStorage is
+    // just a cache for instant first paint before the server fetch lands.
+    let _uiPrefsPushTimer = null;
+    function _pushUiPref(patch) {
+      try {
+        clearTimeout(_uiPrefsPushTimer);
+        _uiPrefsPushTimer = setTimeout(() => {
+          if (typeof api !== 'function') return;
+          api('/admin/me/ui_prefs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch),
+          }).catch(() => { /* best-effort; localStorage still has it */ });
+        }, 300);
+      } catch (_) {}
+    }
+    function _applyTheme(theme, opts) {
+      // Bloomberg palette is dark-only by design — silently coerce to
+      // dark so the user can't accidentally render an unreadable amber-
+      // on-white combo.
+      const curPalette = document.documentElement.getAttribute('data-palette');
+      if (curPalette === 'bloomberg') theme = 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+      try { localStorage.setItem('lai_theme', theme); } catch (_) {}
+      document.querySelectorAll('#theme-toggle .tc-pill').forEach(b => {
+        b.classList.toggle('active', b.dataset.theme === theme);
+      });
+      if (!(opts && opts.skipPush)) _pushUiPref({ theme });
+    }
+    function _applyPalette(palette, opts) {
+      if (!PALETTE_NAMES.includes(palette)) palette = 'okabe_ito';
+      document.documentElement.setAttribute('data-palette', palette);
+      try { localStorage.setItem('lai_palette', palette); } catch (_) {}
+      const sel = document.getElementById('palette-select');
+      if (sel && sel.value !== palette) sel.value = palette;
+      const sw = document.getElementById('palette-swatches');
+      if (sw) {
+        sw.innerHTML = (PALETTE_PREVIEW[palette] || []).map(c =>
+          `<span style="background:${c}"></span>`
+        ).join('');
+      }
+      // Bloomberg locks dark theme + max tint (the orange/black is direct
+      // color, not interpolated). Disable both UI controls so the user
+      // can see they're not in play. Other palettes re-enable them.
+      const isBloomberg = palette === 'bloomberg';
+      const themeBtns = document.querySelectorAll('#theme-toggle .tc-pill');
+      themeBtns.forEach(b => {
+        const isDark = b.dataset.theme === 'dark';
+        b.disabled = isBloomberg && !isDark;
+        b.style.opacity = (isBloomberg && !isDark) ? '0.3' : '';
+        b.style.cursor = (isBloomberg && !isDark) ? 'not-allowed' : '';
+        b.title = isBloomberg
+          ? (isDark ? 'Bloomberg palette is dark-only' : 'Light theme disabled by Bloomberg palette')
+          : (isDark ? 'Dark theme' : 'Light theme');
+      });
+      const tintSel = document.getElementById('tint-strength');
+      if (tintSel) {
+        tintSel.disabled = isBloomberg;
+        tintSel.style.opacity = isBloomberg ? '0.4' : '';
+        tintSel.title = isBloomberg
+          ? 'Tint is fixed for the Bloomberg palette (amber on pure black, no interpolation).'
+          : 'How much the palette tints page chrome.';
+      }
+      if (isBloomberg) {
+        // Force dark theme; bypass the push so we don't echo unnecessarily.
+        if (document.documentElement.getAttribute('data-theme') !== 'dark') {
+          _applyTheme('dark', { skipPush: opts && opts.skipPush });
+        }
+      }
+      // Re-render the bench heatmap if it's open so cells pick up the
+      // new gradient stops without requiring a poll cycle.
+      try {
+        if (typeof _benchLastData !== 'undefined' && _benchLastData &&
+            typeof _benchRenderInline === 'function' &&
+            document.querySelector('.dash-tab[data-tab="bench"].active')) {
+          _benchRenderInline(_benchLastData);
+        }
+      } catch (_) {}
+      if (!(opts && opts.skipPush)) _pushUiPref({ palette });
+    }
+    function _applyTintStrength(level, opts) {
+      const n = Math.max(1, Math.min(5, parseInt(level, 10) || 4));
+      document.documentElement.setAttribute('data-tint', String(n));
+      try { localStorage.setItem('lai_tint', String(n)); } catch (_) {}
+      const sel = document.getElementById('tint-strength');
+      if (sel && sel.value !== String(n)) sel.value = String(n);
+      if (!(opts && opts.skipPush)) _pushUiPref({ tint: String(n) });
+    }
+    const TYPEFACE_NAMES = ['system', 'times', 'ibm_plex_sans'];
+    function _applyTypeface(face, opts) {
+      if (!TYPEFACE_NAMES.includes(face)) face = 'system';
+      document.documentElement.setAttribute('data-typeface', face);
+      try { localStorage.setItem('lai_typeface', face); } catch (_) {}
+      const sel = document.getElementById('typeface-select');
+      if (sel && sel.value !== face) sel.value = face;
+      if (!(opts && opts.skipPush)) _pushUiPref({ typeface: face });
+    }
+    // Hydrate UI prefs from the backend after sign-in. localStorage gives
+    // instant first paint with whatever the last device set; the server
+    // then overrides if a different device wrote newer values. Called
+    // once after login from the post-signin path.
+    async function _hydrateUiPrefsFromServer() {
+      // Pull every UI pref from the server. For each key NOT present in
+      // the server response, apply the system default — this guarantees
+      // a freshly-signed-in user sees their own settings (or defaults)
+      // and never inherits leftovers from whoever used the browser last.
+      let p = {};
+      try {
+        if (typeof api === 'function') {
+          const r = await api('/admin/me/ui_prefs');
+          if (r.ok) {
+            const j = await r.json();
+            p = (j && j.prefs) || {};
+          }
+        }
+      } catch (_) { p = {}; }
+      // Palette first so Bloomberg's dark-only enforcement sees it
+      // before _applyTheme runs.
+      _applyPalette(p.palette || 'okabe_ito', { skipPush: true });
+      const sysTheme = (window.matchMedia &&
+        window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+      _applyTheme(p.theme || sysTheme, { skipPush: true });
+      _applyTintStrength(p.tint || '2', { skipPush: true });
+      _applyTypeface(p.typeface || 'system', { skipPush: true });
+      const cad = parseInt(p.bench_cadence_s || '10', 10);
+      if ([5, 10, 30, 60].includes(cad)) {
+        _benchPollSeconds = cad;
+        try { localStorage.setItem('lai_bench_poll_secs', String(cad)); } catch (_) {}
+        if (typeof _restartBenchPoll === 'function') _restartBenchPoll();
+      }
+    }
+    (function _initThemePalette() {
+      let theme = null;
+      let palette = null;
+      let tint = null;
+      let typeface = null;
+      try { theme = localStorage.getItem('lai_theme'); } catch (_) {}
+      try { palette = localStorage.getItem('lai_palette'); } catch (_) {}
+      try { tint = localStorage.getItem('lai_tint'); } catch (_) {}
+      try { typeface = localStorage.getItem('lai_typeface'); } catch (_) {}
+      // Migrate legacy lai_cb=on → tint level 1, lai_cb=off → 2 (new default)
+      try {
+        const legacy = localStorage.getItem('lai_cb');
+        if (legacy && tint == null) {
+          tint = legacy === 'on' ? '1' : '2';
+          localStorage.setItem('lai_tint', tint);
+          localStorage.removeItem('lai_cb');
+        }
+      } catch (_) {}
+      if (!theme) {
+        theme = window.matchMedia &&
+                window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light' : 'dark';
+      }
+      if (!palette) palette = 'okabe_ito';
+      // Apply order: palette first, then theme (so the dark-only force
+      // for Bloomberg sees the palette and rejects light mode).
+      _applyPalette(palette, { skipPush: true });
+      _applyTheme(theme, { skipPush: true });
+      _applyTintStrength(tint || '2', { skipPush: true });
+      _applyTypeface(typeface || 'system', { skipPush: true });
+      document.querySelectorAll('#theme-toggle .tc-pill').forEach(b => {
+        b.addEventListener('click', () => {
+          if (b.disabled) return;
+          _applyTheme(b.dataset.theme);
+        });
+      });
+      const sel = document.getElementById('palette-select');
+      if (sel) sel.addEventListener('change', () => _applyPalette(sel.value));
+      const tintSel = document.getElementById('tint-strength');
+      if (tintSel) tintSel.addEventListener('change', () => _applyTintStrength(tintSel.value));
+      const tfSel = document.getElementById('typeface-select');
+      if (tfSel) tfSel.addEventListener('change', () => _applyTypeface(tfSel.value));
+    })();
+
+    // ── Settings modal wiring ──────────────────────────────────────
+    // Defensive cleanup of legacy plaintext-on-client storage.
+    try { localStorage.removeItem('lai_user_settings'); } catch (_) {}
+    try { localStorage.removeItem('lai_display_name'); } catch (_) {}
+    // Old shared (non-user-namespaced) AES key slot. We DO NOT delete
+    // this — instead it serves as a one-time migration fallback in
+    // _fetchUserSettings: when the per-user namespaced key fails to
+    // decrypt server-side data, we try this legacy key, and on success
+    // re-encrypt under the per-user slot (forward migration). The slot
+    // is cleared automatically once every user on this device has
+    // migrated (see _maybeRetireLegacyKey).
+    const _LEGACY_KEY_LS = 'lai_settings_key_v1';
+
+    // localStorage keys that hold UI preferences. These are set
+    // device-wide (not per-user), so we clear them on every
+    // login/logout transition to prevent the previous user's choices
+    // bleeding into the next user's session. Cross-device sync is
+    // restored from /admin/me/ui_prefs after login.
+    const _UI_PREF_LS_KEYS = [
+      'lai_theme', 'lai_palette', 'lai_tint', 'lai_typeface',
+      'lai_bench_poll_secs', 'lai_dash_active_tab', 'lai_dash_open',
+      'lai_cb',
+    ];
+    function _clearUiPrefsLocalStorage() {
+      for (const k of _UI_PREF_LS_KEYS) {
+        try { localStorage.removeItem(k); } catch (_) {}
+      }
+    }
+    function _resetUiToDefaults() {
+      // Used when a fresh user signs in and the server has no saved
+      // UI prefs for them — applies the system defaults instead of
+      // letting the previous user's localStorage values stick.
+      _applyPalette('okabe_ito', { skipPush: true });
+      const sysTheme = (window.matchMedia &&
+        window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+      _applyTheme(sysTheme, { skipPush: true });
+      _applyTintStrength('2', { skipPush: true });
+      _applyTypeface('system', { skipPush: true });
+    }
+
+    // ── End-to-end encryption (E2E) for personal settings ──────────
+    // The plaintext settings (display name + demographics + connector
+    // credentials) NEVER traverse the network. Browser encrypts with
+    // AES-GCM-256 before POST; backend stores the opaque {iv,ciphertext}
+    // blob (still wrapped with Fernet at rest as defense-in-depth).
+    // Each USER on a shared device gets their OWN AES key, slot-keyed
+    // by user_id (`lai_settings_key_v2__<user_id>`). Without per-user
+    // namespacing, kitisathreat and hakumar75 on the same browser would
+    // share a key — so user A would unwittingly encrypt their data
+    // using a key that user B's stored data was also encrypted with,
+    // and switching accounts would leak the wrong cached settings.
+    const _SETTINGS_KEY_PREFIX = 'lai_settings_key_v2__';
+    let _currentUserId = null;
+    function _setCurrentUserId(id) { _currentUserId = id != null ? String(id) : null; }
+    function _settingsKeyLs() {
+      // user_id required — refuse to fall back to a shared slot.
+      if (!_currentUserId) return null;
+      return _SETTINGS_KEY_PREFIX + _currentUserId;
+    }
+    async function _getOrCreateClientKey() {
+      const slot = _settingsKeyLs();
+      if (!slot) {
+        // No user known yet — generate ephemeral, don't persist.
+        return crypto.subtle.generateKey(
+          { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+      }
+      try {
+        const stored = localStorage.getItem(slot);
+        if (stored) {
+          return await crypto.subtle.importKey('jwk', JSON.parse(stored),
+            { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+        }
+      } catch (_) {}
+      const key = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+      try {
+        const jwk = await crypto.subtle.exportKey('jwk', key);
+        localStorage.setItem(slot, JSON.stringify(jwk));
+      } catch (_) {}
+      return key;
+    }
+    function _b64encode(bytes) {
+      let s = '';
+      for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return btoa(s);
+    }
+    function _b64decode(b64) {
+      const s = atob(b64);
+      const out = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+      return out;
+    }
+    async function _encryptForBackend(plaintextObj) {
+      const key = await _getOrCreateClientKey();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const pt = new TextEncoder().encode(JSON.stringify(plaintextObj));
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt);
+      return { iv: _b64encode(iv), ciphertext: _b64encode(new Uint8Array(ct)) };
+    }
+    async function _decryptWithKey(payload, key) {
+      // Returns decoded plaintext object on success, or null on
+      // decryption failure (caller decides how to handle).
+      try {
+        const iv = _b64decode(payload.iv);
+        const ct = _b64decode(payload.ciphertext);
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+        return JSON.parse(new TextDecoder().decode(pt));
+      } catch (_) {
+        return null;
+      }
+    }
+    async function _importLegacyKey() {
+      // Load the pre-namespacing shared AES key (if any). Used as a
+      // one-time migration fallback when the per-user key fails to
+      // decrypt server-side data that was originally encrypted before
+      // the per-user namespacing landed.
+      try {
+        const raw = localStorage.getItem(_LEGACY_KEY_LS);
+        if (!raw) return null;
+        return await crypto.subtle.importKey('jwk', JSON.parse(raw),
+          { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+      } catch (_) { return null; }
+    }
+    async function _decryptFromBackend(payload) {
+      if (!payload || !payload.iv || !payload.ciphertext) return {};
+      const primary = await _getOrCreateClientKey();
+      const direct = await _decryptWithKey(payload, primary);
+      if (direct !== null) return direct;
+      // Fallback: per-user key didn't decrypt this blob — try the
+      // legacy shared key. This is the migration path for users who
+      // saved settings before the per-user namespacing fix.
+      const legacy = await _importLegacyKey();
+      if (legacy) {
+        const recovered = await _decryptWithKey(payload, legacy);
+        if (recovered !== null) {
+          // Re-save under the per-user key so subsequent loads decrypt
+          // directly without needing the legacy fallback. Best-effort —
+          // if the network save fails, we still return the recovered
+          // plaintext for this session.
+          try {
+            const enc = await _encryptForBackend(recovered);
+            api('/admin/me/settings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(enc),
+            }).catch(() => {});
+          } catch (_) {}
+          return recovered;
+        }
+      }
+      // Both keys failed — settings genuinely unrecoverable on this
+      // device. Return empty so the form is editable and the user can
+      // re-enter their data; saving will overwrite under the per-user
+      // key.
+      return {};
+    }
+    const _SETTINGS_FIELDS = [
+      'display_name', 'demo_age', 'demo_pronouns', 'demo_gender',
+      'demo_sexuality', 'demo_race', 'demo_employment', 'demo_location',
+    ];
+    let _userSettingsCache = null;
+    async function _fetchUserSettings() {
+      // Settings live as opaque AES-GCM ciphertext on the backend. The
+      // browser's localStorage holds the AES key (not the data); the
+      // backend never sees plaintext. We decrypt in-memory here for the
+      // session — _userSettingsCache is the only place plaintext exists
+      // and it's torn down on page close.
+      try {
+        const r = await api('/admin/me/settings');
+        if (r.ok) {
+          const j = await r.json();
+          if (j.encrypted) {
+            _userSettingsCache = await _decryptFromBackend({ iv: j.iv, ciphertext: j.ciphertext });
+          } else {
+            // Legacy plaintext blob (from before E2E migration). Pull
+            // through and re-save under E2E on next save.
+            _userSettingsCache = j.settings || {};
+          }
+          return _userSettingsCache;
+        }
+      } catch (_) {}
+      return {};
+    }
+    // Slugs of tools that are external-service connectors (OAuth or
+    // API-key auth). These show in the Connectors section of settings;
+    // pure tools (web_search, calculator, filesystem, etc.) stay in
+    // the chat composer's 🔧 popover only.
+    const CONNECTOR_SLUGS = new Set([
+      // Productivity / collaboration
+      'gmail','google_drive','google_calendar','notion','airtable',
+      'canva','figma','zoom','linear','lucid','box','spotify',
+      // Developer / infrastructure
+      'github_integration','huggingface','cloudflare','postman',
+      // Healthcare / public registries
+      'npi_registry','clinical_trials','pubmed',
+      // Financial / business intelligence
+      'cb_insights','sp_global','fiscal_ai','adis_insight',
+      // Other
+      'uber',
+      // Local MCP servers (no remote auth)
+      'android_mcp','windows_mcp',
+    ]);
+    function _esc(s) {
+      return String(s || '').replace(/[<>&]/g, c =>
+        c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;');
+    }
+    async function _populateSkillsList() {
+      const wrap = document.getElementById('settings-skills-list');
+      if (!wrap) return;
+      try {
+        const r = await api('/skills');
+        const skills = r.ok ? (await r.json()).data : [];
+        if (!skills.length) {
+          wrap.innerHTML = '<div class="settings-stub">No skills loaded. See <code>skills/&lt;slug&gt;/SKILL.md</code>.</div>';
+          return;
+        }
+        wrap.innerHTML = skills.map(s => `
+          <div class="plugin-row">
+            <div class="plugin-icon"></div>
+            <div class="plugin-meta">
+              <div class="plugin-title">${_esc(s.title || s.slug)}</div>
+              <div class="plugin-desc">${_esc(s.description || '')}</div>
+              <div class="plugin-counts">slug: <code>${_esc(s.slug)}</code>${s.suggested_tier ? ' · tier: ' + _esc(s.suggested_tier) : ''}</div>
+            </div>
+            <span class="plugin-toggle ${s.enabled?'enabled':''}" title="Skills are auto-applied based on triggers; this badge reflects the registry's enabled flag">${s.enabled?'On':'Off'}</span>
+          </div>`).join('');
+      } catch (e) {
+        wrap.innerHTML = `<div class="settings-stub">Failed to load skills: ${_esc(e.message || e)}</div>`;
+      }
+    }
+    // Per-connector auth metadata. `auth_type` decides what the Configure
+    // sub-modal shows (API key / OAuth / sign-in). For OAuth providers
+    // we redirect to the portal so the user signs in there — preferable
+    // to handing the connector a raw API key whenever possible.
+    const CONNECTOR_META = {
+      gmail:              { auth_type: 'oauth',   provider: 'Google',     scopes: 'gmail.modify',         portal: 'https://console.cloud.google.com/apis/credentials' },
+      google_drive:       { auth_type: 'oauth',   provider: 'Google',     scopes: 'drive.file, drive.readonly', portal: 'https://console.cloud.google.com/apis/credentials' },
+      google_calendar:    { auth_type: 'oauth',   provider: 'Google',     scopes: 'calendar.events',      portal: 'https://console.cloud.google.com/apis/credentials' },
+      notion:             { auth_type: 'oauth',   provider: 'Notion',       portal: 'https://api.notion.com/v1/oauth/authorize',          fallback_portal: 'https://www.notion.so/my-integrations' },
+      airtable:           { auth_type: 'oauth',   provider: 'Airtable',     portal: 'https://airtable.com/oauth2/v1/authorize',           fallback_portal: 'https://airtable.com/create/tokens' },
+      canva:              { auth_type: 'oauth',   provider: 'Canva',        portal: 'https://www.canva.com/developers/' },
+      figma:              { auth_type: 'oauth',   provider: 'Figma',        portal: 'https://www.figma.com/oauth',                         fallback_portal: 'https://www.figma.com/settings' },
+      zoom:               { auth_type: 'oauth',   provider: 'Zoom',         portal: 'https://marketplace.zoom.us/develop/create' },
+      github_integration: { auth_type: 'oauth',   provider: 'GitHub',       portal: 'https://github.com/login/oauth/authorize',           fallback_portal: 'https://github.com/settings/tokens' },
+      huggingface:        { auth_type: 'oauth',   provider: 'Hugging Face', portal: 'https://huggingface.co/oauth/authorize',              fallback_portal: 'https://huggingface.co/settings/tokens' },
+      cloudflare:         { auth_type: 'api_key',            provider: 'Cloudflare',   portal: 'https://dash.cloudflare.com/profile/api-tokens' },
+      postman:            { auth_type: 'api_key',            provider: 'Postman',      portal: 'https://web.postman.co/settings/me/api-keys' },
+      uber:               { auth_type: 'oauth',              provider: 'Uber',         portal: 'https://developer.uber.com/dashboard' },
+      npi_registry:       { auth_type: 'none',               provider: 'CMS NPPES (public)' },
+      // Newly added to mirror claude.ai's MCP connector roster:
+      linear:             { auth_type: 'oauth',   provider: 'Linear',         portal: 'https://linear.app/oauth/authorize',                  fallback_portal: 'https://linear.app/settings/api' },
+      lucid:              { auth_type: 'oauth',   provider: 'Lucid',          portal: 'https://lucid.app/oauth2/authorize',                  fallback_portal: 'https://lucid.app/users/settings#/apps' },
+      box:                { auth_type: 'oauth',   provider: 'Box',            portal: 'https://account.box.com/api/oauth2/authorize',        fallback_portal: 'https://app.box.com/developers/console' },
+      spotify:            { auth_type: 'oauth',   provider: 'Spotify',        portal: 'https://accounts.spotify.com/authorize',              fallback_portal: 'https://developer.spotify.com/dashboard' },
+      clinical_trials:    { auth_type: 'none',               provider: 'NIH/NLM ClinicalTrials.gov (public)' },
+      pubmed:             { auth_type: 'api_key',            provider: 'NCBI PubMed (public; API key for higher rate limits)', portal: 'https://www.ncbi.nlm.nih.gov/account/settings/' },
+      cb_insights:        { auth_type: 'api_key',            provider: 'CB Insights',    portal: 'https://www.cbinsights.com/settings/api' },
+      sp_global:          { auth_type: 'api_key',            provider: 'S&P Global',     portal: 'https://www.spglobal.com/marketintelligence/en/solutions/sp-capital-iq-pro' },
+      fiscal_ai:          { auth_type: 'api_key',            provider: 'Fiscal.ai',      portal: 'https://fiscal.ai/api' },
+      adis_insight:       { auth_type: 'api_key',            provider: 'AdisInsight (Springer)', portal: 'https://adisinsight.springer.com/' },
+      android_mcp:        { auth_type: 'mcp_local',          provider: 'Local MCP server' },
+      windows_mcp:        { auth_type: 'mcp_local',          provider: 'Local MCP server' },
+    };
+    // Cache of /admin/me/oauth_status (populated by _fetchOAuthStatus).
+    // Merged with _userSettingsCache.connectors when rendering the
+    // connector cards: OAuth tokens live server-side (in a separate
+    // Fernet-encrypted blob), manual API keys live in the user's E2E
+    // encrypted settings. Either source counts as "Connected".
+    let _oauthStatusCache = {};
+    let _oauthProvidersCache = {};
+    async function _fetchOAuthStatus() {
+      try {
+        const r = await api('/admin/me/oauth_status');
+        if (r.ok) {
+          const j = await r.json();
+          _oauthStatusCache = (j && j.connectors) || {};
+        }
+      } catch (_) { _oauthStatusCache = {}; }
+    }
+    async function _fetchOAuthProviders() {
+      // Which OAuth slugs have client_id+secret configured server-side.
+      // Slugs without configured creds get a disabled "Sign in" button
+      // with a tooltip explaining the admin needs to register the OAuth
+      // app and set the env vars.
+      try {
+        const r = await api('/admin/oauth/providers');
+        if (r.ok) {
+          const j = await r.json();
+          _oauthProvidersCache = (j && j.providers) || {};
+        }
+      } catch (_) { _oauthProvidersCache = {}; }
+    }
+    function _connectorStatus(slug) {
+      // Two sources: OAuth-stored tokens (server-side) and manual creds
+      // in the encrypted settings blob. Either makes the connector
+      // "Connected". OAuth wins on conflict (more recently authenticated).
+      const oa = _oauthStatusCache[slug];
+      if (oa && oa.connected) {
+        if (oa.expired) return { label: 'Reauthorize', tone: 'warn' };
+        return {
+          label: oa.workspace_name ? 'Connected · ' + oa.workspace_name : 'Connected',
+          tone: 'success',
+        };
+      }
+      const c = (_userSettingsCache || {}).connectors || {};
+      const e = c[slug];
+      if (!e) return { label: 'Not connected', tone: 'muted' };
+      if (e.error) return { label: 'Error', tone: 'danger' };
+      if (e.expired) return { label: 'Reauthorize', tone: 'warn' };
+      if (e.credential) return { label: 'Connected (manual)', tone: 'success' };
+      return { label: 'Not connected', tone: 'muted' };
+    }
+    // Pretty titles + descriptions for the connector cards. We don't
+    // pull these from /tools because that endpoint's payload is the
+    // nested-by-tier tool registry (groups → groups → subgroups →
+    // tools[]), which doesn't carry connector descriptions. Instead the
+    // settings panel iterates CONNECTOR_SLUGS directly — they're a
+    // closed, well-known set defined on the frontend.
+    const CONNECTOR_DISPLAY = {
+      gmail:              { title: 'Gmail',            description: 'Read and send mail through your Gmail account.' },
+      google_drive:       { title: 'Google Drive',     description: 'Browse, read, and edit files in your Drive.' },
+      google_calendar:    { title: 'Google Calendar',  description: 'View and create calendar events.' },
+      notion:             { title: 'Notion',           description: 'Search workspace pages and update databases.' },
+      airtable:           { title: 'Airtable',         description: 'Read and write records across your bases.' },
+      canva:              { title: 'Canva',            description: 'Generate, edit, and export designs.' },
+      figma:              { title: 'Figma',            description: 'Read design context and screenshots; manage Code Connect.' },
+      zoom:               { title: 'Zoom',             description: 'Schedule and inspect Zoom meetings.' },
+      github_integration: { title: 'GitHub',           description: 'Read repos, issues, PRs, and review code.' },
+      huggingface:        { title: 'Hugging Face',     description: 'Search models, datasets, and spaces on the Hub.' },
+      cloudflare:         { title: 'Cloudflare',       description: 'Manage Workers, KV, R2, D1, and Hyperdrive.' },
+      postman:            { title: 'Postman',          description: 'Create and run API collections, mocks, and specs.' },
+      uber:               { title: 'Uber',             description: 'Estimate ride costs between locations.' },
+      npi_registry:       { title: 'NPI Registry',     description: 'Look up US healthcare providers (no auth needed).' },
+      linear:             { title: 'Linear',           description: 'Read and update Linear issues, projects, and cycles.' },
+      lucid:              { title: 'Lucid',            description: 'Create and edit Lucidchart / Lucidspark documents.' },
+      box:                { title: 'Box',              description: 'Browse and edit files in your Box account.' },
+      spotify:            { title: 'Spotify',          description: 'Search tracks, manage playlists, and read your library.' },
+      clinical_trials:    { title: 'Clinical Trials',  description: 'Search ClinicalTrials.gov v2 for studies, sponsors, and investigators.' },
+      pubmed:             { title: 'PubMed',           description: 'Search PubMed and fetch article metadata, full text, citations.' },
+      cb_insights:        { title: 'CB Insights',      description: 'Business / market / competitive intelligence data.' },
+      sp_global:          { title: 'S&P Global',       description: 'S&P Capital IQ Pro market data and financials.' },
+      fiscal_ai:          { title: 'Fiscal.ai',        description: 'AI-powered financial data and analysis.' },
+      adis_insight:       { title: 'AdisInsight',      description: 'Springer pharmaceutical pipeline + drug intelligence.' },
+      android_mcp:        { title: 'Android MCP',      description: 'Local MCP server for Android device control.' },
+      windows_mcp:        { title: 'Windows MCP',      description: 'Local MCP server for Windows automation.' },
+    };
+    async function _populateConnectorsList() {
+      const wrap = document.getElementById('settings-connectors-list');
+      if (!wrap) return;
+      try {
+        // Refresh OAuth status + provider-availability so the buttons
+        // reflect both who's signed in and which providers actually have
+        // an OAuth app registered server-side.
+        await Promise.all([_fetchOAuthStatus(), _fetchOAuthProviders()]);
+        const slugs = Array.from(CONNECTOR_SLUGS);
+        if (!slugs.length) {
+          wrap.innerHTML = '<div class="settings-stub">No connectors registered.</div>';
+          return;
+        }
+        wrap.innerHTML = slugs.map(slug => {
+          const meta = CONNECTOR_META[slug] || { auth_type: 'api_key' };
+          const display = CONNECTOR_DISPLAY[slug] || { title: slug, description: '' };
+          const status = _connectorStatus(slug);
+          const statusColor = {
+            success: 'var(--success)', danger: 'var(--danger)',
+            warn: 'var(--warn)', muted: 'var(--muted)',
+          }[status.tone] || 'var(--muted)';
+          const statusBg = `color-mix(in srgb, var(--bg) 80%, ${statusColor} 20%)`;
+          const isConnected = status.tone === 'success';
+          // For OAuth, also check whether the provider's OAuth app is
+          // registered with the backend (env vars set). If not, surface
+          // the env-var name so the admin knows what to configure.
+          const oauthInfo = _oauthProvidersCache[slug];
+          const oauthReady = meta.auth_type !== 'oauth' || (oauthInfo && oauthInfo.configured);
+          const authLabel = {
+            oauth: isConnected ? 'Manage' : (oauthReady ? 'Sign in' : 'Setup pending'),
+            integration_token: isConnected ? 'Edit token' : 'Add token',
+            pat: isConnected ? 'Edit token' : 'Add personal token',
+            api_key: isConnected ? 'Edit key' : 'Add API key',
+            none: 'No auth needed',
+            mcp_local: 'Configure',
+          }[meta.auth_type] || (isConnected ? 'Manage' : 'Connect service');
+          const oauthHint = (meta.auth_type === 'oauth' && !oauthReady && oauthInfo)
+            ? ` title="Admin must register OAuth app and set ${oauthInfo.client_id_env} (and _SECRET) in .env. See backend/oauth.py."`
+            : '';
+          return `<div class="plugin-row">
+            <div class="plugin-icon"></div>
+            <div class="plugin-meta">
+              <div class="plugin-title">${_esc(display.title)}</div>
+              <div class="plugin-desc">${_esc(display.description)}</div>
+              <div class="plugin-counts">
+                <span class="connector-badge" style="background:${statusBg};color:${statusColor};border:1px solid ${statusColor}">
+                  ${status.label}
+                </span>
+                ${meta.provider ? '· ' + _esc(meta.provider) : ''}
+                ${meta.scopes ? '· scopes: <code>' + _esc(meta.scopes) + '</code>' : ''}
+              </div>
+            </div>
+            <button class="plugin-toggle" data-configure="${_esc(slug)}" type="button"${oauthHint}>
+              ${authLabel}
+            </button>
+          </div>`;
+        }).join('');
+        wrap.querySelectorAll('button[data-configure]').forEach(btn => {
+          btn.addEventListener('click', () => _openConnectorConfig(btn.dataset.configure));
+        });
+      } catch (e) {
+        wrap.innerHTML = `<div class="settings-stub">Failed to load connectors: ${_esc(e.message || e)}</div>`;
+      }
+    }
+    // Per-connector configure modal. Opens on Configure button click,
+    // shows provider-specific auth fields (API key / personal token /
+    // OAuth sign-in button) plus a link to the provider's credential
+    // portal. Saves encrypted to the backend's user-settings blob under
+    // settings.connectors[slug].
+    function _openConnectorConfig(slug) {
+      const meta = CONNECTOR_META[slug] || { auth_type: 'api_key' };
+      const existing = ((_userSettingsCache || {}).connectors || {})[slug] || {};
+      let bodyHtml = '';
+      if (meta.auth_type === 'none') {
+        bodyHtml = `<p class="settings-help">${_esc(meta.provider || slug)} is a public service — no auth required.</p>`;
+      } else if (meta.auth_type === 'mcp_local') {
+        bodyHtml = `<p class="settings-help">This is a local MCP server. Configuration lives in the backend's MCP config, not per-user.</p>`;
+      } else if (meta.auth_type === 'oauth') {
+        // OAuth flow: clicking "Sign in" opens a popup at
+        // /auth/oauth/<slug>/start. The backend redirects to the
+        // provider's authorize URL; after consent the provider
+        // redirects back to /auth/oauth/<slug>/callback which exchanges
+        // the code for a token, persists it server-side (Fernet-
+        // encrypted), and posts a message back to this window.
+        const providerInfo = _oauthProvidersCache[slug] || {};
+        const providerReady = !!providerInfo.configured;
+        const oauthStatus = _oauthStatusCache[slug];
+        const isConnectedOauth = oauthStatus && oauthStatus.connected && !oauthStatus.expired;
+        bodyHtml = `
+          <p class="settings-help">
+            Sign in to <strong>${_esc(meta.provider)}</strong> to authorize this connector.
+            We never see your password — the provider redirects back with a scoped access
+            token that's stored encrypted on the backend.
+          </p>
+          ${isConnectedOauth ? `
+            <div style="background:color-mix(in srgb, var(--bg) 80%, var(--success) 20%);color:var(--success);border:1px solid var(--success);border-radius:6px;padding:8px 12px;margin:6px 0;font-size:12px">
+              Connected${oauthStatus.workspace_name ? ' to <strong>' + _esc(oauthStatus.workspace_name) + '</strong>' : ''}
+              ${oauthStatus.scopes ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">Scopes: <code>' + _esc(String(oauthStatus.scopes)) + '</code></div>' : ''}
+            </div>
+          ` : ''}
+          ${providerReady ? `
+            <button id="oauth-signin-btn" type="button"
+                    style="display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#fff;border:0;padding:10px 16px;border-radius:6px;font:inherit;font-weight:500;font-size:13px;cursor:pointer;margin:6px 0">
+              ${isConnectedOauth ? 'Re-authorize' : 'Sign in with'} ${_esc(meta.provider)}
+            </button>
+          ` : `
+            <div style="background:color-mix(in srgb, var(--bg) 80%, var(--warn) 25%);border:1px solid var(--warn);border-radius:6px;padding:10px 12px;margin:6px 0;font-size:12px;color:var(--fg)">
+              <strong>OAuth app not yet registered.</strong>
+              An admin needs to create an OAuth application on
+              ${_esc(meta.provider)}'s developer portal and set
+              <code>${_esc(providerInfo.client_id_env || ('OAUTH_' + slug.toUpperCase() + '_CLIENT_ID'))}</code>
+              and its <code>_SECRET</code> in <code>.env</code>.
+              See <code>backend/oauth.py</code> for portal links and steps.
+            </div>
+            ${meta.portal ? `<a href="${meta.portal}" target="_blank" rel="noopener" style="display:inline-block;color:var(--accent);font-size:12px">↗ ${_esc(meta.provider)} developer portal</a>` : ''}
+          `}
+          <details style="margin-top:14px">
+            <summary style="cursor:pointer;color:var(--muted);font-size:12px">Have an access token already? Paste it manually</summary>
+            <div style="margin-top:8px">
+              ${meta.fallback_portal ? `<a class="connector-portal-link" href="${meta.fallback_portal}" target="_blank" rel="noopener" style="display:inline-block;color:var(--accent);font-size:12px;margin-bottom:6px">↗ Manage tokens on ${_esc(meta.provider)}</a>` : ''}
+              <label class="tc-label">Access token</label>
+              <input id="connector-cred-input" type="password" placeholder="paste token" autocomplete="off" />
+            </div>
+          </details>
+        `;
+      } else {
+        // api_key / pat / integration_token all just want a single secret.
+        const fieldName = {
+          pat: 'Personal access token', integration_token: 'Integration secret',
+          api_key: 'API key',
+        }[meta.auth_type] || 'Credential';
+        bodyHtml = `
+          <p class="settings-help">
+            Create a credential in <strong>${_esc(meta.provider || slug)}</strong>
+            and paste it here. Stored encrypted on this server (Fernet at rest, HTTPS in transit).
+            Never persisted in your browser.
+          </p>
+          ${meta.portal ? `<a class="connector-portal-link" href="${meta.portal}" target="_blank" rel="noopener">↗ Open ${_esc(meta.provider)} credentials page</a>` : ''}
+          <label class="tc-label">${_esc(fieldName)}</label>
+          <input id="connector-cred-input" type="password" placeholder="paste credential" autocomplete="off" />
+        `;
+      }
+      const meHtml = `
+        <div class="settings-foot" style="margin-top:8px;border-top:none;padding:0">
+          ${meta.auth_type !== 'none' && meta.auth_type !== 'mcp_local' ? `
+            <button id="connector-disconnect" type="button"
+                    style="background:transparent;color:var(--danger);border:1px solid var(--danger);padding:6px 12px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px"
+                    ${existing.credential ? '' : 'disabled'}>
+              Disconnect
+            </button>
+          ` : '<span></span>'}
+          <button id="connector-save-btn" type="button"
+                  style="background:var(--accent);color:#fff;border:0;padding:8px 16px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500">
+            ${meta.auth_type === 'none' || meta.auth_type === 'mcp_local' ? 'OK' : 'Save'}
+          </button>
+        </div>
+      `;
+      // Reuse the existing settings-modal as a host: replace the body
+      // temporarily with a connector-config view, restore on close.
+      const cfg = document.createElement('div');
+      cfg.id = 'connector-config-modal';
+      cfg.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(480px,92vw);background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:10px;z-index:62;box-shadow:0 24px 64px rgba(0,0,0,0.6);padding:18px';
+      cfg.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <h3 style="margin:0;font-size:14px">Configure ${_esc(slug)}</h3>
+          <button id="connector-config-close" type="button" style="background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:18px">✕</button>
+        </div>
+        <div>${bodyHtml}</div>
+        ${meHtml}
+      `;
+      document.body.appendChild(cfg);
+      const closeFn = () => {
+        if (oauthMessageHandler) {
+          window.removeEventListener('message', oauthMessageHandler);
+        }
+        cfg.remove();
+      };
+      cfg.querySelector('#connector-config-close').addEventListener('click', closeFn);
+      const saveBtn = cfg.querySelector('#connector-save-btn');
+      const disconnectBtn = cfg.querySelector('#connector-disconnect');
+      const credInput = cfg.querySelector('#connector-cred-input');
+
+      // OAuth Sign-in button: open popup → /auth/oauth/<slug>/start.
+      // The popup's callback page posts a message back when done.
+      let oauthMessageHandler = null;
+      const oauthBtn = cfg.querySelector('#oauth-signin-btn');
+      if (oauthBtn) {
+        oauthBtn.addEventListener('click', () => {
+          const startUrl = '/auth/oauth/' + encodeURIComponent(slug) + '/start';
+          const w = 560, h = 700;
+          const x = Math.max(0, (window.screenX || 0) + (window.outerWidth - w) / 2);
+          const y = Math.max(0, (window.screenY || 0) + (window.outerHeight - h) / 2);
+          const popup = window.open(
+            startUrl, 'lai_oauth_' + slug,
+            `width=${w},height=${h},left=${x},top=${y},resizable=yes,scrollbars=yes,status=no`,
+          );
+          if (!popup) {
+            alert('Popup blocked. Allow popups from this site to sign in.');
+            return;
+          }
+          oauthMessageHandler = (event) => {
+            if (event.origin !== window.location.origin) return;
+            const d = event.data || {};
+            if (d.type !== 'oauth_complete' || d.slug !== slug) return;
+            window.removeEventListener('message', oauthMessageHandler);
+            oauthMessageHandler = null;
+            if (d.ok) {
+              _populateConnectorsList();
+              closeFn();
+            } else {
+              const err = cfg.querySelector('#oauth-error') || (() => {
+                const div = document.createElement('div');
+                div.id = 'oauth-error';
+                div.style.cssText = 'background:color-mix(in srgb, var(--bg) 80%, var(--danger) 25%);color:var(--danger);border:1px solid var(--danger);border-radius:6px;padding:8px 12px;margin:6px 0;font-size:12px';
+                oauthBtn.parentElement.insertBefore(div, oauthBtn.nextSibling);
+                return div;
+              })();
+              err.textContent = (d.message || 'Sign-in failed');
+            }
+          };
+          window.addEventListener('message', oauthMessageHandler);
+        });
+      }
+
+      saveBtn?.addEventListener('click', async () => {
+        const val = credInput?.value.trim();
+        if (meta.auth_type !== 'none' && meta.auth_type !== 'mcp_local' && !val) {
+          closeFn();
+          return;
+        }
+        // Merge into _userSettingsCache.connectors and POST.
+        const cur = _userSettingsCache || {};
+        cur.connectors = cur.connectors || {};
+        cur.connectors[slug] = val ? { credential: val, configured_at: Date.now() } : {};
+        await _saveUserSettings(cur);
+        _populateConnectorsList();
+        closeFn();
+      });
+      disconnectBtn?.addEventListener('click', async () => {
+        // Clear both manual creds (encrypted blob) AND OAuth tokens
+        // (server-side blob) — user clicked Disconnect, drop everything.
+        const cur = _userSettingsCache || {};
+        if (cur.connectors) delete cur.connectors[slug];
+        await _saveUserSettings(cur);
+        try {
+          await api('/admin/me/oauth_disconnect/' + encodeURIComponent(slug),
+            { method: 'POST' });
+        } catch (_) {}
+        await _fetchOAuthStatus();
+        _populateConnectorsList();
+        closeFn();
+      });
+    }
+    async function _saveUserSettings(payload) {
+      // Encrypt in browser before send. Plaintext never touches the
+      // network — the backend only ever sees {iv, ciphertext}. We
+      // optimistically update the in-memory cache to the just-saved
+      // plaintext so the UI is responsive without a re-fetch.
+      try {
+        const enc = await _encryptForBackend(payload);
+        const r = await api('/admin/me/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(enc),
+        });
+        if (r.ok) {
+          _userSettingsCache = payload;
+        }
+      } catch (_) {}
+    }
+    async function _populatePluginsList() {
+      // Backwards-compat name; now drives both skills + connectors blocks.
+      await Promise.all([_populateSkillsList(), _populateConnectorsList()]);
+    }
+    function _populateSettingsForm(s) {
+      // display_name maps to the standalone input; demo_* map by id.
+      const nameEl = document.getElementById('settings-display-name');
+      if (nameEl) nameEl.value = s.display_name || '';
+      for (const k of _SETTINGS_FIELDS) {
+        if (k === 'display_name') continue;
+        const el = document.getElementById(k.replace('demo_', 'demo-'));
+        if (el) el.value = s[k] || '';
+      }
+    }
+    (function _initSettings() {
+      const openBtn = document.getElementById('settings-btn');
+      const closeBtn = document.getElementById('settings-close');
+      const modal = document.getElementById('settings-modal');
+      const backdrop = document.getElementById('settings-backdrop');
+      const saveBtn = document.getElementById('settings-save');
+      const status = document.getElementById('settings-status');
+      async function open() {
+        modal.classList.remove('hidden');
+        backdrop.classList.remove('hidden');
+        status.textContent = '';
+        status.className = 'settings-status';
+        // Pull latest from backend each open so multi-tab edits stay in
+        // sync. Two parallel fetches:
+        //   1. Encrypted user settings (display name + demographics +
+        //      manual connector creds) — decrypted in browser with the
+        //      device's AES key, populated into the form.
+        //   2. Plaintext UI prefs (theme / palette / tint / typeface /
+        //      bench cadence) — pulled from the server so a setting
+        //      changed on another device is reflected here on open.
+        const [s] = await Promise.all([
+          _fetchUserSettings(),
+          _hydrateUiPrefsFromServer(),
+        ]);
+        _populateSettingsForm(s);
+        // Plugins list is fetched fresh each open so toggles reflect
+        // current backend state (admin may have toggled in another tab).
+        _populatePluginsList();
+        document.getElementById('settings-display-name')?.focus();
+      }
+      function close() {
+        modal.classList.add('hidden');
+        backdrop.classList.add('hidden');
+      }
+      async function save() {
+        // Build the full settings payload (display name + demographics +
+        // existing connectors). Connectors persist via _openConnectorConfig
+        // already; we merge them so the Save button doesn't blow them away.
+        const payload = Object.assign({}, _userSettingsCache || {});
+        const nameEl = document.getElementById('settings-display-name');
+        // Display name is special — empty string clears the field
+        if (nameEl) {
+          if (nameEl.value.trim()) payload.display_name = nameEl.value.trim();
+          else delete payload.display_name;
+        }
+        for (const k of _SETTINGS_FIELDS) {
+          if (k === 'display_name') continue;
+          const el = document.getElementById(k.replace('demo_', 'demo-'));
+          if (el) {
+            if (el.value.trim()) payload[k] = el.value.trim();
+            else delete payload[k];
+          }
+        }
+        saveBtn.disabled = true;
+        status.textContent = 'Encrypting + saving…';
+        status.className = 'settings-status';
+        try {
+          // E2E: encrypt in browser, send opaque ciphertext.
+          const enc = await _encryptForBackend(payload);
+          const r = await api('/admin/me/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(enc),
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          _userSettingsCache = payload;
+          status.textContent = '✓ Saved (E2E encrypted, plaintext never leaves this browser)';
+          status.className = 'settings-status success';
+          if (typeof _refreshLandingGreeting === 'function') _refreshLandingGreeting();
+        } catch (e) {
+          status.textContent = 'Save failed: ' + (e.message || e);
+          status.className = 'settings-status error';
+        } finally {
+          saveBtn.disabled = false;
+        }
+      }
+      openBtn?.addEventListener('click', open);
+      closeBtn?.addEventListener('click', close);
+      backdrop?.addEventListener('click', close);
+      saveBtn?.addEventListener('click', save);
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !modal.classList.contains('hidden')) close();
+      });
+      // Tabs
+      const body = modal.querySelector('.settings-body');
+      const tabs = modal.querySelectorAll('.settings-tab');
+      tabs.forEach(tabBtn => {
+        tabBtn.addEventListener('click', () => {
+          tabs.forEach(t => t.classList.toggle('active', t === tabBtn));
+          body.setAttribute('data-active-tab', tabBtn.dataset.tab);
+          // Save tab visible-toggle for save button (only show on
+          // panes where the user enters data)
+          const tab = tabBtn.dataset.tab;
+          saveBtn.style.display = (tab === 'general' || tab === 'connectors')
+            ? '' : 'none';
+          // Lazy-load the benchmark iframe — keeps the modal cheap
+          // when the user is on a different tab. After load, inject the
+          // parent's active palette + theme + tint into the iframe's
+          // :root so bench-progress.html inherits the same colors as
+          // the chat UI (same-origin, so contentDocument access is
+          // allowed). Re-injects on every show so palette switches
+          // propagate even with the iframe already loaded.
+          if (tab === 'benchmark') {
+            const iframe = document.getElementById('settings-bench-iframe');
+            const inject = () => {
+              try {
+                const doc = iframe.contentDocument;
+                if (!doc) return;
+                const html = doc.documentElement;
+                const myHtml = document.documentElement;
+                ['data-theme', 'data-palette', 'data-tint', 'data-cb'].forEach(a => {
+                  const v = myHtml.getAttribute(a);
+                  if (v != null) html.setAttribute(a, v);
+                });
+                // Pull palette CSS variable values from parent and write
+                // matching ones into the iframe's :root so its existing
+                // hardcoded vars adopt our palette colors.
+                const cs = getComputedStyle(myHtml);
+                const map = {
+                  '--bg': '--bg', '--panel': '--panel', '--panel2': '--panel-2',
+                  '--border': '--border', '--text': '--fg', '--muted': '--muted',
+                  '--accent': '--accent',
+                  '--good': '--success', '--warn': '--warn', '--bad': '--danger',
+                  '--grad-0': '--hm-0', '--grad-1': '--hm-20', '--grad-2': '--hm-40',
+                  '--grad-3': '--hm-60', '--grad-4': '--hm-75', '--grad-5': '--hm-90',
+                  '--grad-6': '--hm-90',
+                };
+                for (const [iframeVar, parentVar] of Object.entries(map)) {
+                  const v = cs.getPropertyValue(parentVar).trim();
+                  if (v) html.style.setProperty(iframeVar, v);
+                }
+              } catch (_) { /* cross-origin or pre-load — ignore */ }
+            };
+            if (iframe && (!iframe.src || iframe.src === 'about:blank' ||
+                           !iframe.src.endsWith('/bench'))) {
+              iframe.src = '/bench';
+              iframe.onload = inject;
+            } else if (iframe) {
+              inject();
+            }
+          }
+        });
+      });
+    })();
 
     bootstrap();
   </script>

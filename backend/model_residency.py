@@ -224,9 +224,17 @@ def _tighten_for_fit(
     would have done.
     """
     ctx = plan.context_window or tier.context_window
-    layer_vram = plan.projected_vram_gb
+    # `plan.projected_vram_gb` already encodes the FULL-load cost from
+    # the YAML estimate, which itself was measured at the tier's native
+    # context — so KV at native ctx is *already inside it*. Decompose
+    # into (weights + activations) vs (KV) so we can re-cost when we
+    # change ctx without double-counting KV.
+    native_ctx = tier.context_window or ctx
+    kv_at_native = _projected_kv_gb(tier, native_ctx)
+    weight_vram = max(0.0, plan.projected_vram_gb - kv_at_native)
+    layer_vram = weight_vram                       # alias kept for log lines below
     kv_vram = _projected_kv_gb(tier, ctx)
-    total = layer_vram + kv_vram
+    total = weight_vram + kv_vram
 
     # Already fits with everything on GPU at full ctx? Done.
     if total <= free_vram_gb:
@@ -239,7 +247,53 @@ def _tighten_for_fit(
 
     reasons: list[str] = [plan.reason] if plan.reason else []
 
-    # Step 2: KV → CPU.
+    # Step 2 (NEW): drop a few layers to CPU mmap before any KV-offload or
+    # ctx-shrink. Layer-offload to CPU via mmap is the cheapest fallback
+    # for DENSE tiers — but skipped for MoE-with-experts-on-CPU tiers
+    # (coding/versatile/highest_quality/reasoning_max use
+    # `override_tensors: .ffn_.*_exps.=CPU`) because their experts are
+    # already host-resident; -ngl mostly governs attention layer
+    # placement, which is small (~50–150 MB/layer). Dropping -ngl on
+    # those models barely frees any VRAM and roughly halves attention
+    # throughput, so for MoE tiers we go straight to ctx-shrink.
+    moe_offloaded = any(
+        ("ffn_" in (pat or "") and "exps" in (pat or "") and "CPU" in (pat or ""))
+        for pat in (tier.override_tensors or [])
+    )
+    total_layers = _layer_hint(tier)
+    if (not moe_offloaded) and plan.num_gpu_layers > 0 and total_layers > 0:
+        # Iteratively drop layers in 5% steps. Estimate per-layer GPU cost
+        # from the current weight_vram (KV already excluded above).
+        per_layer_gb = layer_vram / max(1, plan.num_gpu_layers)
+        gpu_layers = plan.num_gpu_layers
+        min_layers = max(1, int(total_layers * pol.partial_min_ratio))
+        while gpu_layers > min_layers:
+            drop = max(1, int(total_layers * 0.05))
+            gpu_layers = max(min_layers, gpu_layers - drop)
+            new_layer_vram = per_layer_gb * gpu_layers
+            if new_layer_vram + kv_vram <= free_vram_gb:
+                plan.num_gpu_layers = gpu_layers
+                layer_vram = new_layer_vram
+                plan.projected_vram_gb = layer_vram + kv_vram
+                if plan.mode == ResidencyMode.FULL:
+                    plan.mode = ResidencyMode.PARTIAL
+                reasons.append(f"layers→{gpu_layers}/{total_layers}")
+                plan.reason = "+".join(reasons)
+                logger.info(
+                    "residency: %s dropped to %d/%d layers (layer=%.2fG + "
+                    "kv=%.2fG ≤ free=%.2fG) — kept full ctx %d, KV on GPU",
+                    tier.name, gpu_layers, total_layers,
+                    layer_vram, kv_vram, free_vram_gb, ctx,
+                )
+                return plan
+        # Couldn't fit even at min_layers — keep going with KV→CPU / ctx-shrink.
+        plan.num_gpu_layers = min_layers
+        layer_vram = per_layer_gb * min_layers
+        if plan.mode == ResidencyMode.FULL:
+            plan.mode = ResidencyMode.PARTIAL
+        reasons.append(f"layers→{min_layers}/{total_layers}(floor)")
+
+    # Step 3: KV → CPU.
     if pol.enable_kv_offload:
         plan.kv_offload = True
         logger.info(
@@ -254,7 +308,7 @@ def _tighten_for_fit(
             plan.reason = "+".join(reasons)
             return plan
 
-    # Step 3: shrink ctx in halving steps until it fits.
+    # Step 4: shrink ctx in halving steps until it fits.
     if pol.enable_ctx_shrink:
         candidate = ctx
         while candidate > pol.min_context_window:
@@ -322,26 +376,19 @@ def plan_residency(
                               reason="user-pref")
         return _tighten_for_fit(plan, tier, free_vram_gb, pol)
 
-    # If there's plenty of room and the user's turn looks involved, give
-    # the whole model the GPU.
+    # If there's plenty of room, give the whole model the GPU. We used to
+    # shave ~15% of layers off for "trivial" turns (short prompts) so
+    # other tiers could share the card without eviction — but that
+    # backfires for benchmarks (every problem looks "trivial" so every
+    # one paid the layer-offload tax even with 10+ GB of free headroom),
+    # and in normal chat workflows tier swaps are infrequent enough that
+    # full residency wins on latency. KV stays on GPU. Layer-offload
+    # only kicks in below the FULL headroom threshold.
     complexity = _complexity_score(live_user_text)
     fits_full = free_vram_gb >= cost * pol.full_headroom_multiplier
-    if fits_full and complexity >= 0.5:
+    if fits_full:
         plan = _plan_for_mode(tier, ResidencyMode.FULL, total, cost, pol,
-                              reason="headroom-ok+complex")
-    elif fits_full and tier.pinned:
-        # Pinned tiers (e.g. vision on llama.cpp, which can't unload
-        # without a restart) shouldn't be partially offloaded on a whim —
-        # if the card fits them, keep them whole.
-        plan = _plan_for_mode(tier, ResidencyMode.FULL, total, cost, pol,
-                              reason="headroom-ok+pinned")
-    elif fits_full:
-        # Fits, but the turn looks trivial — shave off a bit to leave VRAM
-        # for other tiers to share the card without eviction.
-        ratio = max(pol.partial_min_ratio,
-                    1.0 - pol.low_complexity_savings)
-        plan = _custom_plan(tier, ratio, total, cost, pol,
-                            reason="headroom-ok+trivial")
+                              reason="headroom-ok")
     elif cost <= 0 or free_vram_gb <= 0:
         plan = _plan_for_mode(tier, ResidencyMode.MINIMAL, total, cost, pol,
                               reason="unknown-cost")

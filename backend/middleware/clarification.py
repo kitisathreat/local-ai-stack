@@ -13,6 +13,7 @@ Ported from pipelines/clarification_filter.py. Two functions:
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Iterable
 
@@ -84,6 +85,11 @@ def inject_clarification_instruction(messages: list[ChatMessage]) -> list[ChatMe
     """Mutate-and-return. Appends the protocol to an existing system
     message (or inserts a new one). Also adds a gentle nudge if the
     latest user message is flagged ambiguous."""
+    # Bench mode bypass — bench prompts are deterministic Q&A, the
+    # protocol just adds noise that the coding tier (in particular)
+    # interprets as "ask a clarifying question instead of answering".
+    if os.getenv("LAI_DISABLE_CLARIFICATION") == "1":
+        return messages
     if has_recent_clarification(messages):
         return messages
 

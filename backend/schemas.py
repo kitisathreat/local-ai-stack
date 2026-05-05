@@ -91,10 +91,23 @@ class ChatRequest(BaseModel):
     top_p: float | None = None
     top_k: int | None = None
     max_tokens: int | None = None
+    # Additional sampling controls — forwarded verbatim to llama-server
+    # when set, otherwise the tier's YAML defaults apply. Used by the
+    # auto-tuner (data/eval/tuned_params.json overlays).
+    min_p: float | None = None
+    repeat_penalty: float | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
 
     # Extensions beyond the OpenAI shape
     think: bool | None = None              # explicit user override for reasoning
     multi_agent: bool | None = None        # explicit user override for orchestration
+    # Per-request web-search controls. None = use the middleware's heuristic
+    # trigger (TRIGGER_PATTERNS / LOOKUP_PATTERNS); True = always inject
+    # (used by the eval runner's tools=force / tools=auto pass-2);
+    # False = skip middleware entirely for this request.
+    force_web_search: bool | None = None
+    disable_web_search: bool | None = None
     # Per-request variant override for tiers that declare `variants:` in
     # models.yaml (e.g. coding 30b vs coding 80b). The chat UI's variant
     # sub-selector populates this; the router applies it to the routing

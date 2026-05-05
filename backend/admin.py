@@ -41,7 +41,7 @@ from typing import Any
 
 import aiosqlite
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from . import airgap, auth, db, metrics, passwords
 from .config import AppConfig, CONFIG_DIR
@@ -61,17 +61,789 @@ async def require_admin(user: dict = Depends(auth.current_user)) -> dict:
     return user
 
 
+# ── Bench launcher / lifecycle ─────────────────────────────────────────
+#
+# Background bench process is owned by this module. Lifecycle:
+#   POST /admin/bench/start   - spawn run_full_bench.py with given config
+#   POST /admin/bench/stop    - terminate the running bench
+#   GET  /admin/bench/status  - {running, pid, started_at, config, log_tail}
+# The chat UI hits /admin/bench/status to disable input while a bench is
+# running (see chat.html). Config dict is small, JSON-serialisable.
+
+import asyncio as _asyncio
+import subprocess as _subprocess
+import json as _json
+
+_bench_proc: _subprocess.Popen | None = None
+_bench_started_at: float | None = None
+_bench_config: dict | None = None
+_bench_log_path: Path | None = None
+
+
+def _bench_is_running() -> bool:
+    if _bench_proc is not None and _bench_proc.poll() is None:
+        return True
+    # Fallback: detect externally-launched bench by log freshness. The
+    # eval runner writes a per-problem line ("runner.py:NNN  ...") every
+    # few seconds. If the day's eval log has been modified within the
+    # last 30 seconds, a bench is running.
+    try:
+        import datetime as _dt
+        repo = Path(__file__).resolve().parent.parent
+        logs_dir = repo / "data" / "logs"
+        # Same date-rollover guard as bench_progress._latest_eval_log:
+        # a bench started before midnight keeps writing to yesterday's log.
+        candidate = logs_dir / f"eval-{_dt.date.today():%Y%m%d}.log"
+        if not candidate.exists():
+            matches = sorted(logs_dir.glob("eval-2*.log"),
+                             key=lambda p: p.stat().st_mtime, reverse=True)
+            if matches:
+                candidate = matches[0]
+        if candidate.exists():
+            age = time.time() - candidate.stat().st_mtime
+            # 120s window: MT-Bench / AIME problems can take 30-60s each
+            # via the LLM judge tier, so a 30s threshold flickers "idle"
+            # mid-cell. 2 minutes is the longest plausible quiet period
+            # while still detecting a genuinely-stopped bench within
+            # ~2 polls of the dashboard.
+            if age < 120:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+@router.get("/bench/status")
+async def bench_status():
+    """Return current bench state. Public — chat.html polls this to know
+    when to disable input. Includes the last 40 lines of bench stdout so
+    the launcher UI can show progress without hitting a separate endpoint."""
+    log_tail = ""
+    if _bench_log_path and _bench_log_path.exists():
+        try:
+            txt = _bench_log_path.read_text(encoding="utf-8", errors="replace")
+            log_tail = "\n".join(txt.splitlines()[-40:])
+        except Exception:
+            pass
+    running = _bench_is_running()
+    return {
+        "running": running,
+        "pid": (_bench_proc.pid if running and _bench_proc is not None else None),
+        "started_at": _bench_started_at,
+        "config": _bench_config,
+        "log_tail": log_tail,
+        "log_path": str(_bench_log_path) if _bench_log_path else None,
+    }
+
+
+@router.post("/bench/start")
+async def bench_start(request: Request, _: dict = Depends(require_admin)):
+    """Spawn `scripts/run_full_bench.py` with the given configuration.
+    Body schema (all optional except where defaulted):
+      {
+        "tiers": "swarm,fast,...",
+        "capabilities": "knowledge,math,...",
+        "think": "off,on" | "off" | "on",
+        "tools": "off,auto" | "off" | "auto" | "force",
+        "target": "count" | "time" | "significance" | "significance_strict",
+        "target_minutes": int,
+        "max_tokens": int,
+        "per_problem_timeout": int,
+        "judge_tier": "highest_quality"
+      }
+    """
+    global _bench_proc, _bench_started_at, _bench_config, _bench_log_path
+    if _bench_is_running():
+        raise HTTPException(409, "A bench is already running. POST /admin/bench/stop first.")
+    body = await request.json()
+    cfg = {
+        "tiers":      str(body.get("tiers")
+                          or "swarm,fast,versatile,coding,highest_quality,reasoning_max"),
+        "capabilities": str(body.get("capabilities")
+                            or "knowledge,knowledge_specialized,math,math_competition,reasoning,coding,coding_basic,intent,clarity,long_context"),
+        "think":      str(body.get("think") or "off,on"),
+        "tools":      str(body.get("tools") or "off,auto"),
+        "target":     str(body.get("target") or "count"),
+        "target_minutes": int(body.get("target_minutes") or 0),
+        "max_tokens": int(body.get("max_tokens") or 16384),
+        "per_problem_timeout": int(body.get("per_problem_timeout") or 900),
+        "judge_tier": str(body.get("judge_tier") or "highest_quality"),
+    }
+    repo = Path(__file__).resolve().parent.parent
+    py = repo / "vendor" / "venv-backend" / "Scripts" / "python.exe"
+    if not py.exists():
+        py = "python"
+    script = repo / "scripts" / "run_full_bench.py"
+    log_dir = repo / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"bench-launch-{int(time.time())}.log"
+    argv = [
+        str(py), str(script),
+        "--tiers", cfg["tiers"],
+        "--capabilities", cfg["capabilities"],
+        "--think", cfg["think"],
+        "--tools", cfg["tools"],
+        "--target", cfg["target"],
+        "--max-tokens", str(cfg["max_tokens"]),
+        "--per-problem-timeout", str(cfg["per_problem_timeout"]),
+        "--judge-tier", cfg["judge_tier"],
+    ]
+    if cfg["target_minutes"] > 0:
+        argv += ["--target-minutes", str(cfg["target_minutes"])]
+    log_fp = log_path.open("w", encoding="utf-8")
+    _bench_proc = _subprocess.Popen(
+        argv,
+        cwd=str(repo),
+        stdout=log_fp, stderr=_subprocess.STDOUT,
+        creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    _bench_started_at = time.time()
+    _bench_config = cfg
+    _bench_log_path = log_path
+    logger.warning("Bench started via /admin/bench/start: pid=%s config=%s",
+                   _bench_proc.pid, cfg)
+    return {"ok": True, "pid": _bench_proc.pid, "config": cfg, "log_path": str(log_path)}
+
+
+@router.post("/bench/stop")
+async def bench_stop(_: dict = Depends(require_admin)):
+    """Terminate the running bench (SIGTERM, then SIGKILL after 5s)."""
+    global _bench_proc, _bench_started_at, _bench_config
+    if not _bench_is_running():
+        return {"ok": True, "running": False, "note": "no bench running"}
+    pid = _bench_proc.pid
+    try:
+        _bench_proc.terminate()
+        try:
+            _bench_proc.wait(timeout=5)
+        except _subprocess.TimeoutExpired:
+            _bench_proc.kill()
+            _bench_proc.wait(timeout=5)
+    except Exception as exc:
+        logger.warning("bench stop raise: %s", exc)
+    _bench_proc = None
+    _bench_started_at = None
+    logger.warning("Bench stopped via /admin/bench/stop: pid=%s", pid)
+    return {"ok": True, "stopped_pid": pid}
+
+
+# ── Bench results — structured JSON for HTML dashboard ──────────────────
+
+def _wilson_ci(passed: int, n: int, z: float = 1.96) -> tuple[float, float, float]:
+    """Wilson score interval for a binomial proportion. Returns
+    (point_estimate, lower, upper) in [0,1]. More accurate than normal-
+    approx near p=0 or p=1; what we report on the dashboard."""
+    if n <= 0:
+        return (0.0, 0.0, 0.0)
+    import math as _m
+    p = passed / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    centre = (p + z2 / (2 * n)) / denom
+    half = (z * _m.sqrt(p * (1 - p) / n + z2 / (4 * n * n))) / denom
+    return (p, max(0.0, centre - half), min(1.0, centre + half))
+
+
+@router.get("/bench/results")
+async def bench_results():
+    """Return structured per-cell results for the HTML dashboard.
+
+    Schema:
+      {
+        "ts": <unix>,
+        "running": bool,
+        "current": {tier, capability, think, tools, n_done, n_total,
+                    passed, failed, pass_rate, ci_low, ci_high} | null,
+        "cells": [
+          {tier, capability, depth, think, tools,
+           n, passed, failed, errors, pass_rate, ci_low, ci_high,
+           wall_seconds, mean_latency_s, started_ts, finished}
+        ],
+        "tiers": [...], "capabilities": [...],
+        "think_modes": ["off","on"], "tools_modes": ["off","auto"]
+      }
+    """
+    import sys as _sys
+    repo = Path(__file__).resolve().parent.parent
+    scripts_dir = repo / "scripts"
+    if str(scripts_dir) not in _sys.path:
+        _sys.path.insert(0, str(scripts_dir))
+    try:
+        import importlib
+        if "bench_progress" in _sys.modules:
+            mod = importlib.reload(_sys.modules["bench_progress"])
+        else:
+            import bench_progress as mod
+        state = mod.parse_log(mod.LOG)
+    except Exception as exc:
+        logger.warning("bench_results parse failed: %s", exc)
+        return {"ts": time.time(), "running": False, "current": None, "cells": []}
+
+    cells = []
+    current = None
+    for i, c in enumerate(state.get("cells", [])):
+        is_last = (i == len(state["cells"]) - 1)
+        n_done = c["passed"] + c["failed"] + c["errors"]
+        finished = (n_done >= c["n_total"]) or (not is_last)
+        n_real = max(1, c["passed"] + c["failed"])
+        p, lo, hi = _wilson_ci(c["passed"], n_real)
+        wall = (c.get("last_ts") or 0) - (c.get("started_ts") or 0)
+        entry = {
+            "tier":          c["tier"],
+            "capability":    c["capability"],
+            "depth":         c["depth"],
+            "think":         "on" if c["think"] else "off",
+            "tools":         c["tools"],
+            "n_total":       c["n_total"],
+            "n_done":        n_done,
+            "passed":        c["passed"],
+            "failed":        c["failed"],
+            "errors":        c["errors"],
+            "pass_rate":     round(p, 4),
+            "ci_low":        round(lo, 4),
+            "ci_high":       round(hi, 4),
+            "ci_half":       round((hi - lo) / 2.0, 4),
+            "wall_seconds":  round(wall, 1),
+            "mean_latency_s": round(c["wall_so_far"] / max(1, n_done), 2),
+            "started_ts":    c.get("started_ts"),
+            "last_ts":       c.get("last_ts"),
+            "finished":      finished,
+        }
+        if not finished and is_last:
+            current = entry
+        else:
+            cells.append(entry)
+
+    # Merge in cells from the latest cumulative JSON. The eval log only
+    # contains cells from the *current* bench process; if the bench was
+    # resumed via --resume-from, prior-run cells are saved in the
+    # cumulative JSON but not the log. Without this merge, the dashboard
+    # forgets cells across bench restarts.
+    try:
+        results_dir = repo / "data" / "eval" / "results"
+        if results_dir.exists():
+            cumulative = sorted(
+                results_dir.glob("full-bench-*-cumulative.json"),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )
+            if cumulative:
+                import json as _json
+                doc = _json.loads(cumulative[0].read_text(encoding="utf-8"))
+                prior = doc.get("results", doc) if isinstance(doc, dict) else doc
+                # Build a dedup key set for cells already known from the log.
+                seen = {(c["tier"], c["capability"], c.get("think"), c.get("tools"))
+                        for c in cells}
+                if current is not None:
+                    seen.add((current["tier"], current["capability"],
+                              current.get("think"), current.get("tools")))
+                for entry in prior:
+                    tier_p = entry.get("tier")
+                    cap_p = entry.get("capability")
+                    think_p = entry.get("think")
+                    tools_p = entry.get("tools")
+                    if isinstance(think_p, bool):
+                        think_p = "on" if think_p else "off"
+                    if think_p is None:
+                        think_p = "off"
+                    if tools_p is None:
+                        tools_p = "off"
+                    key = (tier_p, cap_p, think_p, tools_p)
+                    if key in seen:
+                        continue
+                    n_problems_p = entry.get("n_problems", 0)
+                    if n_problems_p < 30 or entry.get("abort_reason"):
+                        continue  # don't show aborted/partial cells
+                    n_passed_p = entry.get("n_passed", 0)
+                    n_failed_p = max(0, n_problems_p - n_passed_p)
+                    p_p, lo_p, hi_p = _wilson_ci(n_passed_p, n_problems_p)
+                    cells.append({
+                        "tier": tier_p, "capability": cap_p,
+                        "depth": entry.get("depth", "stat_sig"),
+                        "think": think_p, "tools": tools_p,
+                        "n_total": n_problems_p, "n_done": n_problems_p,
+                        "passed": n_passed_p, "failed": n_failed_p, "errors": 0,
+                        "pass_rate": round(p_p, 4),
+                        "ci_low": round(lo_p, 4), "ci_high": round(hi_p, 4),
+                        "ci_half": round((hi_p - lo_p) / 2.0, 4),
+                        "wall_seconds": round(entry.get("finished_at", 0) -
+                                              entry.get("started_at", 0), 1),
+                        "mean_latency_s": round(entry.get("mean_latency_s", 0), 2),
+                        "started_ts": entry.get("started_at"),
+                        "last_ts": entry.get("finished_at"),
+                        "finished": True,
+                        "from_cumulative": True,
+                    })
+                    seen.add(key)
+    except Exception as exc:
+        logger.debug("Failed to merge cumulative JSON cells: %s", exc)
+
+    # Two-proportion z-test for the four condition comparisons we care
+    # about: think on vs off (tools held), tools auto vs off (think held),
+    # and the joint on+auto vs off+off. Reports z, p (two-sided), and a
+    # significance flag at α=0.05. The null is "no difference between
+    # the two conditions". When either group is empty, returns nulls.
+    import math as _m
+    def _two_prop_z(a_passed, a_n, b_passed, b_n):
+        if a_n <= 0 or b_n <= 0:
+            return None
+        p1 = a_passed / a_n
+        p2 = b_passed / b_n
+        p_pool = (a_passed + b_passed) / (a_n + b_n)
+        se = _m.sqrt(p_pool * (1 - p_pool) * (1 / a_n + 1 / b_n))
+        if se == 0:
+            return {"z": 0.0, "p": 1.0, "delta": p1 - p2, "significant": False}
+        z = (p1 - p2) / se
+        # Two-sided p via standard normal CDF approximation
+        # (Abramowitz & Stegun 7.1.26)
+        a1, a2, a3, a4, a5 = 0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429
+        x = abs(z) / _m.sqrt(2.0)
+        t = 1.0 / (1.0 + 0.3275911 * x)
+        erf = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * _m.exp(-x * x)
+        p_two = 1 - erf
+        return {
+            "z": round(z, 3),
+            "p": round(p_two, 4),
+            "delta_pp": round((p1 - p2) * 100, 2),
+            "significant": p_two < 0.05,
+            "n_a": a_n,
+            "n_b": b_n,
+        }
+
+    # Aggregate across all cells (excluding the in-progress one) for each
+    # of the 4 conditions, then compute z-tests of interesting pairs.
+    cond_totals: dict = {}
+    for c in cells:
+        key = (c["think"], c["tools"])
+        if c["passed"] + c["failed"] == 0:
+            continue
+        agg = cond_totals.setdefault(key, {"passed": 0, "n": 0, "cells": 0})
+        agg["passed"] += c["passed"]
+        agg["n"] += c["passed"] + c["failed"]
+        agg["cells"] += 1
+
+    def _agg(k):
+        return cond_totals.get(k, {"passed": 0, "n": 0})
+
+    pairs = {
+        "think_on_vs_off_tools_off": _two_prop_z(
+            _agg(("on", "off"))["passed"], _agg(("on", "off"))["n"],
+            _agg(("off", "off"))["passed"], _agg(("off", "off"))["n"],
+        ),
+        "tools_auto_vs_off_think_off": _two_prop_z(
+            _agg(("off", "auto"))["passed"], _agg(("off", "auto"))["n"],
+            _agg(("off", "off"))["passed"], _agg(("off", "off"))["n"],
+        ),
+        "think_on_tools_auto_vs_baseline": _two_prop_z(
+            _agg(("on", "auto"))["passed"], _agg(("on", "auto"))["n"],
+            _agg(("off", "off"))["passed"], _agg(("off", "off"))["n"],
+        ),
+        "tools_auto_vs_off_think_on": _two_prop_z(
+            _agg(("on", "auto"))["passed"], _agg(("on", "auto"))["n"],
+            _agg(("on", "off"))["passed"], _agg(("on", "off"))["n"],
+        ),
+    }
+
+    # Aggregate latency per (tier, capability) — mean and p95 over all
+    # finished cells. Useful for the "throughput vs accuracy" view.
+    lat_buckets: dict = {}
+    for c in cells:
+        if c["mean_latency_s"] <= 0:
+            continue
+        key = (c["tier"], c["capability"])
+        bucket = lat_buckets.setdefault(key, [])
+        bucket.append(c["mean_latency_s"])
+    latencies = []
+    for (tier, cap), vs in lat_buckets.items():
+        latencies.append({
+            "tier": tier, "capability": cap,
+            "mean_s": round(sum(vs) / len(vs), 2),
+            "max_s": round(max(vs), 2),
+            "n_samples": len(vs),
+        })
+
+    # Literature baselines — published per-(tier, capability) reference
+    # numbers from model cards / papers. Lets the dashboard show our
+    # local results next to the canonical published number for the
+    # underlying model. Historical baselines — best per-(tier, cap)
+    # rate from prior local runs (Phase 1/2). Both surface as separate
+    # comparison columns so an operator can see "current vs our previous
+    # best vs published number" at once. Both files are JSON, hot-reloaded
+    # on each call so editing reflects without a backend restart.
+    repo = Path(__file__).resolve().parent.parent
+    def _load_json_silent(name):
+        try:
+            p = repo / "data" / "eval" / name
+            if p.exists():
+                return _json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("%s load failed: %s", name, exc)
+        return {}
+    lit_baselines = _load_json_silent("lit_baselines.json")
+    historical_baselines = _load_json_silent("historical_baselines.json")
+
+    return {
+        "ts": time.time(),
+        "running": _bench_is_running(),
+        "current": current,
+        "cells": cells,
+        "tiers": ["swarm", "fast", "versatile", "coding", "highest_quality", "reasoning_max"],
+        "capabilities": [
+            "knowledge", "knowledge_specialized", "math", "math_competition",
+            "reasoning", "coding", "coding_basic", "intent", "clarity", "long_context",
+        ],
+        "think_modes": ["off", "on"],
+        "tools_modes": ["off", "auto"],
+        "condition_totals": {
+            f"{k[0]}|{k[1]}": v for k, v in cond_totals.items()
+        },
+        "z_tests": pairs,
+        "latencies": latencies,
+        "lit_baselines": lit_baselines,
+        "historical_baselines": historical_baselines,
+    }
+
+
+# ── Bench progress dashboard ────────────────────────────────────────────
+#
+# Surfaces the same dashboard the CLI (`scripts/bench_progress.py`) renders
+# so an operator can watch a long-running full-bench from any browser /
+# phone. The script's `parse_log` + `render` functions are imported lazily
+# (sys.path injection) so the admin module doesn't have to copy the
+# rendering logic. Public read-only — no admin gate, since bench results
+# aren't sensitive and the chat UI / monitoring dashboards in front of it
+# may run unauthenticated.
+
+@router.get("/bench/progress")
+async def bench_progress():
+    """Return the current bench progress dashboard.
+
+    Response shape:
+        {
+          "ts": <unix sec>,
+          "ascii": "...box-drawing dashboard...",
+          "state": {<parsed log state — cells, current, run_start>},
+        }
+    """
+    import sys as _sys
+    repo = Path(__file__).resolve().parent.parent
+    scripts_dir = repo / "scripts"
+    if str(scripts_dir) not in _sys.path:
+        _sys.path.insert(0, str(scripts_dir))
+    try:
+        # Re-import on every call so a CLI edit shows up without backend
+        # restart. Cheap — both modules are <300 LOC.
+        import importlib
+        if "bench_progress" in _sys.modules:
+            mod = importlib.reload(_sys.modules["bench_progress"])
+        else:
+            import bench_progress as mod
+        state = mod.parse_log(mod.LOG)
+        ascii_dash = mod.render(state)
+    except Exception as exc:
+        logger.warning("bench_progress dashboard render failed: %s", exc)
+        return {"ts": time.time(), "ascii": f"(error: {exc})", "state": {}}
+    return {"ts": time.time(), "ascii": ascii_dash, "state": state}
+
+
 # ── Me ──────────────────────────────────────────────────────────────────
 
 @router.get("/me")
 async def admin_me(user: dict = Depends(auth.current_user)):
     admin_count = await db.count_admins()
     return {
+        # user_id is needed by the frontend to namespace the per-user
+        # AES key in localStorage. Without it, all users on a shared
+        # browser would share one encryption key — so user A's saved
+        # data could be decrypted with user B's session, and switching
+        # accounts would leak the wrong cached settings.
+        "user_id": int(user["id"]),
         "username": user.get("username", ""),
         "email": user["email"],
         "is_admin": bool(user.get("is_admin")),
         "admin_configured": admin_count > 0,
     }
+
+
+# ── Per-user settings (display name + demographics, encrypted) ──────────
+#
+# Stored at data/user_settings/<user_id>.enc using Fernet symmetric
+# encryption. The Fernet key lives at data/.user_settings_key (created
+# on first save, mode 0o600). Both files are gitignored. The backend is
+# the only entity that ever sees decrypted demographics; the frontend
+# sends plaintext over the local HTTPS link, the backend encrypts before
+# writing to disk.
+
+
+def _user_settings_dir() -> Path:
+    repo = Path(__file__).resolve().parent.parent
+    p = repo / "data" / "user_settings"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _user_settings_key() -> bytes:
+    """Load (or generate on first call) the symmetric Fernet key. Stored
+    outside the encrypted blob so a stolen .enc file alone is useless."""
+    from cryptography.fernet import Fernet
+    p = _user_settings_dir().parent / ".user_settings_key"
+    if not p.exists():
+        p.write_bytes(Fernet.generate_key())
+        try:
+            import stat as _stat
+            os.chmod(p, _stat.S_IRUSR | _stat.S_IWUSR)
+        except (OSError, AttributeError):
+            pass
+    return p.read_bytes()
+
+
+def _user_settings_path(user_id: int) -> Path:
+    return _user_settings_dir() / f"{int(user_id)}.enc"
+
+
+def _load_user_settings(user_id: int) -> dict:
+    from cryptography.fernet import Fernet, InvalidToken
+    p = _user_settings_path(user_id)
+    if not p.exists():
+        return {}
+    try:
+        f = Fernet(_user_settings_key())
+        return _json.loads(f.decrypt(p.read_bytes()).decode("utf-8"))
+    except (InvalidToken, ValueError, OSError) as exc:
+        logger.warning("Failed to decrypt user_settings for %s: %s", user_id, exc)
+        return {}
+
+
+def _save_user_settings(user_id: int, data: dict) -> None:
+    from cryptography.fernet import Fernet
+    f = Fernet(_user_settings_key())
+    blob = f.encrypt(_json.dumps(data, separators=(",", ":")).encode("utf-8"))
+    _user_settings_path(user_id).write_bytes(blob)
+
+
+@router.get("/me/settings")
+async def me_settings_get(user: dict = Depends(auth.current_user)):
+    """Return the per-user settings blob.
+
+    E2E mode: returns the opaque {iv, ciphertext} as-is — the browser's
+    AES key is the only thing that can decrypt it. The backend never sees
+    plaintext.
+
+    Legacy plaintext mode: returns sanitized fields (kept for users who
+    haven't migrated to E2E yet). Connector credentials are redacted
+    server-side."""
+    s = _load_user_settings(user["id"])
+    if s.get("client_encrypted"):
+        return {
+            "ok": True,
+            "encrypted": True,
+            "iv": s.get("iv"),
+            "ciphertext": s.get("ciphertext"),
+        }
+    # Legacy plaintext path
+    if isinstance(s.get("connectors"), dict):
+        s["connectors"] = {
+            slug: {**{k: v for k, v in e.items() if k != "credential"},
+                   "credential": "***" if e.get("credential") else None}
+            for slug, e in s["connectors"].items()
+        }
+    return {"ok": True, "encrypted": False, "settings": s}
+
+
+@router.post("/me/settings")
+async def me_settings_post(
+    request: Request,
+    user: dict = Depends(auth.current_user),
+):
+    """Replace the per-user settings blob. Frontend sends the full set
+    each save; we trim None / empty strings before encrypting so the
+    on-disk blob is minimal. Returns the persisted settings for echo.
+
+    Parses body manually so FastAPI's strict body validation doesn't
+    422 us when the frontend sends an empty / partial JSON object."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # E2E mode: body is an opaque {iv, ciphertext} payload encrypted in
+    # the browser with AES-GCM. Backend never sees plaintext, so there's
+    # nothing to whitelist or sanitize — just bound the sizes and persist
+    # via Fernet at rest as defense-in-depth (a stolen .enc file alone
+    # doesn't decrypt to anything useful since Fernet's key lives off
+    # the file's directory and the inner ciphertext needs the browser's
+    # AES key besides).
+    if "ciphertext" in body and "iv" in body:
+        cleaned = {
+            "iv": str(body.get("iv", ""))[:64],
+            "ciphertext": str(body.get("ciphertext", ""))[:131072],  # 128KB cap
+            "client_encrypted": True,
+        }
+        _save_user_settings(user["id"], cleaned)
+        return {"ok": True, "encrypted": True}
+    # Whitelist + sanitize: max-length per field, drop unknown keys, strip.
+    ALLOWED = {
+        "display_name": 64,
+        "demo_age": 4,           # numeric string ≤9999
+        "demo_pronouns": 32,
+        "demo_gender": 64,
+        "demo_sexuality": 64,
+        "demo_race": 128,
+        "demo_employment": 128,
+        "demo_location": 128,
+    }
+    cleaned: dict = {}
+    if isinstance(body, dict):
+        for k, max_len in ALLOWED.items():
+            v = body.get(k)
+            if v is None:
+                continue
+            v_str = str(v).strip()
+            if not v_str:
+                continue
+            cleaned[k] = v_str[:max_len]
+        # Connectors: a sub-object {slug: {credential, configured_at, ...}}.
+        # Whitelist on the connector slug list (no arbitrary writes) and
+        # bound the credential length so a buggy frontend can't DOS the
+        # encryption layer with a 100MB blob.
+        connectors_in = body.get("connectors")
+        if isinstance(connectors_in, dict):
+            ALLOWED_CONNECTORS = {
+                # Productivity / collaboration
+                "gmail", "google_drive", "google_calendar", "notion",
+                "airtable", "canva", "figma", "zoom", "linear", "lucid",
+                "box", "spotify",
+                # Developer / infrastructure
+                "github_integration", "huggingface", "cloudflare", "postman",
+                # Healthcare / public registries
+                "npi_registry", "clinical_trials", "pubmed",
+                # Financial / business intelligence
+                "cb_insights", "sp_global", "fiscal_ai", "adis_insight",
+                # Other
+                "uber",
+                # Local MCP (no remote auth)
+                "android_mcp", "windows_mcp",
+            }
+            cc: dict = {}
+            for slug, entry in connectors_in.items():
+                if slug not in ALLOWED_CONNECTORS or not isinstance(entry, dict):
+                    continue
+                ce: dict = {}
+                cred = entry.get("credential")
+                if isinstance(cred, str) and cred.strip():
+                    ce["credential"] = cred.strip()[:8192]
+                ts = entry.get("configured_at")
+                if isinstance(ts, (int, float)):
+                    ce["configured_at"] = int(ts)
+                err = entry.get("error")
+                if isinstance(err, str) and err.strip():
+                    ce["error"] = err.strip()[:512]
+                if ce:
+                    cc[slug] = ce
+            if cc:
+                cleaned["connectors"] = cc
+    _save_user_settings(user["id"], cleaned)
+    # Echo the saved blob — but redact connector credentials so the wire
+    # response doesn't leak the secret right back out unencrypted. The
+    # frontend only needs to know "configured" status, not the value.
+    echo = dict(cleaned)
+    if "connectors" in echo:
+        echo["connectors"] = {
+            slug: {**{k: v for k, v in e.items() if k != "credential"},
+                   "credential": "***" if "credential" in e else None}
+            for slug, e in echo["connectors"].items()
+        }
+    return {"ok": True, "settings": echo}
+
+
+# ── Per-user UI preferences (plaintext, cross-device) ──────────────────
+#
+# Theme / palette / tint / bench cadence aren't sensitive — they're
+# rendering preferences. Storing them server-side as plaintext (not
+# encrypted with a per-device key) lets the same user pick them up on
+# any device they sign into. Lives at data/user_ui_prefs/<user_id>.json.
+
+
+def _ui_prefs_dir() -> Path:
+    repo = Path(__file__).resolve().parent.parent
+    p = repo / "data" / "user_ui_prefs"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _ui_prefs_path(user_id: int) -> Path:
+    return _ui_prefs_dir() / f"{int(user_id)}.json"
+
+
+def _load_ui_prefs(user_id: int) -> dict:
+    p = _ui_prefs_path(user_id)
+    if not p.exists():
+        return {}
+    try:
+        return _json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_ui_prefs(user_id: int, data: dict) -> None:
+    _ui_prefs_path(user_id).write_text(
+        _json.dumps(data, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+_UI_PREFS_ALLOWED = {
+    "theme":           {"type": "enum", "values": ["dark", "light"]},
+    "palette":         {"type": "enum", "values": [
+        "okabe_ito", "nejm", "jama", "viridis", "magma",
+        "npg", "aaas", "lancet", "ibm_carbon", "bloomberg",
+        "tableau10", "set1", "set2", "tol_vibrant", "tol_muted",
+    ]},
+    "tint":            {"type": "enum", "values": ["1", "2", "3", "4", "5"]},
+    "typeface":        {"type": "enum", "values": ["system", "times", "ibm_plex_sans"]},
+    "bench_cadence_s": {"type": "enum", "values": ["5", "10", "30", "60"]},
+    "dash_active_tab": {"type": "enum", "values": [
+        "overview", "users", "tools", "airgap", "errors", "bench",
+    ]},
+}
+
+
+@router.get("/me/ui_prefs")
+async def me_ui_prefs_get(user: dict = Depends(auth.current_user)):
+    """Return the current user's plaintext UI preferences (theme,
+    palette, tint, bench cadence). Empty {} on first call."""
+    return {"ok": True, "prefs": _load_ui_prefs(user["id"])}
+
+
+@router.post("/me/ui_prefs")
+async def me_ui_prefs_post(
+    request: Request,
+    user: dict = Depends(auth.current_user),
+):
+    """Merge new UI prefs into the user's saved blob. Whitelisted enum
+    keys only — silently drops anything else so a buggy frontend can't
+    write garbage. Body is a partial dict; missing keys keep their
+    current value."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    cur = _load_ui_prefs(user["id"])
+    for k, spec in _UI_PREFS_ALLOWED.items():
+        if k not in body:
+            continue
+        v = body[k]
+        if v is None:
+            cur.pop(k, None)
+            continue
+        v_str = str(v)
+        if spec["type"] == "enum" and v_str not in spec["values"]:
+            continue
+        cur[k] = v_str
+    _save_ui_prefs(user["id"], cur)
+    return {"ok": True, "prefs": cur}
 
 
 # ── Metrics ─────────────────────────────────────────────────────────────

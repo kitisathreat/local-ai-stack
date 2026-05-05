@@ -194,6 +194,12 @@ class VRAMScheduler:
         # poll cycles (cheap on Windows: tasklist + netstat take ~10ms).
         self._orphan_reaper: Callable[[], Awaitable[list[int]]] | None = None
         self._orphan_reap_every_n_polls = 6   # ~30s at default poll_interval=5
+        # Pressure threshold (GB of NVML-reported VRAM use) above which
+        # the sweeper fires the reaper on every tick instead of waiting
+        # for the periodic cadence. Defaults to 18 on 24 GB cards —
+        # leaves a 6 GB cushion before triggering. Bench mode validated
+        # this prevents tier-swap eviction cascades.
+        self._orphan_reap_pressure_gb = 18.0
         self._sweeper_tick = 0
         self.orphans_reaped_total = 0
         self._orphan_reap_log: list[dict] = []
@@ -353,9 +359,47 @@ class VRAMScheduler:
                 async with self._lock:
                     m = self.loaded.get(tier_id)
                     if m and m.state == ModelState.RESIDENT:
+                        # LIVENESS RECONCILIATION (added May 2026):
+                        # llama-server occasionally dies mid-cell (granite
+                        # at slot saturation, Qwen-9B at long prompts, etc).
+                        # Before the May fix, the scheduler kept its
+                        # `loaded[tier]=RESIDENT` state and silently routed
+                        # all subsequent traffic to a dead socket — producing
+                        # tok=0 cascades that polluted the bench. We now
+                        # quick-check the proc handle on EVERY acquire so a
+                        # single dead llama-server triggers respawn instead
+                        # of poisoning every cell that follows.
+                        proc_dead = False
+                        try:
+                            tier_obj = self.tiers.get(tier_id)
+                            if tier_obj:
+                                client = self._loader_clients.get(tier_obj.backend) if hasattr(self, "_loader_clients") else None
+                                if client is None:
+                                    # Cheap fallback: import the singleton.
+                                    from . import config as _cfg_mod  # noqa: F401
+                                    pass
+                            # If we have a backend client registered (set in
+                            # main.py via `clients`), inspect the per-tier
+                            # process handle directly.
+                            from .backends.llama_cpp import LlamaCppClient
+                            if hasattr(self, "_llama_cpp_client"):
+                                proc = self._llama_cpp_client.processes.get(tier_id)
+                                if proc and not proc.is_alive():
+                                    proc_dead = True
+                        except Exception:
+                            pass
+                        if proc_dead:
+                            logger.warning(
+                                "Liveness check: tier %s llama-server is dead — "
+                                "evicting stale RESIDENT entry so next request "
+                                "triggers fresh spawn", tier_id,
+                            )
+                            await self._unload(m, reason="dead-process")
+                            m = None
                         # Variant mismatch is treated like a config change:
                         # the wrong variant is loaded, so evict and reload.
                         # If non-idle, fall through into the queue path.
+                    if m and m.state == ModelState.RESIDENT:
                         variant_mismatch = (
                             active_variant is not None
                             and m.variant is not None
@@ -673,9 +717,18 @@ class VRAMScheduler:
             return need + headroom <= actual_free
 
         def _current_projected() -> float:
+            # Exclude the target tier itself — when it's already resident,
+            # counting its cost in "other tiers used" would double-count
+            # against `need` and force a self-eviction loop. (Observed
+            # May 2026: coding tier loaded at 13 GB, request for coding
+            # came in, scheduler computed 13+13+headroom > 24 and
+            # evicted the only resident model — itself — triggering an
+            # 8-second spawn window where every concurrent request
+            # 503'd with "All connection attempts failed".)
             return sum(
                 m.effective_cost() for m in self.loaded.values()
                 if m.state != ModelState.EVICTING
+                and m.tier_id != tier_id
             )
 
         if _fits(_current_projected()):
@@ -795,31 +848,50 @@ class VRAMScheduler:
     async def _sweep_once(self) -> None:
         self._sweeper_tick += 1
 
-        # Pass 0 — periodic orphan reap. Untracked llama-server processes
-        # (left from a backend crash, an unclean refresh, or a manual
-        # `taskkill` of the wrong PID) can hold GPU memory the scheduler
-        # can never see in its registry, breaking the NVML cross-check
-        # and producing false "Cannot fit" errors. Reap them on a slow
-        # cadence so steady-state operation self-heals without anyone
-        # hitting POST /admin/vram/kill-orphans manually.
-        if (
-            self._orphan_reaper is not None
-            and self._sweeper_tick % self._orphan_reap_every_n_polls == 0
-        ):
+        # Pass 0 — orphan reap. Two triggers:
+        #   (a) Periodic — every ``_orphan_reap_every_n_polls`` ticks
+        #       (~30 s at default poll_interval=5). Slow steady-state
+        #       cadence so the registry self-heals without operators
+        #       hitting POST /admin/vram/kill-orphans manually.
+        #   (b) Pressure-triggered — when NVML-reported VRAM use exceeds
+        #       ``orphan_reap_pressure_gb`` GB. Independent of the tick
+        #       cadence, so a sudden spike in untracked VRAM gets reaped
+        #       within the next sweep (~5 s) instead of waiting up to
+        #       30 s. Set to 18 GB by default on a 24 GB card so we
+        #       always have a 6 GB cushion before triggering.
+        run_reap = False
+        run_reason = ""
+        if self._orphan_reaper is not None:
+            if self._sweeper_tick % self._orphan_reap_every_n_polls == 0:
+                run_reap = True
+                run_reason = "periodic"
+            else:
+                # Cheap NVML probe — only fires the reaper if VRAM use
+                # is actually high. The probe.free_gb() call is the same
+                # one the residency planner uses, so no extra cost.
+                try:
+                    free_now = self.probe.free_gb(self.vram.total_vram_gb)
+                    used_now = max(0.0, self.vram.total_vram_gb - free_now)
+                    if used_now >= self._orphan_reap_pressure_gb:
+                        run_reap = True
+                        run_reason = f"pressure ({used_now:.1f} GB used)"
+                except Exception:
+                    pass
+        if run_reap:
             try:
                 killed = await self._orphan_reaper()
             except Exception as exc:
-                logger.warning("Periodic orphan reap raised: %s", exc)
+                logger.warning("Orphan reap (%s) raised: %s", run_reason, exc)
                 killed = []
             if killed:
                 self.orphans_reaped_total += len(killed)
-                entry = {"ts": time.time(), "pids": list(killed)}
+                entry = {"ts": time.time(), "pids": list(killed), "trigger": run_reason}
                 self._orphan_reap_log.append(entry)
                 if len(self._orphan_reap_log) > self._orphan_reap_log_max:
                     self._orphan_reap_log = self._orphan_reap_log[-self._orphan_reap_log_max:]
                 logger.warning(
-                    "Periodic orphan-reap killed %d llama-server PID(s): %s",
-                    len(killed), killed,
+                    "Orphan-reap (%s) killed %d llama-server PID(s): %s",
+                    run_reason, len(killed), killed,
                 )
 
         # Pass 1 — proactive idle eviction. Drop any non-pinned, idle

@@ -27,17 +27,29 @@ def _datasets_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "data" / "eval" / "datasets"
 
 
-Depth = Literal["fast", "medium", "full"]
+Depth = Literal["fast", "medium", "full", "stat_sig", "stat_sig_strict"]
 # Per-dataset sample sizes per depth. Tuned so a "fast" run completes
 # in ~30 minutes per tier on a 25 tok/s mid-tier; "medium" gives more
 # statistical confidence; "full" is for the overnight definitive bench.
 _DEPTHS: dict[str, dict[Depth, int]] = {
-    "humaneval":  {"fast": 30,  "medium": 80,  "full": 164},   # full == all problems
-    "gsm8k":      {"fast": 50,  "medium": 200, "full": 1319},
-    "aime2024":   {"fast": 15,  "medium": 30,  "full": 30},    # only ~30 exist
-    "mmlu":       {"fast": 50,  "medium": 150, "full": 399},   # 399 is the vendored subset
-    "needle":     {"fast": 4,   "medium": 8,   "full": 16},    # ctx-length × depth
+    "humaneval":  {"fast": 30,  "medium": 80,  "full": 164,   "stat_sig": 164,  "stat_sig_strict": 164},
+    "gsm8k":      {"fast": 50,  "medium": 200, "full": 1319,  "stat_sig": 200,  "stat_sig_strict": 385},
+    "aime2024":   {"fast": 15,  "medium": 30,  "full": 30,    "stat_sig": 30,   "stat_sig_strict": 30},
+    "mmlu":       {"fast": 50,  "medium": 150, "full": 399,   "stat_sig": 200,  "stat_sig_strict": 385},
+    "needle":     {"fast": 4,   "medium": 8,   "full": 16,    "stat_sig": 16,   "stat_sig_strict": 16},
+    "mmlu_pro":   {"fast": 100, "medium": 300, "full": 12032, "stat_sig": 200,  "stat_sig_strict": 385},
+    "math":       {"fast": 50,  "medium": 150, "full": 367,   "stat_sig": 200,  "stat_sig_strict": 367},
+    "ifeval":     {"fast": 50,  "medium": 200, "full": 541,   "stat_sig": 200,  "stat_sig_strict": 385},
+    "mbpp":       {"fast": 30,  "medium": 100, "full": 257,   "stat_sig": 200,  "stat_sig_strict": 257},
+    "mtbench":    {"fast": 30,  "medium": 60,  "full": 80,    "stat_sig": 80,   "stat_sig_strict": 80},
 }
+# stat_sig depth: N=200 per cell → ±7pp at 95% CI for single-cell point
+#                 estimate (z=1.96, p=0.5 worst case), and detects an
+#                 ~8pp difference between two cells at α=0.05 / power 0.80.
+# stat_sig_strict: N=385 → ±5pp at 95% CI. Doubles wall time of the
+#                  larger-dataset cells. Smaller-dataset cells (AIME=30,
+#                  HumanEval=164, needle=16) reuse their full count
+#                  since those are the entire dataset.
 
 
 @dataclass
@@ -267,4 +279,174 @@ def load_needle(depth: Depth = "fast") -> list[Problem]:
                 answer=secret,
                 meta={"ctx_target": ctx_target, "position": pos},
             ))
+    return out
+
+
+# ── MMLU-Pro — specialized knowledge, 10-choice ─────────────────────────────
+
+def load_mmlu_pro(depth: Depth = "fast") -> list[Problem]:
+    """MMLU-Pro: 12K specialized-domain multiple-choice. Each row has up to
+    10 options (A-J), `answer` is the letter, `category` is one of 14
+    domains (biology, business, chemistry, ...). Stratified sample so
+    each category gets ~equal weight at fast/medium depths."""
+    df = pd.read_parquet(_datasets_dir() / "mmlu_pro" / "test.parquet")
+    rows = df.to_dict("records")
+    n = _DEPTHS["mmlu_pro"][depth]
+    sampled = _sample(rows, n)
+    letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+    out: list[Problem] = []
+    for i, row in enumerate(sampled):
+        choices = list(row["options"])[:10]
+        choices_block = "\n".join(
+            f"  {l}. {c}" for l, c in zip(letters, choices) if c
+        )
+        out.append(Problem(
+            kind="mmlu_pro",
+            id=f"mmlu_pro-{row['category']}-{i:04d}",
+            prompt=(
+                f"Domain: {row['category']}\n\n"
+                f"Question: {row['question']}\n\n"
+                f"Choices:\n{choices_block}\n\n"
+                "Respond with the single letter of the correct choice on "
+                "the last line, prefixed by '####'."
+            ),
+            answer=str(row["answer"]).strip().upper(),
+            meta={"category": str(row["category"])},
+        ))
+    return out
+
+
+# ── MATH — Hendrycks competition mathematics, levels 3-5 ────────────────────
+
+def load_math(depth: Depth = "fast") -> list[Problem]:
+    """MATH (Hendrycks): hard competition math problems. Answers can be
+    integers, fractions (e.g. ``\\frac{1}{2}``), or LaTeX expressions
+    (e.g. ``\\sqrt{3}``). The grader accepts any answer that matches the
+    canonical form after light normalisation. We vendor only levels 3-5
+    (1-2 overlap with GSM8K)."""
+    df = pd.read_parquet(_datasets_dir() / "math" / "test.parquet")
+    rows = df.to_dict("records")
+    n = _DEPTHS["math"][depth]
+    sampled = _sample(rows, n)
+    out: list[Problem] = []
+    for i, row in enumerate(sampled):
+        out.append(Problem(
+            kind="math",
+            id=f"math-L{row['level']}-{i:04d}",
+            prompt=(
+                "Solve the following competition mathematics problem. The "
+                "answer may be a number, fraction, or simple LaTeX "
+                "expression. Show your work, then give your final answer "
+                "on the last line wrapped in \\boxed{...}.\n\n"
+                + str(row["problem"])
+            ),
+            answer=str(row["answer"]),
+            meta={
+                "level": int(row["level"]),
+                "subject": str(row["subject"]),
+            },
+        ))
+    return out
+
+
+# ── IFEval — instruction-following with verifiable constraints ──────────────
+
+def load_ifeval(depth: Depth = "fast") -> list[Problem]:
+    """IFEval: 541 prompts where each instruction encodes a machine-
+    checkable constraint (e.g. "respond in exactly 3 paragraphs",
+    "use at least 5 keywords from this list"). The grader verifies the
+    response satisfies ALL declared instruction_id constraints. The
+    `kwargs` field carries any per-instruction parameters."""
+    df = pd.read_parquet(_datasets_dir() / "ifeval" / "test.parquet")
+    rows = df.to_dict("records")
+    n = _DEPTHS["ifeval"][depth]
+    sampled = _sample(rows, n)
+    out: list[Problem] = []
+    for i, row in enumerate(sampled):
+        # parquet -> dict can yield numpy arrays for list columns; coerce
+        # explicitly so downstream ``or []`` checks don't trip on numpy
+        # truthiness ambiguity.
+        instr_raw = row.get("instruction_id_list")
+        instr_list: list = list(instr_raw) if instr_raw is not None else []
+        kwargs_raw = row.get("kwargs")
+        kwargs_list: list = list(kwargs_raw) if kwargs_raw is not None else []
+        out.append(Problem(
+            kind="ifeval",
+            id=f"ifeval-{row['key']}",
+            prompt=str(row["prompt"]),
+            answer={
+                "instruction_id_list": instr_list,
+                "kwargs": kwargs_list,
+            },
+            meta={"key": int(row["key"])},
+        ))
+    return out
+
+
+# ── MBPP — basic Python programming problems ───────────────────────────────
+
+def load_mbpp(depth: Depth = "fast") -> list[Problem]:
+    """MBPP (sanitized): 257 entry-level Python problems. The model is
+    given a natural-language description plus 1-3 sample asserts; the
+    grader runs the model's code against the held-out `test_list`."""
+    df = pd.read_parquet(_datasets_dir() / "mbpp" / "test.parquet")
+    rows = df.to_dict("records")
+    n = _DEPTHS["mbpp"][depth]
+    sampled = _sample(rows, n)
+    out: list[Problem] = []
+    for i, row in enumerate(sampled):
+        # parquet -> dict can yield numpy arrays for list columns;
+        # coerce explicitly to avoid numpy truthiness ambiguity.
+        tests_raw = row.get("test_list")
+        tests = list(tests_raw) if tests_raw is not None else []
+        sample_assert = tests[0] if tests else ""
+        out.append(Problem(
+            kind="mbpp",
+            id=f"mbpp-{row['task_id']}",
+            prompt=(
+                "Write a Python function that solves the problem below. "
+                "Wrap your final code in a ```python fence. Make sure it "
+                "passes this sample test:\n"
+                f"  {sample_assert}\n\n"
+                "Problem:\n" + str(row["prompt"])
+            ),
+            answer={
+                "test_list": tests,
+                "test_setup_code": str(row.get("test_setup_code") or ""),
+                "code": str(row.get("code") or ""),
+            },
+            meta={"task_id": int(row["task_id"])},
+        ))
+    return out
+
+
+# ── MT-Bench — LLM-as-judge clarity scoring ────────────────────────────────
+
+def load_mtbench(depth: Depth = "fast") -> list[Problem]:
+    """MT-Bench: 80 prompts spanning 8 categories (writing, roleplay,
+    reasoning, math, coding, extraction, stem, humanities). Single-turn
+    only — we feed turn1 to the tier under test, then a *judge* model
+    scores the response 1-10 for clarity, helpfulness, and depth. The
+    grader's threshold is `score >= 7` = PASS. Reference-based prompts
+    (math, reasoning, coding) get the canonical `reference1` answer in
+    the judge's prompt for grounded scoring."""
+    df = pd.read_parquet(_datasets_dir() / "mtbench" / "prompts.parquet")
+    rows = df.to_dict("records")
+    n = _DEPTHS["mtbench"][depth]
+    sampled = _sample(rows, n)
+    out: list[Problem] = []
+    for i, row in enumerate(sampled):
+        out.append(Problem(
+            kind="mtbench",
+            id=f"mtbench-{row['question_id']}-{row['category']}",
+            prompt=str(row["turn1"]),
+            answer={
+                "category": str(row["category"]),
+                "reference": str(row.get("reference1") or ""),
+            },
+            meta={
+                "question_id": int(row["question_id"]),
+                "category": str(row["category"]),
+            },
+        ))
     return out

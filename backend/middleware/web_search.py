@@ -43,12 +43,46 @@ TRIGGER_PATTERNS = [
     r"\bhow much (does|is|are|do)\b",
 ]
 
+# Knowledge-recall patterns — questions where the model is asked to look
+# up a specific named fact, regardless of recency. These are the cases
+# where web-search augmentation can actually help even when no date
+# keyword is present (factual MMLU-style questions, lookup-shaped
+# wh-queries about named entities, year-anchored events).
+LOOKUP_PATTERNS = [
+    # MMLU/quiz-style "Choices:" block followed by A./B./C./D. lines
+    r"choices?\s*:\s*\n[\s\S]*?\b[A-D]\.",
+    # Wh-questions about specific named entities (capitalized noun)
+    r"\bwh(at|o|ere|en|ich)\s+(is|are|was|were|did|do|does|caused|invented|wrote|founded|composed)\b",
+    # Imperative lookup directives
+    r"\b(find|list|define|name|identify|describe|explain)\s+(the|a|an|all|each|every)\b",
+    # Year-anchored historical references (1900–2099)
+    r"\b(19|20)\d{2}\b",
+    # Specific entity types that almost always benefit from a lookup
+    r"\b(capital|population|founder|author|director|president|inventor|composer|equation|formula|theorem|definition)\s+of\b",
+]
+
 
 def needs_search(message: str, always: bool = False) -> bool:
-    if always:
+    """Decide whether to inject web-search results into ``message``.
+
+    Order of precedence:
+      1. ``always=True`` argument (request-level override).
+      2. ``LAI_FORCE_WEB_SEARCH=1`` env (operator override — used by the
+         knowledge+tools bench so every problem gets augmented even when
+         the prompt doesn't trip the heuristics).
+      3. ``TRIGGER_PATTERNS`` — recency / news / current-state words.
+      4. ``LOOKUP_PATTERNS`` — factual-lookup questions about specific
+         named entities or quiz-style multiple choice.
+
+    Returns False when the message is empty / too short / clearly not a
+    lookup-shaped query.
+    """
+    if always or os.getenv("LAI_FORCE_WEB_SEARCH") == "1":
         return True
     msg = message.lower()
-    return any(re.search(p, msg) for p in TRIGGER_PATTERNS)
+    if any(re.search(p, msg) for p in TRIGGER_PATTERNS):
+        return True
+    return any(re.search(p, msg, re.MULTILINE) for p in LOOKUP_PATTERNS)
 
 
 # ── Provider protocol ─────────────────────────────────────────────────────
@@ -193,9 +227,16 @@ async def inject_web_results(
     """Mutate-and-return. Appends formatted search results to the last
     user message if trigger patterns match.
 
-    Short-circuits to a no-op when airgap mode is on — the whole point
-    of airgap is that we never reach out to the internet. Logged at
-    INFO so operators can see the gate firing."""
+    Short-circuits to a no-op when:
+      - LAI_DISABLE_WEB_SEARCH=1 is set (bench mode — don't pollute prompts
+        with multi-megabyte web result blobs that blow past the model's
+        context window). Reads the env var on every call so a config
+        toggle takes effect without restart.
+      - Airgap mode is on — the whole point of airgap is that we never
+        reach out to the internet.
+    Logged at INFO so operators can see the gate firing."""
+    if os.getenv("LAI_DISABLE_WEB_SEARCH") == "1":
+        return messages
     if airgap.is_enabled():
         logger.info("Airgap mode ON — skipping web-search injection")
         return messages
@@ -215,8 +256,14 @@ async def inject_web_results(
 
     results = await search(last_user_text)
     block = format_results(results)
+    logger.info(
+        "web-search inject: results=%d block_len=%d original_prompt_len=%d",
+        len(results), len(block), len(last_user_text),
+    )
     if block:
         msg = messages[last_user_idx]
         if isinstance(msg.content, str):
             msg.content = f"{msg.content}\n\n{block}"
+            logger.info("web-search injected: final_prompt_len=%d head=%r tail=%r",
+                        len(msg.content), msg.content[:200], msg.content[-200:])
     return messages

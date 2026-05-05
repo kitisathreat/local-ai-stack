@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+  <meta name="theme-color" content="#0d1117">
+  <title>Bench Dashboard · local-ai-stack</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel2: #1c2129;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --good: #3fb950;
+      --warn: #d29922;
+      --bad: #f85149;
+      --grad-0: #1c2129;
+      --grad-1: #2d2418;
+      --grad-2: #3a2f1c;
+      --grad-3: #54461d;
+      --grad-4: #4a611f;
+      --grad-5: #2ea043;
+      --grad-6: #3fb950;
+      --pill-bg: #21262d;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --panel: #f6f8fa;
+        --panel2: #ffffff;
+        --border: #d0d7de;
+        --text: #1f2328;
+        --muted: #6e7781;
+        --accent: #0969da;
+        --good: #1a7f37;
+        --warn: #9a6700;
+        --bad: #cf222e;
+        --grad-0: #f6f8fa;
+        --grad-1: #fff8e8;
+        --grad-2: #ffe5b4;
+        --grad-3: #ffcc80;
+        --grad-4: #c4e8a4;
+        --grad-5: #a3e29d;
+        --grad-6: #6dd58c;
+        --pill-bg: #eaeef2;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+    @media (max-width: 600px) {
+      html, body { font-size: 12px; }
+      body { padding: 8px; }
+      main { gap: 10px; }
+      .panel { padding: 10px 12px; }
+      h2 { font-size: 1em; }
+    }
+
+    header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 8px;
+      position: sticky; top: 0; z-index: 10;
+    }
+    h1 { margin: 0; font-size: 1em; font-weight: 600; }
+    .meta { color: var(--muted); font-size: 0.85em; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .meta a { color: var(--accent); text-decoration: none; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 12px;
+      background: var(--pill-bg); font-size: 0.85em; color: var(--text);
+    }
+    .pill.live { background: var(--good); color: #fff; }
+    .pill.error { background: var(--bad); color: #fff; }
+
+    main {
+      padding: 12px 14px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .panel h2 {
+      margin: 0 0 8px 0;
+      font-size: 0.95em;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    /* Progress bars */
+    .progress {
+      width: 100%; height: 14px; background: var(--pill-bg);
+      border-radius: 7px; overflow: hidden; position: relative;
+    }
+    .progress > .bar {
+      height: 100%; background: linear-gradient(90deg, var(--accent), var(--good));
+      transition: width 0.3s;
+    }
+    .progress.lg { height: 22px; }
+    .progress.lg > .bar { background: linear-gradient(90deg, #2188ff, #2ea043); }
+    .pp-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; flex-wrap: wrap; }
+    .pp-row .lbl { flex: 0 0 140px; color: var(--muted); font-size: 0.9em; }
+    .pp-row .val { flex: 1 1 110px; font-variant-numeric: tabular-nums; font-size: 0.9em; min-width: 0; }
+    .pp-row .pct { flex: 0 0 70px; text-align: right; font-variant-numeric: tabular-nums; }
+    .pp-row .progress { flex: 1 1 100%; }
+    @media (max-width: 600px) {
+      .pp-row {
+        /* On a phone-narrow viewport (e.g., the bench iframe nested
+           inside the settings modal at ~345px), the original four-column
+           flex row overflows. Stack: label on its own line, value+pct
+           inline, progress bar full-width below. */
+        flex-direction: column; align-items: stretch; gap: 4px;
+      }
+      .pp-row .lbl { flex: none; }
+      .pp-row .val { flex: 1 1 auto; }
+      .pp-row .pct { flex: none; text-align: left; }
+      .pp-row .progress { flex: none; width: 100%; }
+    }
+
+    /* Heatmap grid — horizontally scrollable on narrow screens; the
+       column headers are full capability names rendered vertically so
+       they fit even on phones without abbreviation. */
+    .heatmap-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .heatmap {
+      display: grid;
+      gap: 2px;
+      grid-template-columns: 140px repeat(10, minmax(40px, 1fr));
+      font-size: 0.85em;
+      min-width: 600px;
+    }
+    @media (max-width: 600px) {
+      .heatmap { grid-template-columns: 90px repeat(10, 38px); font-size: 0.75em; min-width: 0; }
+    }
+    .heatmap .cap-hdr {
+      writing-mode: vertical-rl; transform: rotate(180deg);
+      text-align: left; padding: 6px 2px;
+      color: var(--muted); font-size: 0.8em;
+      white-space: nowrap;
+      align-self: end;
+      min-height: 130px;
+    }
+    .heatmap .tier-hdr {
+      padding: 4px 8px; color: var(--muted);
+      align-self: center; font-weight: 500;
+      white-space: nowrap;
+    }
+    .heatmap .cell {
+      aspect-ratio: 1;
+      min-height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      font-variant-numeric: tabular-nums;
+      font-size: 0.95em; font-weight: 500;
+      border-radius: 3px;
+      cursor: default;
+      position: relative;
+    }
+    .heatmap .cell[data-empty="1"] { background: var(--grad-0); color: var(--muted); }
+    .heatmap .cell:hover .tooltip { display: block; }
+    .tooltip {
+      display: none; position: absolute; z-index: 5;
+      background: var(--panel2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 6px 8px; font-size: 0.85em;
+      bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    /* Tier bar chart */
+    .tier-bars { display: grid; grid-template-columns: 130px 1fr 100px; gap: 8px; align-items: center; }
+    @media (max-width: 600px) { .tier-bars { grid-template-columns: 90px 1fr 80px; } }
+    .tier-bars .lbl { color: var(--muted); }
+    .tier-bars .lbl.empty { color: var(--border); }
+
+    /* Condition deltas */
+    .cond-delta { display: grid; grid-template-columns: 160px 80px 1fr 80px; gap: 8px; align-items: center; }
+    @media (max-width: 600px) { .cond-delta { grid-template-columns: 130px 70px 1fr 70px; } }
+    .delta-bar {
+      position: relative; height: 14px; background: var(--pill-bg);
+      border-radius: 7px;
+    }
+    .delta-bar::before {
+      content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+      background: var(--muted);
+    }
+    .delta-bar .marker {
+      position: absolute; top: 0; bottom: 0; width: 4px; border-radius: 2px;
+    }
+    .delta-bar .marker.pos { background: var(--good); }
+    .delta-bar .marker.neg { background: var(--bad); }
+
+    /* Stats table */
+    table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+    th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; font-size: 0.85em; text-transform: uppercase; }
+    td.num { font-variant-numeric: tabular-nums; text-align: right; }
+    tr.live td { background: rgba(63, 185, 80, 0.08); }
+
+    .legend {
+      display: flex; gap: 12px; flex-wrap: wrap;
+      color: var(--muted); font-size: 0.85em; margin-top: 6px;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 4px; }
+    .legend .swatch { width: 14px; height: 14px; border-radius: 2px; }
+
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .controls select, .controls button {
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; padding: 4px 8px; font-family: inherit; font-size: inherit;
+    }
+    .controls button:hover { border-color: var(--accent); cursor: pointer; }
+
+    details summary {
+      cursor: pointer; color: var(--muted); padding: 4px 0;
+    }
+    details[open] summary { color: var(--text); }
+    pre { margin: 0; padding: 8px; background: var(--panel2); border-radius: 4px;
+          font-size: 0.85em; overflow-x: auto; }
+    .small { font-size: 0.85em; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Bench Dashboard</h1>
+    <div class="meta">
+      <span id="status" class="pill">connecting…</span>
+      <span class="controls">
+        refresh
+        <select id="cadence">
+          <option value="5">5s</option>
+          <option value="10" selected>10s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+        </select>
+        <button id="refreshNow">↻</button>
+      </span>
+      <a href="/admin">admin</a>
+    </div>
+  </header>
+  <main>
+    <!-- Live progress (current cell + condition + overall) -->
+    <div class="panel" id="livePanel" style="display:none">
+      <h2>Live Progress</h2>
+      <div class="pp-row">
+        <span class="lbl">Current cell</span>
+        <span class="val mono" id="currentLabel">—</span>
+        <span class="progress lg"><span class="bar" id="currentBar" style="width:0%"></span></span>
+        <span class="pct" id="currentPct">—</span>
+      </div>
+      <div class="pp-row">
+        <span class="lbl">Condition</span>
+        <span class="val mono" id="condLabel">—</span>
+        <span class="progress"><span class="bar" id="condBar" style="width:0%"></span></span>
+        <span class="pct" id="condPct">—</span>
+      </div>
+      <div class="pp-row">
+        <span class="lbl">Overall</span>
+        <span class="val mono" id="overallLabel">—</span>
+        <span class="progress"><span class="bar" id="overallBar" style="width:0%"></span></span>
+        <span class="pct" id="overallPct">—</span>
+      </div>
+      <div class="small" id="statsLine">—</div>
+    </div>
+
+    <!-- Pass-rate heatmap: tier × capability -->
+    <div class="panel">
+      <h2>Pass-rate Heatmap (tier × capability, averaged across conditions)</h2>
+      <div class="heatmap-wrap"><div class="heatmap" id="heatmap"></div></div>
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--grad-0)"></span>no data</span>
+        <span><span class="swatch" style="background:var(--grad-1)"></span>0–20%</span>
+        <span><span class="swatch" style="background:var(--grad-2)"></span>20–40%</span>
+        <span><span class="swatch" style="background:var(--grad-3)"></span>40–60%</span>
+        <span><span class="swatch" style="background:var(--grad-4)"></span>60–75%</span>
+        <span><span class="swatch" style="background:var(--grad-5)"></span>75–90%</span>
+        <span><span class="swatch" style="background:var(--grad-6)"></span>90–100%</span>
+      </div>
+    </div>
+
+    <!-- Per-tier averages -->
+    <div class="panel">
+      <h2>Tier Averages (all caps × all conditions)</h2>
+      <div id="tierBars"></div>
+    </div>
+
+    <!-- Condition deltas -->
+    <div class="panel">
+      <h2>Δ Condition Deltas (avg pass-rate vs baseline off/off)</h2>
+      <div id="condDeltas"></div>
+      <div class="small">Baseline = think=off, tools=off. Bars show ±30 pp range; green=better, red=worse.</div>
+    </div>
+
+    <!-- Two-proportion z-tests for condition comparisons -->
+    <div class="panel">
+      <h2>Statistical Tests (two-proportion z, α=0.05)</h2>
+      <div id="zTests"></div>
+      <div class="small">
+        Aggregates pooled passes across all (tier, capability) cells per condition.
+        <strong>p &lt; 0.05</strong> = significant difference at 95% confidence.
+        Tests use the standard normal approximation with pooled variance —
+        valid when each group has n &gt; 30 (true once a few cells finish).
+      </div>
+    </div>
+
+    <!-- Latency / throughput per cell -->
+    <div class="panel">
+      <h2>Latency by Tier × Capability (mean s/problem)</h2>
+      <div id="latencies" style="overflow-x:auto"></div>
+      <div class="small">
+        Mean wall-time per problem in seconds, averaged across all
+        finished cells for that (tier, capability) pair. Lower is better.
+      </div>
+    </div>
+
+    <!-- Detailed cell table with Wilson CIs -->
+    <div class="panel">
+      <h2>Cell Results (with Wilson 95% CI)</h2>
+      <details>
+        <summary>Show detailed table (<span id="cellCount">0</span> cells)</summary>
+        <div style="overflow-x:auto">
+          <table id="cellsTable">
+            <thead>
+              <tr>
+                <th>tier</th><th>capability</th><th>think</th><th>tools</th>
+                <th class="num">n</th>
+                <th class="num">passed</th>
+                <th class="num">rate %</th>
+                <th class="num">95% CI</th>
+                <th class="num">CI ±pp</th>
+                <th class="num">wall</th>
+              </tr>
+            </thead>
+            <tbody id="cellsBody"></tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+
+    <!-- ASCII raw fallback -->
+    <details class="panel">
+      <summary>Raw ASCII dashboard</summary>
+      <pre id="asciiDash" class="mono">loading…</pre>
+    </details>
+  </main>
+
+  <script>
+    const TIERS = ["swarm", "fast", "versatile", "coding", "highest_quality", "reasoning_max"];
+    const CAPS = [
+      "knowledge", "knowledge_specialized", "math", "math_competition",
+      "reasoning", "coding", "coding_basic", "intent", "clarity", "long_context"
+    ];
+    const TIER_LABEL = {
+      "swarm": "swarm", "fast": "fast", "versatile": "versatile",
+      "coding": "coding", "highest_quality": "highest_quality", "reasoning_max": "reasoning_max"
+    };
+
+    function pctColor(pct) {
+      if (pct == null) return 'var(--grad-0)';
+      if (pct >= 90) return 'var(--grad-6)';
+      if (pct >= 75) return 'var(--grad-5)';
+      if (pct >= 60) return 'var(--grad-4)';
+      if (pct >= 40) return 'var(--grad-3)';
+      if (pct >= 20) return 'var(--grad-2)';
+      return 'var(--grad-1)';
+    }
+    function fmtSec(s) {
+      if (!s) return '—';
+      if (s < 90) return Math.round(s) + 's';
+      if (s < 3600) return Math.round(s/60) + 'm';
+      return (s/3600).toFixed(1) + 'h';
+    }
+
+    function renderHeatmap(data) {
+      const grid = document.getElementById('heatmap');
+      grid.innerHTML = '';
+      // Header row: empty + capabilities
+      const corner = document.createElement('div');
+      corner.className = 'tier-hdr';
+      grid.appendChild(corner);
+      for (const cap of CAPS) {
+        const h = document.createElement('div');
+        h.className = 'cap-hdr';
+        h.textContent = cap;
+        h.title = cap;
+        grid.appendChild(h);
+      }
+      // Build per-(tier,cap) average across all completed cells
+      const all = data.cells.concat(data.current ? [data.current] : []);
+      const grouped = {};
+      for (const c of all) {
+        if (c.passed + c.failed + c.errors === 0) continue;
+        const k = c.tier + '|' + c.capability;
+        grouped[k] = grouped[k] || [];
+        grouped[k].push(c.pass_rate * 100);
+      }
+      for (const tier of TIERS) {
+        const tlabel = document.createElement('div');
+        tlabel.className = 'tier-hdr';
+        tlabel.textContent = TIER_LABEL[tier] || tier;
+        grid.appendChild(tlabel);
+        for (const cap of CAPS) {
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          const k = tier + '|' + cap;
+          const samples = grouped[k];
+          if (!samples) {
+            cell.dataset.empty = '1';
+            cell.textContent = '—';
+          } else {
+            const avg = samples.reduce((a,b)=>a+b,0) / samples.length;
+            cell.style.background = pctColor(avg);
+            cell.textContent = avg.toFixed(0);
+            const tip = document.createElement('span');
+            tip.className = 'tooltip';
+            tip.textContent = `${tier} × ${cap}: ${avg.toFixed(1)}% (n samples = ${samples.length})`;
+            cell.appendChild(tip);
+          }
+          grid.appendChild(cell);
+        }
+      }
+    }
+
+    function renderTierBars(data) {
+      const root = document.getElementById('tierBars');
+      root.innerHTML = '';
+      const all = data.cells.concat(data.current ? [data.current] : []);
+      for (const tier of TIERS) {
+        const samples = all.filter(c => c.tier === tier && c.passed + c.failed > 0);
+        const row = document.createElement('div');
+        row.className = 'tier-bars';
+        const lbl = document.createElement('div');
+        lbl.className = 'lbl' + (samples.length === 0 ? ' empty' : '');
+        lbl.textContent = TIER_LABEL[tier] || tier;
+        row.appendChild(lbl);
+        const bar = document.createElement('div');
+        bar.className = 'progress';
+        const inner = document.createElement('span');
+        inner.className = 'bar';
+        if (samples.length === 0) {
+          inner.style.width = '0%';
+        } else {
+          const avg = samples.reduce((a,b) => a + b.pass_rate * 100, 0) / samples.length;
+          inner.style.width = avg + '%';
+        }
+        bar.appendChild(inner);
+        row.appendChild(bar);
+        const right = document.createElement('div');
+        right.className = 'mono';
+        right.style.textAlign = 'right';
+        if (samples.length === 0) {
+          right.textContent = '—';
+        } else {
+          const avg = samples.reduce((a,b) => a + b.pass_rate * 100, 0) / samples.length;
+          right.textContent = avg.toFixed(1) + '% (' + samples.length + ')';
+        }
+        row.appendChild(right);
+        root.appendChild(row);
+      }
+    }
+
+    function renderCondDeltas(data) {
+      const root = document.getElementById('condDeltas');
+      root.innerHTML = '';
+      const all = data.cells.concat(data.current ? [data.current] : []);
+      const cond = {};
+      for (const c of all) {
+        if (c.passed + c.failed === 0) continue;
+        const k = `${c.think}|${c.tools}`;
+        cond[k] = cond[k] || [];
+        cond[k].push(c.pass_rate * 100);
+      }
+      const baselineKey = 'off|off';
+      const baseline = cond[baselineKey]
+        ? cond[baselineKey].reduce((a,b)=>a+b,0) / cond[baselineKey].length
+        : null;
+      const order = ['off|off', 'off|auto', 'on|off', 'on|auto'];
+      for (const k of order) {
+        const samples = cond[k];
+        if (!samples) continue;
+        const avg = samples.reduce((a,b)=>a+b,0) / samples.length;
+        const delta = baseline != null ? (avg - baseline) : 0;
+        const row = document.createElement('div');
+        row.className = 'cond-delta';
+        const [th, tl] = k.split('|');
+        row.innerHTML = `
+          <div>think=<span class="mono">${th}</span> tools=<span class="mono">${tl}</span></div>
+          <div class="num mono">${avg.toFixed(1)}%</div>
+          <div class="delta-bar"></div>
+          <div class="num mono ${delta >= 0 ? '' : ''}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)} pp</div>
+        `;
+        const bar = row.querySelector('.delta-bar');
+        const mark = document.createElement('span');
+        mark.className = 'marker ' + (delta >= 0 ? 'pos' : 'neg');
+        // map ±30pp range to 0-100% of the bar; centre at 50%
+        const clamped = Math.max(-30, Math.min(30, delta));
+        const offsetPct = 50 + (clamped / 30 * 50);
+        mark.style.left = `calc(${offsetPct}% - 2px)`;
+        bar.appendChild(mark);
+        root.appendChild(row);
+      }
+    }
+
+    function renderZTests(data) {
+      const root = document.getElementById('zTests');
+      root.innerHTML = '';
+      const tests = data.z_tests || {};
+      const labels = {
+        "think_on_vs_off_tools_off": "think=on  vs  think=off  (tools=off held)",
+        "tools_auto_vs_off_think_off": "tools=auto  vs  tools=off  (think=off held)",
+        "think_on_tools_auto_vs_baseline": "think=on tools=auto  vs  baseline (off/off)",
+        "tools_auto_vs_off_think_on": "tools=auto  vs  tools=off  (think=on held)",
+      };
+      const order = [
+        "think_on_vs_off_tools_off",
+        "tools_auto_vs_off_think_off",
+        "tools_auto_vs_off_think_on",
+        "think_on_tools_auto_vs_baseline",
+      ];
+      const table = document.createElement('table');
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>comparison</th>
+            <th class="num">n_a</th>
+            <th class="num">n_b</th>
+            <th class="num">Δ pp</th>
+            <th class="num">z</th>
+            <th class="num">p</th>
+            <th>verdict</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+      const tbody = table.querySelector('tbody');
+      let any = false;
+      for (const k of order) {
+        const t = tests[k];
+        if (!t) continue;
+        any = true;
+        const tr = document.createElement('tr');
+        const sig = t.significant;
+        const dColor = t.delta_pp >= 0 ? 'var(--good)' : 'var(--bad)';
+        tr.innerHTML = `
+          <td>${labels[k]}</td>
+          <td class="num">${t.n_a}</td>
+          <td class="num">${t.n_b}</td>
+          <td class="num mono" style="color:${dColor}">${t.delta_pp >= 0 ? '+' : ''}${t.delta_pp.toFixed(1)}</td>
+          <td class="num mono">${t.z.toFixed(2)}</td>
+          <td class="num mono">${t.p < 0.0001 ? '<0.0001' : t.p.toFixed(4)}</td>
+          <td>${sig
+              ? '<span class="pill" style="background:var(--good);color:#fff">significant</span>'
+              : '<span class="pill" style="color:var(--muted)">not significant</span>'}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+      if (!any) {
+        root.innerHTML = '<div class="small">Need at least one cell from two different conditions to compute. Tests will appear once the bench advances past condition 1.</div>';
+        return;
+      }
+      root.appendChild(table);
+    }
+
+    function renderLatencies(data) {
+      const root = document.getElementById('latencies');
+      root.innerHTML = '';
+      const lat = data.latencies || [];
+      if (lat.length === 0) {
+        root.innerHTML = '<div class="small">No latency data yet.</div>';
+        return;
+      }
+      // Build a tier × capability matrix of mean latency seconds.
+      const grid = {};
+      let maxLat = 0;
+      for (const l of lat) {
+        grid[l.tier] = grid[l.tier] || {};
+        grid[l.tier][l.capability] = l.mean_s;
+        if (l.mean_s > maxLat) maxLat = l.mean_s;
+      }
+      const table = document.createElement('table');
+      const headRow = ['<th>tier</th>'].concat(CAPS.map(c => `<th>${CAP_SHORT[c]}</th>`)).join('');
+      table.innerHTML = `<thead><tr>${headRow}</tr></thead><tbody></tbody>`;
+      const tbody = table.querySelector('tbody');
+      for (const tier of TIERS) {
+        if (!grid[tier]) continue;
+        const tr = document.createElement('tr');
+        let html = `<td class="mono">${TIER_LABEL[tier] || tier}</td>`;
+        for (const cap of CAPS) {
+          const v = grid[tier][cap];
+          if (v == null) {
+            html += `<td class="num small">—</td>`;
+          } else {
+            // Heat-shade by relative latency
+            const intensity = Math.min(1, v / Math.max(1, maxLat));
+            const r = Math.round(48 + 200 * intensity);
+            const g = Math.round(48 + 50 * (1 - intensity));
+            html += `<td class="num mono" style="background:rgba(${r},${g},48,0.12)" title="${cap}: ${v}s">${v < 100 ? v.toFixed(1) + 's' : Math.round(v) + 's'}</td>`;
+          }
+        }
+        tr.innerHTML = html;
+        tbody.appendChild(tr);
+      }
+      root.appendChild(table);
+    }
+
+    function renderTable(data) {
+      const all = data.cells.concat(data.current ? [data.current] : []);
+      document.getElementById('cellCount').textContent = all.length;
+      const tbody = document.getElementById('cellsBody');
+      tbody.innerHTML = '';
+      for (const c of all.slice().reverse()) {
+        const tr = document.createElement('tr');
+        if (data.current && c.tier === data.current.tier
+            && c.capability === data.current.capability
+            && c.think === data.current.think
+            && c.tools === data.current.tools
+            && !c.finished) {
+          tr.className = 'live';
+        }
+        const n = c.passed + c.failed + c.errors;
+        const rate = n > 0 ? (100 * c.passed / Math.max(1, c.passed + c.failed)) : 0;
+        const cellWall = c.wall_seconds || 0;
+        tr.innerHTML = `
+          <td class="mono">${c.tier}</td>
+          <td>${c.capability}</td>
+          <td class="mono">${c.think}</td>
+          <td class="mono">${c.tools}</td>
+          <td class="num">${n}/${c.n_total || n}</td>
+          <td class="num">${c.passed}</td>
+          <td class="num">${rate.toFixed(1)}</td>
+          <td class="num mono">[${(c.ci_low*100).toFixed(1)}, ${(c.ci_high*100).toFixed(1)}]</td>
+          <td class="num">${(c.ci_half*100).toFixed(1)}</td>
+          <td class="num mono">${fmtSec(cellWall)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderLive(data) {
+      const livePanel = document.getElementById('livePanel');
+      if (!data.current) {
+        livePanel.style.display = 'none';
+        return;
+      }
+      livePanel.style.display = 'block';
+      const c = data.current;
+      const cellPct = c.n_total > 0 ? (c.n_done / c.n_total) * 100 : 0;
+      const passRate = (c.passed + c.failed) > 0 ? (100 * c.passed / (c.passed + c.failed)) : 0;
+      document.getElementById('currentLabel').textContent =
+        `${c.tier} × ${c.capability}  th=${c.think} t=${c.tools}`;
+      document.getElementById('currentBar').style.width = cellPct + '%';
+      document.getElementById('currentPct').textContent =
+        `${c.n_done}/${c.n_total} (${passRate.toFixed(0)}% pass)`;
+
+      // Condition stats
+      const all = data.cells.concat([c]);
+      const condCells = all.filter(x => x.think === c.think && x.tools === c.tools && x.finished);
+      const condTotal = TIERS.length * CAPS.length;
+      const condFrac = condCells.length / condTotal;
+      document.getElementById('condLabel').textContent = `th=${c.think} t=${c.tools}`;
+      document.getElementById('condBar').style.width = (condFrac * 100) + '%';
+      document.getElementById('condPct').textContent = `${condCells.length}/${condTotal}`;
+
+      // Overall stats
+      const totalCells = TIERS.length * CAPS.length * 2 * 2;  // 4 conditions
+      const finished = data.cells.filter(x => x.finished).length;
+      const overallFrac = finished / totalCells;
+      document.getElementById('overallLabel').textContent = 'all conditions';
+      document.getElementById('overallBar').style.width = (overallFrac * 100) + '%';
+      document.getElementById('overallPct').textContent = `${finished}/${totalCells}`;
+
+      // Stats line: cell-wall median, pass-rate Wilson
+      const walls = data.cells.filter(x => x.wall_seconds > 0).map(x => x.wall_seconds);
+      walls.sort((a,b) => a-b);
+      const medianWall = walls.length ? walls[Math.floor(walls.length / 2)] : 0;
+      const remaining = totalCells - finished;
+      const eta = remaining * Math.max(60, medianWall);
+      document.getElementById('statsLine').textContent =
+        `Per-cell wall: median ${fmtSec(medianWall)}.  ` +
+        `Cell pass=${passRate.toFixed(1)}% (Wilson CI ±${(c.ci_half*100).toFixed(1)}pp).  ` +
+        `Overall ETA ${fmtSec(eta)}.`;
+    }
+
+    const statusEl = document.getElementById('status');
+    let timer = null;
+
+    async function fetchAll() {
+      try {
+        const [resJson, ascJson] = await Promise.all([
+          fetch('/admin/bench/results', { cache: 'no-store' }).then(r => r.json()),
+          fetch('/admin/bench/progress', { cache: 'no-store' }).then(r => r.json()),
+        ]);
+        renderLive(resJson);
+        renderHeatmap(resJson);
+        renderTierBars(resJson);
+        renderCondDeltas(resJson);
+        renderTable(resJson);
+        document.getElementById('asciiDash').textContent =
+          (ascJson.ascii || '').replace(/^```\n?/, '').replace(/\n?```$/, '');
+        statusEl.textContent = resJson.running
+          ? `live · ${new Date().toLocaleTimeString()}`
+          : `idle · ${new Date().toLocaleTimeString()}`;
+        statusEl.className = 'pill ' + (resJson.running ? 'live' : '');
+      } catch (e) {
+        statusEl.textContent = 'error: ' + e.message;
+        statusEl.className = 'pill error';
+      }
+    }
+
+    function reschedule() {
+      if (timer) clearInterval(timer);
+      const sec = parseInt(document.getElementById('cadence').value, 10);
+      timer = setInterval(fetchAll, sec * 1000);
+    }
+    document.getElementById('refreshNow').addEventListener('click', fetchAll);
+    document.getElementById('cadence').addEventListener('change', reschedule);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchAll();
+    });
+    fetchAll();
+    reschedule();
+  </script>
+</body>
+</html>

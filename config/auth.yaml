@@ -23,5 +23,5 @@ allowed_email_domains: []
 # (or a single IP for anonymous callers). 0 disables the window.
 rate_limits:
   requests_per_hour_per_ip: 30            # POST /auth/login brute-force gate
-  requests_per_minute_per_user: 30        # /v1/chat/completions
-  requests_per_day_per_user: 500          # /v1/chat/completions
+  requests_per_minute_per_user: 10000     # bumped for bench (was 30 — bench hits ~100 req/min on small tiers)
+  requests_per_day_per_user: 500000       # bumped for bench

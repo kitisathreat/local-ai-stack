@@ -102,9 +102,17 @@ kv_cache:
 # the card without eviction.
 residency:
   enable: true
-  full_headroom_multiplier: 1.15        # free >= cost * this → go FULL
+  full_headroom_multiplier: 1.05        # free >= cost * this → go FULL (was 1.15;
+                                        # tightened so we keep KV on GPU as long as
+                                        # the tier just barely fits — KV→CPU is a
+                                        # last resort, not a safety margin)
   partial_min_ratio: 0.35               # floor for PARTIAL layer ratio
   minimal_ratio: 0.15                   # floor for MINIMAL mode
   low_complexity_savings: 0.15          # extra layers we're willing to drop for easy turns
   mlock_full_mode: true                 # pin pages when fully resident
   mlock_partial_mode: false             # let CPU side page in/out under memory pressure
+  enable_kv_offload: false              # was true (default) — disable KV→CPU
+                                        # cascade. Layer-offload (some weights on
+                                        # CPU via mmap) is much faster than KV→CPU
+                                        # for attention; only fall back to KV→CPU
+                                        # if a tier truly cannot fit otherwise.
