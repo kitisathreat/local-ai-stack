@@ -81,12 +81,24 @@ _bench_log_path: Path | None = None
 
 
 def _bench_is_running() -> bool:
+    # Path 1: bench started via /admin/bench/start — we own the Popen
+    # handle and can ask the OS directly.
     if _bench_proc is not None and _bench_proc.poll() is None:
         return True
-    # Fallback: detect externally-launched bench by log freshness. The
-    # eval runner writes a per-problem line ("runner.py:NNN  ...") every
-    # few seconds. If the day's eval log has been modified within the
-    # last 30 seconds, a bench is running.
+    # Path 2: bench started by the user from a shell. We don't hold a
+    # handle, so scan running processes for the run_full_bench.py
+    # script. This catches the long-silent moments — tier transitions
+    # (model unload + reload + warm probe can take 5-10 minutes for the
+    # bigger models) and judge-tier evaluations of MT-Bench prompts —
+    # that the log-freshness fallback below would mistakenly call idle.
+    if _scan_for_bench_process():
+        return True
+    # Path 3: log freshness as last-resort. The eval runner writes a
+    # per-problem line ("runner.py:NNN  ...") every few seconds. If the
+    # day's eval log has been modified within the last 120 seconds, a
+    # bench is running. This stays as a safety net for cases where the
+    # process-scan path doesn't see the script (e.g. Linux container
+    # where /proc/cmdline isn't accessible).
     try:
         import datetime as _dt
         repo = Path(__file__).resolve().parent.parent
@@ -111,6 +123,57 @@ def _bench_is_running() -> bool:
     except Exception:
         pass
     return False
+
+
+# Module-level cache so we don't shell out on every dashboard poll.
+# Refreshed at most once per _BENCH_PROC_SCAN_TTL_S seconds.
+_BENCH_PROC_SCAN_TTL_S = 5.0
+_bench_proc_scan_cache: dict = {"checked_at": 0.0, "found": False}
+
+
+def _scan_for_bench_process() -> bool:
+    """Return True if any python process on this host is running
+    scripts/run_full_bench.py (the long-running bench script). Used as
+    a tier-transition-tolerant signal — log freshness alone misses the
+    5-10 minute window between cells where the next tier is unloading
+    + loading + warm-probing."""
+    now = time.time()
+    if (now - _bench_proc_scan_cache["checked_at"]) < _BENCH_PROC_SCAN_TTL_S:
+        return _bench_proc_scan_cache["found"]
+    found = False
+    try:
+        if os.name == "nt":
+            # Windows: WMI command line via PowerShell. Cheap and avoids
+            # adding psutil as a runtime dep.
+            cmd = (
+                "powershell.exe -NoProfile -Command "
+                "\"Get-CimInstance Win32_Process -Filter 'Name=\\\"python.exe\\\"' "
+                "| Where-Object { $_.CommandLine -like '*run_full_bench*' } "
+                "| Select-Object -First 1 ProcessId\""
+            )
+            r = _subprocess.run(cmd, shell=True, capture_output=True,
+                                text=True, timeout=4)
+            found = bool(r.stdout and r.stdout.strip()
+                         and "ProcessId" in r.stdout)
+        else:
+            # POSIX: /proc/<pid>/cmdline scan. Fast and dependency-free.
+            for pid_dir in Path("/proc").iterdir():
+                if not pid_dir.name.isdigit():
+                    continue
+                try:
+                    cmdline = (pid_dir / "cmdline").read_text(errors="ignore")
+                except (OSError, PermissionError):
+                    continue
+                if "run_full_bench" in cmdline:
+                    found = True
+                    break
+    except Exception:
+        # Any failure (timeout, permission, missing PowerShell) just
+        # falls through to the log-mtime path — never flap the status.
+        pass
+    _bench_proc_scan_cache["checked_at"] = now
+    _bench_proc_scan_cache["found"] = found
+    return found
 
 
 @router.get("/bench/status")
