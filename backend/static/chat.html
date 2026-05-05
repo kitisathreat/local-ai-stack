@@ -4124,9 +4124,16 @@
       const _etaFinished = data.cells.filter(c =>
         c.finished && MAIN_TIERS.includes(c.tier)).length;
       const _etaRemaining = Math.max(0, _etaCellsTotal - _etaFinished);
+      // The /admin/bench/results endpoint exposes wall time as
+      // `wall_seconds` (already computed by the runner). Earlier code
+      // here filtered on `started_at`/`finished_at` which are NOT in
+      // the response — those were Python-side fields, not JSON. Result:
+      // every cell got dropped from _recentCells and the rolling-mean
+      // branch never fired, leaving the ETA stuck on "computing" even
+      // after dozens of finished cells.
       const _recentCells = data.cells.filter(c =>
-        c.finished && c.started_at && c.finished_at &&
-        c.finished_at > c.started_at && MAIN_TIERS.includes(c.tier)
+        c.finished && typeof c.wall_seconds === 'number' &&
+        c.wall_seconds > 0 && MAIN_TIERS.includes(c.tier)
       ).slice(-12);
       const _etaFmt = (s) => {
         if (s < 90) return Math.round(s) + 's';
@@ -4138,7 +4145,7 @@
       let _etaTooltip = `${_etaFinished}/${_etaCellsTotal} cells (main 7 tiers × ${BENCH_CAPS.length} caps × 4 conditions)`;
       if (data.running && _recentCells.length >= 2 && _etaRemaining > 0) {
         const meanWallS = _recentCells.reduce((s, c) =>
-          s + (c.finished_at - c.started_at), 0) / _recentCells.length;
+          s + c.wall_seconds, 0) / _recentCells.length;
         const etaS = meanWallS * _etaRemaining;
         _etaText = `ETA ${_etaFmt(etaS)} · ${_etaFinished}/${_etaCellsTotal}`;
         _etaTooltip = `Rolling mean wall over last ${_recentCells.length} cells = ${_etaFmt(meanWallS)}/cell. ${_etaRemaining} cells remaining.`;

@@ -782,8 +782,12 @@
         const cells = (resJson.cells || []);
         const finished = cells.filter(c => c.finished).length;
         const remaining = Math.max(0, TOTAL_CELLS - finished);
+        // /admin/bench/results exposes wall time as `wall_seconds`
+        // (not `started_at`/`finished_at` — those are Python-side
+        // fields, not in the JSON). Earlier code filtered on the
+        // wrong names so _recent was always empty.
         const recent = cells
-          .filter(c => c.finished && c.started_at && c.finished_at && c.finished_at > c.started_at)
+          .filter(c => c.finished && typeof c.wall_seconds === 'number' && c.wall_seconds > 0)
           .slice(-12);
         // Status pill: just live/idle + clock. Keep it short.
         statusEl.textContent = resJson.running
@@ -805,7 +809,7 @@
           statusEl.parentNode.insertBefore(etaEl, statusEl.nextSibling);
         }
         if (resJson.running && recent.length >= 2 && remaining > 0) {
-          const meanWall = recent.reduce((s, c) => s + (c.finished_at - c.started_at), 0) / recent.length;
+          const meanWall = recent.reduce((s, c) => s + c.wall_seconds, 0) / recent.length;
           const etaS = meanWall * remaining;
           etaEl.textContent = `ETA ${fmtSec(etaS)} · ${finished}/${TOTAL_CELLS} cells`;
           etaEl.style.display = '';
