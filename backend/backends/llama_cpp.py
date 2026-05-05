@@ -517,26 +517,27 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     file_gb = _model_total_size_gb(tier.gguf_path)
     if file_gb <= 0:
         return None
+    # Empirical model: when ALL experts are pinned to CPU and `-ngl`
+    # offloads everything else to GPU, the observed GPU footprint
+    # tracks ~0.4 × file_gb (nonexpert weights + activation buffers +
+    # cuBLAS scratch + cuda graphs). Per-layer expert weight on GPU,
+    # if we move that layer's MoE BACK to GPU, adds ~0.6 × file_gb /
+    # block_count more.
+    #
+    # We derived these constants from versatile (Qwen3.6-35B-A3B,
+    # 19.7 GB file): full-CPU offload measured 15 GB GPU = 0.76 × file
+    # — but that was BEFORE we saw the truth that '-ngl 64' was
+    # holding all 40 layers' weights on GPU. Cross-checked against
+    # the GGUF tensor list (raw nonexpert ~6 GB, raw expert ~13 GB →
+    # 0.30 / 0.66 of file). The 0.4/0.6 split is the conservative
+    # midpoint used by --n-cpu-moe heuristics in llama.cpp upstream.
+    nonexpert_gb_estimate = file_gb * 0.40
+    per_layer_expert_gb = (file_gb * 0.60) / block_count
+    # Keep the parser-derived numbers around for the log line.
     expert_bytes = meta.get("expert_bytes") or 0
     nonexpert_bytes = meta.get("nonexpert_bytes") or 0
     parser_total_gb = (expert_bytes + nonexpert_bytes) / (1024 ** 3)
-    if parser_total_gb > 0 and file_gb > 0:
-        # Normalise against the actual file size on disk — the BPE
-        # table is approximate (especially for UD-style mixed-quant
-        # GGUFs with IQ-family types) and can be off by 2× either way.
-        # We trust the EXPERT/NON-EXPERT RATIO from the parser but
-        # rescale to file size so absolute numbers align with reality.
-        scale = file_gb / parser_total_gb
-        expert_gb = (expert_bytes / (1024 ** 3)) * scale
-        nonexpert_gb = (nonexpert_bytes / (1024 ** 3)) * scale
-    else:
-        # No tensor scan or empty result — fall back to per-arch
-        # global fraction of file size.
-        expert_fraction = _EXPERT_FRACTION_BY_ARCH.get(
-            arch, _EXPERT_FRACTION_BY_ARCH["default"])
-        expert_gb = file_gb * expert_fraction
-        nonexpert_gb = file_gb * (1.0 - expert_fraction)
-    per_layer_expert_gb = expert_gb / block_count
+    nonexpert_gb = nonexpert_gb_estimate
 
     # Baseline GPU footprint that is NOT expert weights:
     #   - Non-expert weights (attention, embeds, output head, norms)
@@ -563,17 +564,23 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     if getattr(tier, "draft_gguf_path", None):
         draft_gb = _model_total_size_gb(tier.draft_gguf_path) * 0.6  # weights only
 
-    # Safety: 4 GB covers CUDA graphs, prompt-evaluation scratch
-    # buffers, and longer-prompt activation spikes. We use FREE VRAM
-    # (not total) so embedding/reranker/other GPU consumers are
-    # already deducted — no need to over-pad here.
+    # Safety: 8 GB covers (a) llama.cpp's internal nonexpert footprint
+    # which is much bigger than the GGUF tensor list suggests because
+    # `-ngl 64` materialises ALL non-expert layer weights on GPU even
+    # for layers whose experts are pinned to CPU, and (b) CUDA graphs
+    # + prompt-eval scratch buffers + spec-decode batch overhead.
     #
-    # Why FREE matters: a previous version used `total - safety` and
-    # OOM-killed versatile at GSM8K problem 6 because the running
-    # embedding tier (5 GB) wasn't accounted for. Treating the free
-    # reading as the budget naturally adapts to whatever else is
-    # GPU-resident.
-    safety_gb = 4.0
+    # Empirical: versatile loaded with full-CPU experts measured 15 GB
+    # GPU (vs my parser's 1.5 GB nonexpert estimate — a 13.5 GB gap).
+    # Versatile loaded with 35-of-40 layers on GPU OOM-killed at 98%
+    # VRAM. 8 GB safety knocks GPU layers down by ~10 from the naive
+    # calc, putting us back in fits-without-thrashing territory.
+    #
+    # Why FREE VRAM matters: a previous version used `total - safety`
+    # which assumed nothing else was GPU-resident. Embedding tier
+    # (5 GB) wasn't deducted → OOM. nvidia-smi memory.free naturally
+    # accounts for everything else.
+    safety_gb = 8.0
     gpu_total_gb = _gpu_total_gb_default()
     gpu_free_gb = _gpu_free_gb()
     # Budget = current free VRAM minus per-spawn fixed costs (this
@@ -586,40 +593,26 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     gpu_layers = int(gpu_budget_for_experts_gb // per_layer_expert_gb)
     gpu_layers = max(0, min(gpu_layers, block_count))
 
-    if gpu_layers <= 0:
-        # Can't fit even one layer of experts — caller should use full
-        # CPU offload (which is what the existing config does).
-        logger.info(
-            "moe-offload[%s]: gpu_layers=0 (per-layer experts %.1f GB > budget %.1f GB) "
-            "→ keeping full-CPU expert offload",
-            tier.gguf_path.split("\\")[-1].split("/")[-1],
-            per_layer_expert_gb, gpu_budget_for_experts_gb,
-        )
-        return ".ffn_.*_exps.=CPU"
-    if gpu_layers >= block_count:
-        # Full model fits on GPU — no offload needed.
-        return ""
-
-    cpu_layers = block_count - gpu_layers
-    # Build a regex that matches blk.<i> for i in [0, cpu_layers).
-    # Pattern: 0|1|2|...|<cpu_layers-1>. Compact form using ranges.
-    cpu_indices = list(range(cpu_layers))
-    # Group by digit count for a tighter regex than verbose alternation.
-    # blk\.(0|1|2|...|9|10|11|...)\.ffn_.*_exps\.=CPU
-    alt = "|".join(str(i) for i in cpu_indices)
-    regex = rf"blk\.({alt})\.ffn_.*_exps\.=CPU"
+    cpu_layers = max(0, min(block_count - gpu_layers, block_count))
     logger.info(
         "moe-offload[%s]: arch=%s layers=%d experts=%d/%d  "
-        "file=%.1f GB  nonexpert=%.1f GB  KV=%.1f GB  draft=%.1f GB  "
+        "file=%.1f GB  nonexpert_est=%.1f GB  KV=%.1f GB  draft=%.1f GB  "
         "free_vram=%.1f GB  budget=%.1f GB  per_layer=%.2f GB  "
-        "→ CPU layers 0..%d (%d), GPU layers %d..%d (%d)",
+        "→ --n-cpu-moe %d  (GPU layers %d/%d)",
         tier.gguf_path.split("\\")[-1].split("/")[-1], arch,
         block_count, meta.get("expert_used_count") or 0, expert_count,
         file_gb, nonexpert_gb, kv_gb, draft_gb,
         gpu_free_gb, gpu_budget_for_experts_gb, per_layer_expert_gb,
-        cpu_layers - 1, cpu_layers, cpu_layers, block_count - 1, gpu_layers,
+        cpu_layers, block_count - cpu_layers, block_count,
     )
-    return regex
+    # Returning a sentinel-form string the caller knows to interpret
+    # as `--n-cpu-moe N` instead of `-ot REGEX`. Keeps the public
+    # contract simple while letting build_argv emit the new flag.
+    if cpu_layers <= 0:
+        return "n-cpu-moe:0"  # all experts on GPU
+    if cpu_layers >= block_count:
+        return "n-cpu-moe:all"  # all experts on CPU
+    return f"n-cpu-moe:{cpu_layers}"
 
 
 def build_argv(tier: TierConfig) -> list[str]:
@@ -710,17 +703,20 @@ def build_argv(tier: TierConfig) -> list[str]:
     # None means "not MoE or metadata missing" — in either case we
     # fall through to whatever extra_args/override_tensors the YAML
     # specifies.
-    auto_ot = _compute_moe_offload_regex(tier)
+    # Auto-compute MoE expert offload from GGUF + free VRAM, then
+    # emit it as llama.cpp's `--n-cpu-moe N` flag (b8992+) — keeps
+    # the first N MoE layers on CPU and the rest on GPU. Cleaner
+    # than `-ot blk\.(0|1|..)\.ffn_.*_exps.=CPU` regex, no per-arch
+    # tensor-name fragility.
+    auto_moe = _compute_moe_offload_regex(tier)
     extra_args = list(tier.extra_args) if tier.extra_args else []
     override_patterns = list(tier.override_tensors) if tier.override_tensors else []
-    if auto_ot is not None:
-        # Strip any operator-supplied `-ot <expr>` pair from extra_args
-        # AND any pattern from tier.override_tensors when it targets
-        # MoE expert tensors — the auto-computed regex replaces it.
-        # Without dropping override_patterns too, llama.cpp would see
-        # both `-ot blk\.(0..12)\.ffn_.*_exps=CPU` and the wildcard
-        # `-ot .ffn_.*_exps.=CPU` and the wildcard would catch every
-        # remaining layer, undoing the partial split.
+    if auto_moe is not None:
+        # Strip operator-supplied `-ot <ffn_*_exps...>` pairs from
+        # extra_args AND any pattern from tier.override_tensors that
+        # targets MoE experts. Otherwise the YAML's wildcard
+        # `.ffn_.*_exps.=CPU` would catch every layer, undoing
+        # whatever split we computed.
         cleaned: list[str] = []
         i = 0
         while i < len(extra_args):
@@ -733,8 +729,16 @@ def build_argv(tier: TierConfig) -> list[str]:
             i += 1
         extra_args = cleaned
         override_patterns = [p for p in override_patterns if "_exps" not in p]
-        if auto_ot:
-            extra_args += ["-ot", auto_ot]
+        if auto_moe == "n-cpu-moe:all":
+            extra_args += ["--cpu-moe"]
+        elif auto_moe == "n-cpu-moe:0":
+            pass  # all experts on GPU; no flag needed
+        elif auto_moe.startswith("n-cpu-moe:"):
+            n = auto_moe.split(":", 1)[1]
+            extra_args += ["--n-cpu-moe", n]
+        elif auto_moe:
+            # Backwards-compat: legacy regex form
+            extra_args += ["-ot", auto_moe]
     argv += extra_args
     for pattern in override_patterns:
         argv += ["-ot", pattern]
