@@ -34,6 +34,7 @@ from .datasets import (
     load_humaneval,
     load_ifeval,
     load_math,
+    load_math_hard,
     load_mbpp,
     load_mmlu,
     load_mmlu_pro,
@@ -55,6 +56,7 @@ CAPABILITIES: dict[str, Callable[[Depth], list[Problem]]] = {
     "coding_basic": load_mbpp,                 # complement to humaneval
     "math": load_gsm8k,
     "math_competition": load_math,             # MATH-500 levels 3-5
+    "math_hard": load_math_hard,               # MATH-500 level 5 only
     "knowledge": load_mmlu,
     "knowledge_specialized": load_mmlu_pro,    # MMLU-Pro 10-choice
     "intent": load_ifeval,                     # instruction-following

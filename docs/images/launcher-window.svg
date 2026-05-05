@@ -1,51 +1,151 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 380" font-family="Cascadia Code, Consolas, ui-monospace, monospace" role="img" aria-label="LocalAIStack.ps1 console banner during -Start">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420"
+     role="img" aria-label="LocalAIStack.ps1 boot sequence — Bloomberg terminal style with animated checkmarks">
   <defs>
     <style><![CDATA[
-      .shadow { fill: rgba(0,0,0,0.45); }
-      .chrome { fill: #1a1a1a; }
-      .body   { fill: #0c0c0c; }
-      .fg     { fill: #e5e7eb; }
-      .dim    { fill: #8b94a6; }
-      .accent { fill: #7c9cff; }
-      .ok     { fill: #5fd18f; }
-      .warn   { fill: #ffb860; }
-      .step   { fill: #4ec9ff; }
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+      .face   { font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace; }
+      .bg     { fill: #000000; }
+      .panel  { fill: #0a0a0a; }
+      .amber  { fill: #FFA028; }
+      .amber-dim { fill: #B87513; }
+      .yellow { fill: #FFFF00; }
+      .green  { fill: #00FF66; }
+      .red    { fill: #FF3333; }
+      .cyan   { fill: #00DDFF; }
+      .magenta{ fill: #FF44CC; }
+      .header-bg { fill: #8B0000; }
+      .border-amber { stroke: #FFA028; stroke-width: 1; fill: none; }
+      .border-dim   { stroke: #66421A; stroke-width: 1; fill: none; }
+      .b      { font-weight: 600; }
+      .cursor { fill: #FFA028; }
     ]]></style>
   </defs>
 
-  <!-- Backdrop -->
-  <rect width="640" height="380" fill="#202328"/>
+  <!-- Canvas (pure black like a Bloomberg terminal) -->
+  <rect class="bg" width="720" height="420"/>
 
-  <!-- Drop shadow + window -->
-  <rect class="shadow" x="32" y="38" width="576" height="312" rx="8"/>
-  <rect class="body"   x="28" y="32" width="576" height="312" rx="6"/>
+  <!-- Window frame, sharp corners (Bloomberg uses minimal chrome) -->
+  <rect x="14" y="14" width="692" height="392" class="border-amber"/>
 
-  <!-- Title bar -->
-  <rect class="chrome" x="28" y="32" width="576" height="28" rx="6"/>
-  <rect class="chrome" x="28" y="52" width="576" height="8"/>
-  <text class="dim" x="44" y="50" font-size="11" font-family="Segoe UI, sans-serif">Windows PowerShell — LocalAIStack.ps1 -Start</text>
-  <text class="dim" x="568" y="50" font-size="12" font-family="Segoe UI, sans-serif">—</text>
-  <text class="dim" x="586" y="50" font-size="12" font-family="Segoe UI, sans-serif">✕</text>
+  <!-- Title bar (dark-red strip) -->
+  <rect class="header-bg" x="14" y="14" width="692" height="22"/>
+  <text class="face amber b" x="22" y="29" font-size="11">LOCAL-AI-STACK  ::  BOOT SEQUENCE</text>
+  <text class="face amber-dim" x="690" y="29" font-size="11" text-anchor="end">F1=HELP  F8=STOP</text>
 
-  <!-- Console body -->
-  <text font-size="11.5">
-    <tspan x="44" y="86" class="dim">PS C:\local-ai-stack&gt; </tspan><tspan class="fg">.\LocalAIStack.ps1</tspan>
-    <tspan x="44" y="108" class="step">==&gt; </tspan><tspan class="fg">Resolving model tiers (Hugging Face GGUF)</tspan>
-    <tspan x="64" y="124" class="ok">   ok </tspan><tspan class="dim">versatile  → Qwen3.6-35B-A3B-Q4_K_M.gguf  (cached)</tspan>
-    <tspan x="64" y="140" class="ok">   ok </tspan><tspan class="dim">fast       → Qwen3.5-9B-Q5_K_M.gguf       (cached)</tspan>
-    <tspan x="64" y="156" class="ok">   ok </tspan><tspan class="dim">embedding  → nomic-embed-text-v1.5.gguf  (cached)</tspan>
-    <tspan x="44" y="178" class="step">==&gt; </tspan><tspan class="fg">Starting Qdrant on :6333</tspan>
-    <tspan x="64" y="194" class="ok">   ok </tspan><tspan class="dim">vendor\qdrant\qdrant.exe (pid 14820)</tspan>
-    <tspan x="44" y="216" class="step">==&gt; </tspan><tspan class="fg">Pre-spawning vision + embedding llama-server</tspan>
-    <tspan x="64" y="232" class="ok">   ok </tspan><tspan class="dim">llama-server :8001 vision   (pid 9112)</tspan>
-    <tspan x="64" y="248" class="ok">   ok </tspan><tspan class="dim">llama-server :8090 embedding (pid 12044)</tspan>
-    <tspan x="44" y="270" class="step">==&gt; </tspan><tspan class="fg">Backend on :18000 (FastAPI / uvicorn)</tspan>
-    <tspan x="64" y="286" class="ok">   ok </tspan><tspan class="dim">healthz {status:"ok"}</tspan>
-    <tspan x="44" y="308" class="step">==&gt; </tspan><tspan class="fg">Launching native Qt GUI</tspan>
+  <!-- Status line under title bar -->
+  <rect class="panel" x="14" y="37" width="692" height="20"/>
+  <text class="face amber-dim" x="22" y="51" font-size="10">HOST</text>
+  <text class="face amber"     x="58" y="51" font-size="10" class="face amber b">DESKTOP-WIN11</text>
+  <text class="face amber-dim" x="180" y="51" font-size="10">RTX</text>
+  <text class="face amber"     x="208" y="51" font-size="10">A4500 LAPTOP 16GB</text>
+  <text class="face amber-dim" x="380" y="51" font-size="10">UPTIME</text>
+  <text class="face amber"     x="430" y="51" font-size="10">
+    <tspan id="uptime">00:00:01</tspan>
   </text>
+  <text class="face amber-dim" x="540" y="51" font-size="10">RAM</text>
+  <text class="face amber"     x="572" y="51" font-size="10">14.2 / 64 GB</text>
 
-  <!-- Caret -->
-  <rect class="fg" x="44" y="322" width="7" height="13">
-    <animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite"/>
-  </rect>
+  <!-- Body: animated boot sequence. Each line fades in via opacity tween;
+       checkmarks delay until their step "completes". -->
+  <g class="face" font-size="12">
+    <!-- Heading -->
+    <text x="22" y="80" class="amber b" font-size="13">==> Running diagnostic preflight</text>
+    <text x="44" y="98" class="green">
+      <animate attributeName="opacity" from="0" to="1" begin="0.4s" dur="0.2s" fill="freeze"/>
+      OK
+    </text>
+    <text x="78" y="98" class="amber-dim" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="0.4s" dur="0.2s" fill="freeze"/>
+      Diagnostics passed.
+    </text>
+
+    <text x="22" y="124" class="amber b" font-size="13" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="0.7s" dur="0.2s" fill="freeze"/>
+      ==> Starting cloudflared tunnel
+    </text>
+    <text x="44" y="142" class="green" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="1.1s" dur="0.2s" fill="freeze"/>
+      OK
+    </text>
+    <text x="78" y="142" class="amber-dim" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="1.1s" dur="0.2s" fill="freeze"/>
+      tunnel attached :: chat.mylensandi.com
+    </text>
+
+    <text x="22" y="168" class="amber b" font-size="13" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="1.4s" dur="0.2s" fill="freeze"/>
+      ==> Starting llama-server (embedding tier, port 8090)
+    </text>
+    <text x="44" y="186" class="amber-dim" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="1.4s" dur="0.2s" fill="freeze"/>
+      embedder pooling: last
+    </text>
+    <text x="44" y="204" class="green" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="2.0s" dur="0.2s" fill="freeze"/>
+      OK
+    </text>
+    <text x="78" y="204" class="amber-dim" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="2.0s" dur="0.2s" fill="freeze"/>
+      http://127.0.0.1:8090/healthz
+    </text>
+
+    <text x="22" y="230" class="amber b" font-size="13" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="2.3s" dur="0.2s" fill="freeze"/>
+      ==> Starting llama-server (reranker, port 8091)
+    </text>
+    <text x="44" y="248" class="green" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="2.7s" dur="0.2s" fill="freeze"/>
+      OK
+    </text>
+    <text x="78" y="248" class="amber-dim" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="2.7s" dur="0.2s" fill="freeze"/>
+      http://127.0.0.1:8091/healthz
+    </text>
+
+    <text x="22" y="274" class="amber b" font-size="13" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="3.0s" dur="0.2s" fill="freeze"/>
+      ==> Starting backend (FastAPI)
+    </text>
+    <text x="44" y="292" class="green" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="3.6s" dur="0.2s" fill="freeze"/>
+      OK
+    </text>
+    <text x="78" y="292" class="amber-dim" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="3.6s" dur="0.2s" fill="freeze"/>
+      http://127.0.0.1:18000/healthz
+    </text>
+
+    <text x="22" y="318" class="green b" font-size="13" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="4.0s" dur="0.3s" fill="freeze"/>
+      ==> Running. PIDs tracked in pids.json
+    </text>
+
+    <!-- Animated progress bar across bottom (fills as the boot proceeds) -->
+    <rect x="22" y="344" width="676" height="4" class="border-dim"/>
+    <rect x="22" y="344" width="0" height="4" fill="#FFA028">
+      <animate attributeName="width" from="0" to="676" begin="0.4s" dur="3.6s" fill="freeze"/>
+    </rect>
+
+    <!-- Blinking cursor on the prompt line -->
+    <text x="22" y="372" class="amber" font-size="13">PS&gt;_</text>
+    <rect x="48" y="361" width="8" height="14" class="cursor">
+      <animate attributeName="opacity" values="1;1;0;0" dur="1s" repeatCount="indefinite"/>
+    </rect>
+  </g>
+
+  <!-- Status footer -->
+  <rect class="panel" x="14" y="384" width="692" height="22"/>
+  <text class="face amber-dim" x="22" y="399" font-size="10">STATUS</text>
+  <text class="face green b"   x="62" y="399" font-size="10" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" begin="4.0s" dur="0.3s" fill="freeze"/>
+    READY
+  </text>
+  <text class="face amber-dim" x="180" y="399" font-size="10">SERVICES</text>
+  <text class="face amber"     x="232" y="399" font-size="10">
+    <tspan id="services" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="4.0s" dur="0.3s" fill="freeze"/>
+      backend, embedding, reranker, jupyter, qdrant
+    </tspan>
+  </text>
+  <text class="face amber-dim" x="660" y="399" font-size="10" text-anchor="end">[boot 4.2s]</text>
 </svg>

@@ -86,8 +86,20 @@
 
     main {
       padding: 12px 14px;
-      max-width: 1400px;
-      margin: 0 auto;
+      /* Use the full browser width on PC monitors instead of a hard
+         1400px cap. The cap squeezed the dashboard onto a thin column
+         on ultrawide / 4K displays where the heatmap and per-tier
+         tables benefit from the extra horizontal space. We still keep
+         readable line lengths inside individual panels via the
+         per-block max-widths below. */
+      max-width: none;
+      margin: 0;
+    }
+    /* Cap line length only for prose-heavy elements where 200ch reads
+       awkwardly on a wide screen. Tables / charts / heatmaps inside
+       .panel keep flexing to the full viewport. */
+    .panel > p, .panel > .small {
+      max-width: 90ch;
     }
     .panel {
       background: var(--panel);
@@ -714,9 +726,27 @@
         renderTable(resJson);
         document.getElementById('asciiDash').textContent =
           (ascJson.ascii || '').replace(/^```\n?/, '').replace(/\n?```$/, '');
+        // Full-suite ETA: rolling mean wall over recent finished cells
+        // × remaining cell count. Suppressed when idle or no finished
+        // cells yet. TIERS=7, CAPS=10, conditions=4 → 280 cell target.
+        const TOTAL_CELLS = 280;
+        const cells = (resJson.cells || []);
+        const finished = cells.filter(c => c.finished).length;
+        const remaining = Math.max(0, TOTAL_CELLS - finished);
+        const recent = cells
+          .filter(c => c.finished && c.started_at && c.finished_at && c.finished_at > c.started_at)
+          .slice(-12);
+        let etaTxt = '';
+        if (resJson.running && recent.length >= 2 && remaining > 0) {
+          const meanWall = recent.reduce((s, c) => s + (c.finished_at - c.started_at), 0) / recent.length;
+          const etaS = meanWall * remaining;
+          etaTxt = ` · ETA ${fmtSec(etaS)} (${finished}/${TOTAL_CELLS})`;
+        } else if (finished > 0) {
+          etaTxt = ` · ${finished}/${TOTAL_CELLS} cells`;
+        }
         statusEl.textContent = resJson.running
-          ? `live · ${new Date().toLocaleTimeString()}`
-          : `idle · ${new Date().toLocaleTimeString()}`;
+          ? `live · ${new Date().toLocaleTimeString()}${etaTxt}`
+          : `idle · ${new Date().toLocaleTimeString()}${etaTxt}`;
         statusEl.className = 'pill ' + (resJson.running ? 'live' : '');
       } catch (e) {
         statusEl.textContent = 'error: ' + e.message;

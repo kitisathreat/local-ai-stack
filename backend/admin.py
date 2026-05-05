@@ -160,7 +160,7 @@ async def bench_start(request: Request, _: dict = Depends(require_admin)):
         "tiers":      str(body.get("tiers")
                           or "swarm,fast,versatile,coding,highest_quality,reasoning_max"),
         "capabilities": str(body.get("capabilities")
-                            or "knowledge,knowledge_specialized,math,math_competition,reasoning,coding,coding_basic,intent,clarity,long_context"),
+                            or "knowledge,knowledge_specialized,math,math_competition,math_hard,reasoning,coding,coding_basic,intent,clarity,long_context"),
         "think":      str(body.get("think") or "off,on"),
         "tools":      str(body.get("tools") or "off,auto"),
         "target":     str(body.get("target") or "count"),

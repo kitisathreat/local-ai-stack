@@ -154,6 +154,7 @@ DEFAULT_CAPABILITIES = [
     "knowledge_specialized",
     "math",
     "math_competition",
+    "math_hard",
     "reasoning",
     "coding",
     "coding_basic",

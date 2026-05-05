@@ -1,169 +1,255 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" font-family="Segoe UI, -apple-system, Roboto, sans-serif" role="img" aria-label="Admin dashboard — Models tab with pull progress, VRAM card, and totals">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 540"
+     role="img" aria-label="Admin dashboard — Bloomberg-themed metrics with animated VRAM tiles and ticker">
   <defs>
     <style><![CDATA[
-      .bg     { fill: #0e1114; }
-      .alt    { fill: #141820; }
-      .panel  { fill: #1a1f28; }
-      .fg     { fill: #e5e7eb; }
-      .dim    { fill: #8b94a6; }
-      .accent { fill: #7c9cff; }
-      .success{ fill: #5fd18f; }
-      .warn   { fill: #ffb860; }
-      .danger { fill: #ff6b6b; }
-      .sep    { stroke: #252a34; stroke-width: 1; }
-      text    { font-size: 12px; }
-      .h1     { font-size: 15px; font-weight: 600; fill: #e5e7eb; }
-      .label  { font-size: 10px; fill: #8b94a6; letter-spacing: 0.05em; }
-      .big    { font-size: 22px; font-weight: 600; fill: #e5e7eb; }
-      .mono   { font-family: ui-monospace, Consolas, monospace; }
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+      .face   { font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace; }
+      .bg     { fill: #000000; }
+      .panel  { fill: #0a0a0a; }
+      .panel2 { fill: #161616; }
+      .amber  { fill: #FFA028; }
+      .amber-dim { fill: #B87513; }
+      .yellow { fill: #FFFF00; }
+      .green  { fill: #00FF66; }
+      .red    { fill: #FF3333; }
+      .cyan   { fill: #00DDFF; }
+      .magenta{ fill: #FF44CC; }
+      .header-bg { fill: #8B0000; }
+      .border-amber { stroke: #FFA028; stroke-width: 1; fill: none; }
+      .border-dim   { stroke: #66421A; stroke-width: 1; fill: none; }
+      .b      { font-weight: 600; }
     ]]></style>
-    <linearGradient id="vgrad" x1="0" x2="1">
-      <stop offset="0%" stop-color="#7c9cff"/>
-      <stop offset="80%" stop-color="#ffb860"/>
-      <stop offset="100%" stop-color="#ff6b6b"/>
-    </linearGradient>
   </defs>
 
-  <rect class="bg" width="980" height="560"/>
+  <rect class="bg" width="900" height="540"/>
 
   <!-- Title bar -->
-  <rect class="alt" width="980" height="56"/>
-  <line class="sep" x1="0" y1="56" x2="980" y2="56"/>
-  <text class="h1" x="20" y="34">Local AI Stack — Admin</text>
-  <text class="dim" x="900" y="34" font-size="11">— ▢ ✕</text>
+  <rect class="header-bg" x="0" y="0" width="900" height="22"/>
+  <text class="face amber b" x="14" y="16" font-size="11">ADMIN DASHBOARD  ::  /admin</text>
+  <text class="face amber-dim" x="884" y="16" font-size="11" text-anchor="end">F2=MODELS  F3=VRAM  F4=BENCH</text>
 
-  <!-- Tab bar (matches gui/windows/admin.py order) -->
-  <rect class="panel" x="20" y="68" width="940" height="34" rx="8" stroke="#252a34"/>
-  <text class="dim"    x="38"  y="89" font-size="11">Users</text>
-  <rect class="alt"    x="86"  y="74" width="74" height="22" rx="5" stroke="#7c9cff"/>
-  <text class="accent" x="98"  y="89" font-size="11">Models</text>
-  <text class="dim"    x="174" y="89" font-size="11">Tools</text>
-  <text class="dim"    x="218" y="89" font-size="11">Airgap</text>
-  <text class="dim"    x="266" y="89" font-size="11">VRAM</text>
-  <text class="dim"    x="312" y="89" font-size="11">Router</text>
-  <text class="dim"    x="362" y="89" font-size="11">Auth</text>
-  <text class="dim"    x="402" y="89" font-size="11">Errors</text>
-  <text class="dim"    x="450" y="89" font-size="11">Reload</text>
+  <!-- Tab bar -->
+  <rect class="panel" x="0" y="22" width="900" height="28"/>
+  <line x1="0" y1="50" x2="900" y2="50" class="border-amber"/>
+  <text class="face amber-dim" x="14" y="40" font-size="11">OVERVIEW</text>
+  <text class="face amber-dim" x="100" y="40" font-size="11">USERS</text>
+  <text class="face amber-dim" x="160" y="40" font-size="11">TOOLS</text>
+  <text class="face amber-dim" x="220" y="40" font-size="11">AIRGAP</text>
+  <text class="face amber-dim" x="290" y="40" font-size="11">ERRORS</text>
+  <text class="face amber b"   x="360" y="40" font-size="11">BENCH</text>
+  <line x1="358" y1="46" x2="408" y2="46" class="border-amber"/>
 
-  <!-- Pull-progress table card (Models tab body, left) -->
-  <text class="label" x="20" y="124">TIER PULL STATUS · /admin/model-pull-status</text>
-  <rect class="panel" x="20" y="132" width="600" height="276" rx="8" stroke="#252a34"/>
-  <rect class="alt"   x="20" y="132" width="600" height="28" rx="8"/>
-  <line class="sep" x1="20" y1="160" x2="620" y2="160"/>
-  <text class="label" x="32"  y="151">TIER</text>
-  <text class="label" x="160" y="151">MODEL</text>
-  <text class="label" x="380" y="151">SIZE</text>
-  <text class="label" x="450" y="151">STATUS</text>
-  <text class="label" x="540" y="151">ACTION</text>
+  <!-- Top row: VRAM tiles for 4 tiers -->
+  <g class="face">
+    <!-- swarm -->
+    <rect class="border-amber" x="14" y="62" width="208" height="92"/>
+    <text class="amber-dim" x="22" y="78" font-size="10">SWARM</text>
+    <text class="amber"     x="22" y="100" font-size="14" class="amber b">2.1 / 16 GB</text>
+    <text class="amber-dim" x="22" y="116" font-size="9">granite-4.0 h-tiny</text>
+    <rect x="22" y="130" width="192" height="6" class="border-dim"/>
+    <rect x="22" y="130" width="0" height="6" class="green">
+      <animate attributeName="width" from="0" to="25" begin="0s" dur="0.8s" fill="freeze"/>
+    </rect>
+    <text class="green b" x="214" y="148" font-size="9" text-anchor="end">13%</text>
 
-  <!-- Row: highest_quality (queued) -->
-  <text class="accent mono" x="32" y="184" font-size="11">highest_quality</text>
-  <text class="dim mono" x="160" y="184" font-size="11">Qwen3-72B-Q4_K_M</text>
-  <text class="fg" x="380" y="184">42 GB</text>
-  <text class="dim" x="450" y="184">queued</text>
-  <rect class="panel" x="538" y="170" width="68" height="22" rx="5" stroke="#252a34"/>
-  <text class="fg" x="554" y="185" font-size="11">Pull</text>
-  <line class="sep" x1="20" y1="196" x2="620" y2="196"/>
+    <!-- fast -->
+    <rect class="border-amber" x="234" y="62" width="208" height="92"/>
+    <text class="amber-dim" x="242" y="78" font-size="10">FAST</text>
+    <text class="amber"     x="242" y="100" font-size="14" class="amber b">5.6 / 16 GB</text>
+    <text class="amber-dim" x="242" y="116" font-size="9">qwen3-1.7b-instruct</text>
+    <rect x="242" y="130" width="192" height="6" class="border-dim"/>
+    <rect x="242" y="130" width="0" height="6" class="green">
+      <animate attributeName="width" from="0" to="67" begin="0.1s" dur="0.8s" fill="freeze"/>
+    </rect>
+    <text class="green b" x="434" y="148" font-size="9" text-anchor="end">35%</text>
 
-  <!-- Row: versatile (pulling — animated bar) -->
-  <text class="accent mono" x="32" y="220" font-size="11">versatile</text>
-  <text class="dim mono" x="160" y="220" font-size="11">Qwen3.6-35B-A3B-Q4_K_M</text>
-  <text class="fg" x="380" y="220">21 GB</text>
-  <text class="warn" x="450" y="220">pulling 64%</text>
-  <rect fill="#141820" x="538" y="208" width="68" height="10" rx="5" stroke="#252a34"/>
-  <rect class="warn" x="538" y="208" width="44" height="10" rx="5">
-    <animate attributeName="width" values="36;46;42;52;48;58" dur="3s" repeatCount="indefinite"/>
-  </rect>
-  <line class="sep" x1="20" y1="232" x2="620" y2="232"/>
+    <!-- versatile -->
+    <rect class="border-amber" x="454" y="62" width="208" height="92"/>
+    <text class="amber-dim" x="462" y="78" font-size="10">VERSATILE</text>
+    <text class="amber"     x="462" y="100" font-size="14" class="amber b">11.2 / 16 GB</text>
+    <text class="amber-dim" x="462" y="116" font-size="9">qwen3-30b-a3b</text>
+    <rect x="462" y="130" width="192" height="6" class="border-dim"/>
+    <rect x="462" y="130" width="0" height="6" class="yellow">
+      <animate attributeName="width" from="0" to="135" begin="0.2s" dur="0.8s" fill="freeze"/>
+    </rect>
+    <text class="yellow b" x="654" y="148" font-size="9" text-anchor="end">70%</text>
 
-  <!-- Row: fast (ready) -->
-  <text class="accent mono" x="32" y="256" font-size="11">fast</text>
-  <text class="dim mono" x="160" y="256" font-size="11">Qwen3.5-9B-Q5_K_M</text>
-  <text class="fg" x="380" y="256">7 GB</text>
-  <text class="success" x="450" y="256">ready</text>
-  <rect class="panel" x="538" y="242" width="68" height="22" rx="5" stroke="#252a34"/>
-  <text class="dim" x="552" y="257" font-size="11">Replace</text>
-  <line class="sep" x1="20" y1="268" x2="620" y2="268"/>
+    <!-- reasoning_xl -->
+    <rect class="border-amber" x="674" y="62" width="212" height="92"/>
+    <text class="amber-dim" x="682" y="78" font-size="10">REASONING_XL</text>
+    <text class="amber"     x="682" y="100" font-size="14" class="amber b">14.4 / 16 GB</text>
+    <text class="amber-dim" x="682" y="116" font-size="9">deepseek-r1-distill-q5</text>
+    <rect x="682" y="130" width="196" height="6" class="border-dim"/>
+    <rect x="682" y="130" width="0" height="6" class="red">
+      <animate attributeName="width" from="0" to="176" begin="0.3s" dur="0.8s" fill="freeze"/>
+    </rect>
+    <text class="red b" x="878" y="148" font-size="9" text-anchor="end">90%</text>
+  </g>
 
-  <!-- Row: coding -->
-  <text class="accent mono" x="32" y="292" font-size="11">coding</text>
-  <text class="dim mono" x="160" y="292" font-size="11">Qwen3-Coder-Next-80B-A3B</text>
-  <text class="fg" x="380" y="292">26 GB</text>
-  <text class="success" x="450" y="292">ready</text>
-  <rect class="panel" x="538" y="278" width="68" height="22" rx="5" stroke="#252a34"/>
-  <text class="dim" x="552" y="293" font-size="11">Replace</text>
-  <line class="sep" x1="20" y1="304" x2="620" y2="304"/>
+  <!-- Middle: VRAM time-series chart -->
+  <g class="face">
+    <rect class="border-amber" x="14" y="170" width="568" height="200"/>
+    <text class="amber b" x="22" y="186" font-size="11">VRAM ALLOCATION  ::  60s WINDOW</text>
+    <text class="amber-dim" x="574" y="186" font-size="10" text-anchor="end">live</text>
+    <circle cx="566" cy="183" r="3" class="green">
+      <animate attributeName="opacity" values="1;0.2;1" dur="1.2s" repeatCount="indefinite"/>
+    </circle>
 
-  <!-- Row: vision -->
-  <text class="accent mono" x="32" y="328" font-size="11">vision</text>
-  <text class="dim mono" x="160" y="328" font-size="11">Qwen3.6-35B + mmproj</text>
-  <text class="fg" x="380" y="328">25 GB</text>
-  <text class="success" x="450" y="328">ready · pinned</text>
-  <rect class="panel" x="538" y="314" width="68" height="22" rx="5" stroke="#252a34"/>
-  <text class="dim" x="552" y="329" font-size="11">Replace</text>
-  <line class="sep" x1="20" y1="340" x2="620" y2="340"/>
+    <!-- Axes -->
+    <line x1="40" y1="350" x2="568" y2="350" class="border-dim"/>
+    <line x1="40" y1="200" x2="40" y2="350" class="border-dim"/>
+    <text class="amber-dim" x="36" y="354" font-size="9" text-anchor="end">0</text>
+    <text class="amber-dim" x="36" y="305" font-size="9" text-anchor="end">4</text>
+    <text class="amber-dim" x="36" y="255" font-size="9" text-anchor="end">10</text>
+    <text class="amber-dim" x="36" y="205" font-size="9" text-anchor="end">16 GB</text>
 
-  <!-- Row: embedding -->
-  <text class="accent mono" x="32" y="364" font-size="11">embedding</text>
-  <text class="dim mono" x="160" y="364" font-size="11">nomic-embed-text-v1.5</text>
-  <text class="fg" x="380" y="364">0.3 GB</text>
-  <text class="success" x="450" y="364">ready · pinned</text>
-  <rect class="panel" x="538" y="350" width="68" height="22" rx="5" stroke="#252a34"/>
-  <text class="dim" x="552" y="365" font-size="11">Replace</text>
+    <!-- Animated polylines -->
+    <polyline fill="none" stroke="#FFA028" stroke-width="1.5"
+              points="40,340 90,335 140,332 190,330 240,328 290,329 340,326 390,323 440,320 490,318 540,316 568,315">
+      <animate attributeName="stroke-dasharray" from="0,1000" to="1000,0" dur="1.5s" begin="0s" fill="freeze"/>
+    </polyline>
+    <polyline fill="none" stroke="#FFFF00" stroke-width="1.5"
+              points="40,290 90,288 140,280 190,272 240,265 290,258 340,250 390,245 440,240 490,235 540,230 568,228">
+      <animate attributeName="stroke-dasharray" from="0,1000" to="1000,0" dur="1.5s" begin="0.2s" fill="freeze"/>
+    </polyline>
+    <polyline fill="none" stroke="#00DDFF" stroke-width="1.5"
+              points="40,260 90,255 140,250 190,242 240,238 290,232 340,228 390,225 440,220 490,218 540,215 568,213">
+      <animate attributeName="stroke-dasharray" from="0,1000" to="1000,0" dur="1.5s" begin="0.4s" fill="freeze"/>
+    </polyline>
+    <polyline fill="none" stroke="#00FF66" stroke-width="1.5"
+              points="40,230 90,228 140,225 190,222 240,220 290,218 340,215 390,212 440,210 490,208 540,206 568,205">
+      <animate attributeName="stroke-dasharray" from="0,1000" to="1000,0" dur="1.5s" begin="0.6s" fill="freeze"/>
+    </polyline>
 
-  <!-- Footer note -->
-  <text class="dim" x="32" y="396" font-size="10.5">Polling every 5 s · sources from config/model-sources.yaml</text>
+    <!-- Legend -->
+    <text class="amber"  x="80" y="384" font-size="10">swarm</text>
+    <line x1="50" y1="380" x2="74" y2="380" stroke="#FFA028" stroke-width="2"/>
+    <text class="yellow" x="170" y="384" font-size="10">fast</text>
+    <line x1="140" y1="380" x2="164" y2="380" stroke="#FFFF00" stroke-width="2"/>
+    <text class="cyan"   x="270" y="384" font-size="10">versatile</text>
+    <line x1="220" y1="380" x2="244" y2="380" stroke="#00DDFF" stroke-width="2"/>
+    <text class="green"  x="390" y="384" font-size="10">reasoning_xl</text>
+    <line x1="340" y1="380" x2="364" y2="380" stroke="#00FF66" stroke-width="2"/>
+  </g>
 
-  <!-- VRAM card (right) -->
-  <text class="label" x="640" y="124">VRAM RESIDENCY · /vram</text>
-  <rect class="panel" x="640" y="132" width="320" height="276" rx="8" stroke="#252a34"/>
+  <!-- Right column: traffic counter + tier list -->
+  <g class="face">
+    <rect class="border-amber" x="594" y="170" width="292" height="92"/>
+    <text class="amber-dim" x="602" y="186" font-size="10">REQUESTS / 24h</text>
+    <text class="amber b" x="602" y="220" font-size="28">
+      <tspan>4,</tspan>
+      <tspan>
+        <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/>
+        217
+      </tspan>
+    </text>
+    <text class="green b" x="602" y="246" font-size="11">▲ 12.4%</text>
+    <text class="amber-dim" x="660" y="246" font-size="11">vs prior 24h</text>
 
-  <text class="label" x="656" y="156">TOTAL / USED</text>
-  <text class="big"   x="656" y="186">21.4 / 24.0 GB</text>
+    <rect class="border-amber" x="594" y="278" width="292" height="92"/>
+    <text class="amber-dim" x="602" y="294" font-size="10">P95 LATENCY  ::  ALL TIERS</text>
+    <text class="amber b" x="602" y="328" font-size="28">3.4s</text>
+    <text class="red b" x="660" y="328" font-size="11">▲ 0.3s</text>
+    <text class="amber-dim" x="602" y="354" font-size="10">target ≤ 4.0s</text>
+  </g>
 
-  <rect fill="#141820" x="656" y="200" width="288" height="12" rx="6" stroke="#252a34"/>
-  <rect x="656" y="200" width="258" height="12" rx="6" fill="url(#vgrad)"/>
+  <!-- Bottom ticker (moving amber/red/green stocks-style) -->
+  <rect class="panel" x="0" y="386" width="900" height="22"/>
+  <line x1="0" y1="386" x2="900" y2="386" class="border-amber"/>
+  <line x1="0" y1="408" x2="900" y2="408" class="border-amber"/>
+  <text class="face amber-dim" x="14" y="402" font-size="10">LIVE</text>
+  <g class="face" font-size="10">
+    <g>
+      <text class="amber b" x="58" y="402">SWARM</text>
+      <text class="green"   x="100" y="402">+2.1%</text>
+      <text class="amber-dim" x="148" y="402">|</text>
+      <text class="amber b"   x="160" y="402">FAST</text>
+      <text class="green"     x="194" y="402">+0.8%</text>
+      <text class="amber-dim" x="240" y="402">|</text>
+      <text class="amber b"   x="252" y="402">VERSATILE</text>
+      <text class="red"       x="320" y="402">-0.4%</text>
+      <text class="amber-dim" x="362" y="402">|</text>
+      <text class="amber b"   x="374" y="402">CODING</text>
+      <text class="green"     x="424" y="402">+1.2%</text>
+      <text class="amber-dim" x="470" y="402">|</text>
+      <text class="amber b"   x="482" y="402">REASONING_MAX</text>
+      <text class="green"     x="582" y="402">+0.3%</text>
+      <text class="amber-dim" x="630" y="402">|</text>
+      <text class="amber b"   x="642" y="402">REASONING_XL</text>
+      <text class="red"       x="734" y="402">-2.0%</text>
+      <text class="amber-dim" x="780" y="402">|</text>
+      <text class="amber b"   x="792" y="402">EMBEDDING</text>
+      <text class="green"     x="864" y="402">+0.0%</text>
+      <animateTransform attributeName="transform" type="translate"
+                        from="900 0" to="-900 0" dur="20s" repeatCount="indefinite"/>
+    </g>
+  </g>
 
-  <text class="label" x="656" y="234">LOADED TIERS</text>
-  <text class="accent mono" x="656" y="254" font-size="11">tier.versatile</text>
-  <text class="dim" x="800" y="254" font-size="11">21 GB · refs 2</text>
-  <line class="sep" x1="656" y1="262" x2="944" y2="262"/>
-  <text class="accent mono" x="656" y="282" font-size="11">tier.vision</text>
-  <text class="dim" x="800" y="282" font-size="11">0.4 GB · pinned</text>
-  <line class="sep" x1="656" y1="290" x2="944" y2="290"/>
-  <text class="accent mono" x="656" y="310" font-size="11">tier.embedding</text>
-  <text class="dim" x="800" y="310" font-size="11">0.3 GB · pinned</text>
-  <line class="sep" x1="656" y1="318" x2="944" y2="318"/>
-  <text class="accent mono" x="656" y="338" font-size="11">tier.fast</text>
-  <text class="dim" x="800" y="338" font-size="11">idle · evictable</text>
+  <!-- Bottom: bench heatmap (compact) -->
+  <g class="face">
+    <text class="amber b" x="14" y="430" font-size="11">PASS-RATE HEATMAP  ::  TIER × CAPABILITY</text>
+    <g font-size="9">
+      <text class="amber-dim" x="100" y="446">know</text>
+      <text class="amber-dim" x="158" y="446">know+</text>
+      <text class="amber-dim" x="220" y="446">math</text>
+      <text class="amber-dim" x="278" y="446">math+</text>
+      <text class="amber-dim" x="340" y="446">reason</text>
+      <text class="amber-dim" x="400" y="446">code</text>
+      <text class="amber-dim" x="450" y="446">code-</text>
+      <text class="amber-dim" x="510" y="446">intent</text>
+      <text class="amber-dim" x="568" y="446">clarity</text>
+      <text class="amber-dim" x="630" y="446">long</text>
+    </g>
+    <!-- rows: tier name on left, then 10 colored cells -->
+    <g font-size="10">
+      <text class="amber-dim" x="14" y="466">swarm</text>
+      <rect x="98" y="455" width="48" height="14" fill="#a92424"/><text class="amber" x="122" y="466" text-anchor="middle">63</text>
+      <rect x="156" y="455" width="48" height="14" fill="#9c4321"/><text class="amber" x="180" y="466" text-anchor="middle">39</text>
+      <rect x="218" y="455" width="48" height="14" fill="#00FF66" opacity="0.85"/><text class="bg" x="242" y="466" text-anchor="middle" fill="#000">85</text>
+      <rect x="276" y="455" width="48" height="14" fill="#FFA028"/><text class="bg" x="300" y="466" text-anchor="middle" fill="#000">53</text>
+      <rect x="338" y="455" width="48" height="14" fill="#7a1a1a"/><text class="amber" x="362" y="466" text-anchor="middle">3</text>
+      <rect x="396" y="455" width="48" height="14" fill="#FFA028"/><text class="bg" x="420" y="466" text-anchor="middle" fill="#000">64</text>
+      <rect x="448" y="455" width="48" height="14" fill="#00FF66" opacity="0.85"/><text class="bg" x="472" y="466" text-anchor="middle" fill="#000">76</text>
+      <rect x="508" y="455" width="48" height="14" fill="#00FF66" opacity="0.85"/><text class="bg" x="532" y="466" text-anchor="middle" fill="#000">73</text>
+      <rect x="566" y="455" width="48" height="14" fill="#FFA028"/><text class="bg" x="590" y="466" text-anchor="middle" fill="#000">57</text>
+      <rect x="628" y="455" width="48" height="14" fill="#7a1a1a"/><text class="amber" x="652" y="466" text-anchor="middle">0</text>
 
-  <text class="label" x="656" y="372">SCHEDULER</text>
-  <text class="dim" x="656" y="390" font-size="11">LRU + ref-count · 2 GB headroom</text>
+      <text class="amber-dim" x="14" y="486">fast</text>
+      <rect x="98" y="475" width="48" height="14" fill="#00FF66" opacity="0.85"/><text class="bg" x="122" y="486" text-anchor="middle" fill="#000">85</text>
+      <rect x="156" y="475" width="48" height="14" fill="#00FF66" opacity="0.85"/><text class="bg" x="180" y="486" text-anchor="middle" fill="#000">79</text>
+      <rect x="218" y="475" width="48" height="14" fill="#00FF66"/><text class="bg" x="242" y="486" text-anchor="middle" fill="#000">100</text>
+      <rect x="276" y="475" width="48" height="14" fill="#161616"/><text class="amber-dim" x="300" y="486" text-anchor="middle">—</text>
+      <rect x="338" y="475" width="48" height="14" fill="#161616"/><text class="amber-dim" x="362" y="486" text-anchor="middle">—</text>
+      <rect x="396" y="475" width="48" height="14" fill="#161616"/><text class="amber-dim" x="420" y="486" text-anchor="middle">—</text>
+      <rect x="448" y="475" width="48" height="14" fill="#161616"/><text class="amber-dim" x="472" y="486" text-anchor="middle">—</text>
+      <rect x="508" y="475" width="48" height="14" fill="#161616"/><text class="amber-dim" x="532" y="486" text-anchor="middle">—</text>
+      <rect x="566" y="475" width="48" height="14" fill="#161616"/><text class="amber-dim" x="590" y="486" text-anchor="middle">—</text>
+      <rect x="628" y="475" width="48" height="14" fill="#161616"/><text class="amber-dim" x="652" y="486" text-anchor="middle">—</text>
 
-  <!-- Totals row -->
-  <text class="label" x="20" y="436">TOTALS</text>
-  <rect class="panel" x="20"  y="444" width="180" height="48" rx="8" stroke="#252a34"/>
-  <text class="label" x="32"  y="462">USERS</text>
-  <text class="fg"    x="32"  y="482" font-size="18" font-weight="600">27</text>
+      <text class="amber-dim" x="14" y="506">versatile</text>
+      <rect x="98" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="122" y="506" text-anchor="middle">—</text>
+      <rect x="156" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="180" y="506" text-anchor="middle">—</text>
+      <rect x="218" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="242" y="506" text-anchor="middle">—</text>
+      <rect x="276" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="300" y="506" text-anchor="middle">—</text>
+      <rect x="338" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="362" y="506" text-anchor="middle">—</text>
+      <rect x="396" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="420" y="506" text-anchor="middle">—</text>
+      <rect x="448" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="472" y="506" text-anchor="middle">—</text>
+      <rect x="508" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="532" y="506" text-anchor="middle">—</text>
+      <rect x="566" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="590" y="506" text-anchor="middle">—</text>
+      <rect x="628" y="495" width="48" height="14" fill="#161616"/><text class="amber-dim" x="652" y="506" text-anchor="middle">—</text>
+    </g>
+    <text class="amber-dim" x="690" y="466" font-size="10">scale: 0% red →</text>
+    <text class="yellow" x="780" y="466" font-size="10">50% amber →</text>
+    <text class="green b" x="858" y="466" font-size="10">100% green</text>
+  </g>
 
-  <rect class="panel" x="210" y="444" width="180" height="48" rx="8" stroke="#252a34"/>
-  <text class="label" x="222" y="462">CONVERSATIONS</text>
-  <text class="fg"    x="222" y="482" font-size="18" font-weight="600">418</text>
-
-  <rect class="panel" x="400" y="444" width="180" height="48" rx="8" stroke="#252a34"/>
-  <text class="label" x="412" y="462">RAG DOCS</text>
-  <text class="fg"    x="412" y="482" font-size="18" font-weight="600">94 · 41 MB</text>
-
-  <rect class="panel" x="590" y="444" width="180" height="48" rx="8" stroke="#252a34"/>
-  <text class="label" x="602" y="462">MEMORIES</text>
-  <text class="fg"    x="602" y="482" font-size="18" font-weight="600">312</text>
-
-  <rect class="panel" x="780" y="444" width="180" height="48" rx="8" stroke="#252a34"/>
-  <text class="label" x="792" y="462">TOOLS ENABLED</text>
-  <text class="fg"    x="792" y="482" font-size="18" font-weight="600">87 / 100</text>
-
-  <!-- Status bar -->
-  <text class="dim" x="20" y="528" font-size="10.5">Connected to backend :18000 · admin@local · QSettings keep-alive</text>
-  <circle class="success" cx="952" cy="525" r="4"/>
-  <text class="dim" x="900" y="529" font-size="10.5">backend ok</text>
+  <!-- Footer status -->
+  <rect class="panel" x="0" y="518" width="900" height="22"/>
+  <line x1="0" y1="518" x2="900" y2="518" class="border-amber"/>
+  <text class="face amber-dim" x="14" y="533" font-size="10">STATUS</text>
+  <text class="face green b" x="62" y="533" font-size="10">HEALTHY</text>
+  <text class="face amber-dim" x="180" y="533" font-size="10">BENCH</text>
+  <text class="face yellow b" x="232" y="533" font-size="10">RUNNING (78/280 cells)</text>
+  <text class="face amber-dim" x="660" y="533" font-size="10" text-anchor="end">refresh: 10s</text>
+  <text class="face amber-dim" x="884" y="533" font-size="10" text-anchor="end">14:32:51 PT</text>
 </svg>

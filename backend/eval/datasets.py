@@ -39,6 +39,7 @@ _DEPTHS: dict[str, dict[Depth, int]] = {
     "needle":     {"fast": 4,   "medium": 8,   "full": 16,    "stat_sig": 16,   "stat_sig_strict": 16},
     "mmlu_pro":   {"fast": 100, "medium": 300, "full": 12032, "stat_sig": 200,  "stat_sig_strict": 385},
     "math":       {"fast": 50,  "medium": 150, "full": 367,   "stat_sig": 200,  "stat_sig_strict": 367},
+    "math_hard":  {"fast": 30,  "medium": 80,  "full": 134,   "stat_sig": 134,  "stat_sig_strict": 134},
     "ifeval":     {"fast": 50,  "medium": 200, "full": 541,   "stat_sig": 200,  "stat_sig_strict": 385},
     "mbpp":       {"fast": 30,  "medium": 100, "full": 257,   "stat_sig": 200,  "stat_sig_strict": 257},
     "mtbench":    {"fast": 30,  "medium": 60,  "full": 80,    "stat_sig": 80,   "stat_sig_strict": 80},
@@ -333,6 +334,41 @@ def load_math(depth: Depth = "fast") -> list[Problem]:
         out.append(Problem(
             kind="math",
             id=f"math-L{row['level']}-{i:04d}",
+            prompt=(
+                "Solve the following competition mathematics problem. The "
+                "answer may be a number, fraction, or simple LaTeX "
+                "expression. Show your work, then give your final answer "
+                "on the last line wrapped in \\boxed{...}.\n\n"
+                + str(row["problem"])
+            ),
+            answer=str(row["answer"]),
+            meta={
+                "level": int(row["level"]),
+                "subject": str(row["subject"]),
+            },
+        ))
+    return out
+
+
+# ── MATH-Hard — Level 5 only, the hardest competition problems ─────────────
+
+def load_math_hard(depth: Depth = "fast") -> list[Problem]:
+    """MATH (Hendrycks) restricted to Level 5 — the hardest competition
+    problems in the dataset. Sits between MATH (levels 3-5 mixed; saturates
+    at the coding+ tiers) and AIME (30 problems, very narrow). At ~134
+    problems with Level-5 difficulty, top tiers reliably score ~70-80%
+    and weaker tiers ~10-30%, giving the bench cleaner tier separation
+    on the math axis."""
+    df = pd.read_parquet(_datasets_dir() / "math" / "test.parquet")
+    df_hard = df[df["level"] == 5]
+    rows = df_hard.to_dict("records")
+    n = _DEPTHS["math_hard"][depth]
+    sampled = _sample(rows, n)
+    out: list[Problem] = []
+    for i, row in enumerate(sampled):
+        out.append(Problem(
+            kind="math",   # reuse the math grader (LaTeX/integer/fraction tolerant)
+            id=f"math-L5-{i:04d}",
             prompt=(
                 "Solve the following competition mathematics problem. The "
                 "answer may be a number, fraction, or simple LaTeX "

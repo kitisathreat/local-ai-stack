@@ -3511,8 +3511,10 @@
       "multi_swarm", "multi_fast",
     ];
     const BENCH_CAPS = [
-      "knowledge", "knowledge_specialized", "math", "math_competition",
-      "reasoning", "coding", "coding_basic", "intent", "clarity", "long_context"
+      "knowledge", "knowledge_specialized",
+      "math", "math_competition", "math_hard",
+      "reasoning", "coding", "coding_basic",
+      "intent", "clarity", "long_context"
     ];
     let _benchPoll = null;
     // Refresh cadence for the inline bench dashboard. Persisted across
@@ -4020,11 +4022,38 @@
         latHtml += `</tbody></table></div>`;
       }
 
+      // ETA to full-suite completion. Uses a rolling mean wall-time
+      // over the most recent finished cells × the remaining cell count
+      // (total = BENCH_TIERS × BENCH_CAPS × 4 conditions). When idle,
+      // ETA is suppressed.
+      const _etaCellsTotal = totalCells;
+      const _etaFinished = data.cells.filter(c => c.finished).length;
+      const _etaRemaining = Math.max(0, _etaCellsTotal - _etaFinished);
+      const _recentCells = data.cells.filter(c =>
+        c.finished && c.started_at && c.finished_at &&
+        c.finished_at > c.started_at
+      ).slice(-12);
+      let _etaText = '';
+      if (data.running && _recentCells.length >= 2 && _etaRemaining > 0) {
+        const meanWallS = _recentCells.reduce((s, c) =>
+          s + (c.finished_at - c.started_at), 0) / _recentCells.length;
+        const etaS = meanWallS * _etaRemaining;
+        const fmt = (s) => {
+          if (s < 90) return Math.round(s) + 's';
+          if (s < 3600) return Math.round(s / 60) + 'm';
+          if (s < 86400) return (s / 3600).toFixed(1) + 'h';
+          return (s / 86400).toFixed(1) + 'd';
+        };
+        _etaText = `ETA ${fmt(etaS)} (${_etaFinished}/${_etaCellsTotal})`;
+      } else if (_etaFinished > 0) {
+        _etaText = `${_etaFinished}/${_etaCellsTotal} cells`;
+      }
       pane.innerHTML = `
         ${ctrlBar}
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
           <strong>Bench Dashboard</strong>
           <span class="pill" style="background:${data.running ? '#2ea043' : '#4a4a4a'};color:#fff">${data.running ? 'live' : 'idle'}</span>
+          ${_etaText ? `<span style="color:var(--accent);font-size:0.85em" title="Rolling ETA over last ${_recentCells.length} cells">${_etaText}</span>` : ''}
           <span style="color:var(--muted);font-size:0.85em">${new Date().toLocaleTimeString()}</span>
           <span style="flex:1"></span>
           <a href="/bench" target="_blank" style="color:var(--accent);font-size:0.85em">open in new tab</a>
