@@ -685,24 +685,31 @@ def build_argv(tier: TierConfig) -> list[str]:
     # specifies.
     auto_ot = _compute_moe_offload_regex(tier)
     extra_args = list(tier.extra_args) if tier.extra_args else []
+    override_patterns = list(tier.override_tensors) if tier.override_tensors else []
     if auto_ot is not None:
-        # Strip any operator-supplied `-ot <expr>` pair when its expr
-        # targets MoE expert tensors — we replace it with auto_ot.
+        # Strip any operator-supplied `-ot <expr>` pair from extra_args
+        # AND any pattern from tier.override_tensors when it targets
+        # MoE expert tensors — the auto-computed regex replaces it.
+        # Without dropping override_patterns too, llama.cpp would see
+        # both `-ot blk\.(0..12)\.ffn_.*_exps=CPU` and the wildcard
+        # `-ot .ffn_.*_exps.=CPU` and the wildcard would catch every
+        # remaining layer, undoing the partial split.
         cleaned: list[str] = []
         i = 0
         while i < len(extra_args):
             tok = extra_args[i]
             nxt = extra_args[i + 1] if i + 1 < len(extra_args) else ""
             if tok == "-ot" and "_exps" in nxt:
-                i += 2  # drop the pair
+                i += 2
                 continue
             cleaned.append(tok)
             i += 1
         extra_args = cleaned
+        override_patterns = [p for p in override_patterns if "_exps" not in p]
         if auto_ot:
             extra_args += ["-ot", auto_ot]
     argv += extra_args
-    for pattern in tier.override_tensors:
+    for pattern in override_patterns:
         argv += ["-ot", pattern]
     # Speculative decoding. When a draft GGUF is resolved for this tier,
     # llama-server runs Leviathan-style spec decode against it: the
