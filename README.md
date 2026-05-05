@@ -10,7 +10,7 @@ SSE endpoint.
 PowerShell launcher (`LocalAIStack.ps1`) and a native PySide6 desktop app.
 
 <p align="center">
-  <img src="docs/images/launcher-window.svg" alt="LocalAIStack.ps1 console output during -Start"
+  <img src="docs/images/launcher-window-bloomberg.svg" alt="LocalAIStack.ps1 console output during -Start"
        width="700"/>
 </p>
 
@@ -108,7 +108,7 @@ the initial model pull. State is persisted to `data/.wizard_state.json`
 so a crash mid-wizard doesn't lose typed input.
 
 <p align="center">
-  <img src="docs/images/setup-wizard.svg" alt="Setup wizard — Public access page" width="780"/>
+  <img src="docs/images/setup-wizard-bloomberg.svg" alt="Setup wizard — Public access page" width="780"/>
 </p>
 
 ### Chat — web (default) and native (airgap)
@@ -150,7 +150,7 @@ multi-agent visibility, per-chat overrides. A `QTimer` polls
 `/api/airgap` every 5 s and swaps modes live.
 
 <p align="center">
-  <img src="docs/images/frontend-chat.svg" alt="Chat UI mid-collaborative-multi-agent run — orchestrator on Versatile, three Fast workers cross-reading drafts in collaborative round 2" width="900"/>
+  <img src="docs/images/frontend-chat-bloomberg.svg" alt="Chat UI mid-collaborative-multi-agent run — orchestrator on Versatile, three Fast workers cross-reading drafts in collaborative round 2" width="900"/>
   <br/>
   <em>Chat UI mid-multi-agent run. Orchestrator on Versatile (3 slots,
   spec decode), three Fast workers (round 2 of 3 collaborative refinement).
@@ -158,7 +158,7 @@ multi-agent visibility, per-chat overrides. A `QTimer` polls
 </p>
 
 <p align="center">
-  <img src="docs/images/chat-tools-popover.svg" alt="Animated mockup of the chat 🔧 Tools popover. Cycles between collapsed (two top-level tier categories) and drilled-in (tier → group → subgroup → module-aggregated rows like 'Academic citations (Crossref)'). One toggle flips on partway through to demonstrate the master-switch enabling all methods in a module." width="720"/>
+  <img src="docs/images/chat-tools-popover-bloomberg.svg" alt="Animated mockup of the chat 🔧 Tools popover. Cycles between collapsed (two top-level tier categories) and drilled-in (tier → group → subgroup → module-aggregated rows like 'Academic citations (Crossref)'). One toggle flips on partway through to demonstrate the master-switch enabling all methods in a module." width="720"/>
   <br/>
   <em>🔧 Tools popover, animated. Default state: 2 collapsed tier
   headers. Drills into Network-only Tools → Research &amp; Academia →
@@ -191,7 +191,7 @@ Preact admin SPA. Nine tabs:
 | **Reload** | Hot-reload `config/*.yaml` without restarting the backend |
 
 <p align="center">
-  <img src="docs/images/admin-dashboard.svg" alt="Admin dashboard — Models tab + VRAM card" width="900"/>
+  <img src="docs/images/admin-dashboard-bloomberg.svg" alt="Admin dashboard — Models tab + VRAM card" width="900"/>
 </p>
 
 #### Multi-agent orchestration (Router tab)
@@ -205,7 +205,7 @@ synthesized back. Two interaction modes:
   N rounds before synthesis
 
 <p align="center">
-  <img src="docs/images/admin-multi-agent.svg" alt="Multi-agent workflow + live test runner" width="900"/>
+  <img src="docs/images/admin-multi-agent-bloomberg.svg" alt="Multi-agent workflow + live test runner" width="900"/>
 </p>
 
 ### Metrics — live VRAM chart
@@ -216,7 +216,7 @@ window per tier, and renders one `QLineSeries` per tier on a 0–48 GB
 y-axis. The polling task cancels cleanly on close.
 
 <p align="center">
-  <img src="docs/images/metrics.svg" alt="Metrics window — VRAM per tier line chart" width="780"/>
+  <img src="docs/images/metrics-bloomberg.svg" alt="Metrics window — VRAM per tier line chart" width="780"/>
 </p>
 
 ### Diagnostics — health check viewer
@@ -228,7 +228,7 @@ reveals full detail and a fix hint. Failures with a registered fix
 hook are auto-fixable from the toolbar.
 
 <p align="center">
-  <img src="docs/images/diagnostics.svg" alt="Diagnostics window — health results with auto-fix" width="900"/>
+  <img src="docs/images/diagnostics-bloomberg.svg" alt="Diagnostics window — health results with auto-fix" width="900"/>
 </p>
 
 Run it directly with `.\LocalAIStack.ps1 -Test` (add `-Fix` to auto-apply
@@ -242,7 +242,7 @@ a `QThread` (not asyncio) to avoid deadlocking Qt's modal event loop.
 QSettings persists the last username; the password is never stored.
 
 <p align="center">
-  <img src="docs/images/login-dialog.svg" alt="Admin sign-in dialog" width="520"/>
+  <img src="docs/images/login-dialog-bloomberg.svg" alt="Admin sign-in dialog" width="520"/>
 </p>
 
 ### System tray
