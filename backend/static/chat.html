@@ -3605,7 +3605,32 @@
             if (strong) group = strong.textContent.trim();
           }
         }
-        return group + '|' + summaryText;
+        // Section heading (e.g. "Baseline Comparisons (current vs prev best...)"
+        // vs "Condition Δ vs baseline (think=off, tools=off)") — without it
+        // the same tier appears in two tables with identical summary text
+        // ("per-capability breakdown") and the snapshot/restore mistakenly
+        // re-opens BOTH whenever the user clicks ONE.
+        let section = '';
+        const tbl = d.closest('table');
+        if (tbl) {
+          let el = tbl.previousElementSibling;
+          while (el && !/^H[1-6]$/.test(el.tagName)) {
+            el = el.previousElementSibling;
+          }
+          if (!el) {
+            // Fall back to walking parent's preceding heading.
+            let p = tbl.parentElement;
+            while (p && !el) {
+              el = p.previousElementSibling;
+              while (el && !/^H[1-6]$/.test(el.tagName)) {
+                el = el.previousElementSibling;
+              }
+              p = p.parentElement;
+            }
+          }
+          if (el) section = el.textContent.trim().slice(0, 60);
+        }
+        return section + '||' + group + '||' + summaryText;
       }
       pane.querySelectorAll('details[open]').forEach(d => {
         const key = _detailsKey(d);

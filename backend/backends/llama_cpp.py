@@ -150,13 +150,28 @@ def build_argv(tier: TierConfig) -> list[str]:
     if tier.port is None:
         raise ValueError(f"tier {tier.name!r} has no port")
 
+    # llama-server's --ctx-size is the TOTAL KV pool divided across
+    # --parallel slots; per-slot context = ctx_size / parallel. The
+    # config's `context_window` is the per-slot value the operator
+    # actually wants (= what a single conversation can use), so the
+    # launcher must multiply by parallel_slots before passing to
+    # llama-server.
+    #
+    # Without this multiplication the bench's long-context cells (and
+    # any user prompt over 2k tokens on tiers with parallel_slots ≥ 8)
+    # would silently fail with HTTP 400 "exceeds the available context
+    # size" — for example swarm with context_window=16384 and
+    # parallel_slots=8 used to give EACH slot only 2048 tokens of
+    # context, rejecting every needle prompt.
+    parallel = max(1, tier.parallel_slots)
+    total_ctx = tier.context_window * parallel
     argv: list[str] = [
         llama_server_binary(),
         "--host", "127.0.0.1",
         "--port", str(tier.port),
         "-m", _resolve_for_llama(tier.gguf_path),
-        "--ctx-size", str(tier.context_window),
-        "--parallel", str(max(1, tier.parallel_slots)),
+        "--ctx-size", str(total_ctx),
+        "--parallel", str(parallel),
         "-ngl", str(tier.n_gpu_layers),
         "--cache-type-k", tier.cache_type_k,
         "--cache-type-v", tier.cache_type_v,

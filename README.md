@@ -84,6 +84,7 @@ pwsh .\LocalAIStack.ps1 -Help
 | [`tools/`](tools/) | 90+ discoverable tool modules (web, finance, science, data, dev) |
 | [`tests/`](tests/) | Pytest suite + `local_health.py` health check (CI runs without GPU) |
 | [`installer/`](installer/) | Inno Setup script + PyInstaller spec for the Windows installer |
+| [`docs/streaming.md`](docs/streaming.md) | Jellyfin media server at `stream.mylensandi.com` (sibling cloudflared ingress, gated by Cloudflare Access email allowlist) |
 | [`scripts/steps/`](scripts/steps/) | Helpers dot-sourced by `LocalAIStack.ps1` |
 | `vendor/` *(generated)* | Pinned Qdrant + llama-server binaries and three Python venvs |
 | `data/` *(generated)* | SQLite, encrypted histories, Qdrant storage, resolved-model cache, `.env` |
@@ -589,6 +590,75 @@ python scripts/bench_tiers.py --tiers fast,versatile,coding
 # coding_80b until --variant lands:
 python -c "import json,urllib.request,time; b={'model':'tier.coding','variant':'80b','stream':True,'max_tokens':220,'messages':[{'role':'user','content':'Count from 1 to 50, single comma+space separator, one line, no other text.'}]}; ..."
 ```
+
+### Capability evals — pass-rate per tier × capability × think mode
+
+[`scripts/eval_tiers.py`](scripts/eval_tiers.py) runs vendored offline
+benchmarks against the live backend and scores each problem. Capability →
+dataset mapping: `knowledge → MMLU subset (50)`, `math → GSM8K (50)`,
+`long_context → needle-in-haystack (4 ctx widths)`. Both `--think on`
+and `--think off` are run so the impact of the chat template's thinking
+prefix is visible. Results below are from the 2026-05-04 fast-depth run.
+
+**think=off (knowledge recall + chain-of-thought math via prompt only):**
+
+| tier | knowledge | math | long_context |
+|---|---:|---:|---:|
+| `swarm` (Granite-4 H-Tiny, 7B/1B) | 44% | 34% | 0% |
+| `fast` (Qwen3.5 9B) | **80%** | **86%** | 25% |
+| `versatile` (Qwen3.6 35B-A3B) | 76% | **96%** | 25% |
+| `coding` (Qwen3-Coder 30B-A3B) | 72% | **96%** | 0% |
+| `highest_quality` (Qwen3-Next 80B Thinking) | 78% | 94% | 25% |
+| `reasoning_max` (GPT-OSS-120B) | **82%** | **96%** | 25% |
+
+**think=on (chat template injects `<think>` block; reasoning models use it natively):**
+
+| tier | knowledge | math | long_context | Δ knowledge | Δ math |
+|---|---:|---:|---:|---:|---:|
+| `swarm` | 70% | 82% | 0% | **+26 pp** | **+48 pp** |
+| `fast` | 60% | 74% | 25% | −20 pp | −12 pp |
+| `versatile` | **80%** | **98%** | 25% | +4 pp | +2 pp |
+| `coding` | **80%** | **98%** | 0% | +8 pp | +2 pp |
+| `highest_quality` | **82%** | 96% | 25% | +4 pp | +2 pp |
+| `reasoning_max` | 80% | **98%** | 25% | −2 pp | +2 pp |
+
+Headlines:
+- **Thinking helps small models the most.** `swarm` (1B active) gains
+  +37 pp on average — the chain-of-thought prefix gives a tiny model
+  the working space it lacks otherwise.
+- **Thinking *hurts* `fast` (Qwen3.5-9B-Instruct).** Qwen3.5-9B isn't
+  thinking-tuned; the prefix makes it overthink simple recall problems
+  and emit verbose preamble that crowds out the final answer.
+- **Bigger models get small but consistent gains** from thinking
+  (+2–8 pp). `versatile` and `coding` hit 98% on math.
+- **Long-context is broken at ≥32k for every tier.** Same pattern
+  with and without thinking — points to a yarn/rope-extension issue
+  in the residency planner's ctx-cascade, not a per-tier model bug.
+  Tracking separately.
+
+**Important fix landed during this run.** The eval grader was scoring
+empty content for thinking-tuned tiers because the backend dropped
+`delta.reasoning_content` from llama-server's SSE stream. With
+`enable_thinking=true`, llama.cpp routes thinking output to
+`reasoning_content` and emits the post-`</think>` answer in `content`;
+the eval runner only collected `content`, so any cell where the model
+exhausted its budget mid-thinking saw an empty grader input. Fixed by
+forwarding `reasoning_content` through the backend SSE and aggregating
+both fields in [`backend/eval/runner.py`](backend/eval/runner.py).
+Without this fix, every think-on cell looked 5–20 pp worse than its
+true rate.
+
+Reproduce with:
+
+```powershell
+python scripts/eval_tiers.py --tiers all --capabilities all --depth fast --think off
+python scripts/eval_tiers.py --tiers all --capabilities all --depth fast --think on
+```
+
+For the overnight definitive run use `--depth full` (all 1319 GSM8K
+problems, all 399 MMLU problems, all 16 needle positions), which
+produces tighter pass-rate confidence intervals at the cost of ~6–8 h
+per tier on this rig.
 
 ## Tools, connectors, skills, plugins, RAG, memory
 

@@ -252,12 +252,26 @@ def load_needle(depth: Depth = "fast") -> list[Problem]:
 
     rng = random.Random(42)
     out: list[Problem] = []
-    chunk_tokens = 25  # rough — _NEEDLE_FILLER is ~110 chars / ~25 tok
+    # _NEEDLE_FILLER is ~457 chars / ~110 tokens (measured against Qwen
+    # and Granite BPE tokenizers; English averages ~3.8 chars/token).
+    # The previous estimate of 25 tokens/chunk was off by 4.4×, which
+    # produced ~17.6k-token prompts under a "ctx_target=4096" label and
+    # silently overflowed swarm's 16k context — the model returned
+    # empty content and the runner aborted with consecutive_zero_tok
+    # on every needle cell.
+    #
+    # We pad chunk_tokens up by ~10% (110 → 125) because real BPE
+    # tokenizers come in slightly lower than the chars/3.8 estimate
+    # for the boring repeating filler text, and the runner's per-tier
+    # ctx_skip filter compares ctx_target verbatim to the tier window.
+    # Aiming for 90-95% utilisation leaves headroom for the question
+    # text + system prompt + tier-specific BOS/EOS overhead.
+    chunk_tokens = 125
     for ctx_target in ctxs:
-        # Each ctx target needs (ctx_target / chunk_tokens) repeats of filler
-        # to roughly fill the window. Leave 200 tokens of headroom for the
-        # question + answer + system prompt.
-        n_chunks = max(1, (ctx_target - 200) // chunk_tokens)
+        # n_chunks = roughly (ctx_target × 0.9) / chunk_tokens — fills to
+        # ~90% of the labeled ctx_target, leaving ~10% of the window for
+        # prompt overhead, the question, the answer, and tokenizer slop.
+        n_chunks = max(1, int(ctx_target * 0.9) // chunk_tokens)
         for pos in positions:
             secret = rng.randint(100000, 999999)
             insert_at = int(n_chunks * pos)

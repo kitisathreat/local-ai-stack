@@ -286,7 +286,14 @@ IMPORTANT: list the chat hostname BEFORE any wildcard catch-all or
     ingress:
       - hostname: chat.mylensandi.com
         service: http://localhost:18000
+      - hostname: stream.mylensandi.com
+        service: http://localhost:8096
       - service: http_status:404
+
+The stream.* hostname routes to Jellyfin (Windows service "JellyfinServer",
+listens on :8096). Jellyfin has its own user system, but the public origin
+is gated by a Cloudflare Access policy (email allowlist). See
+docs/streaming.md for the dashboard setup steps.
 
 Logs
 ----
