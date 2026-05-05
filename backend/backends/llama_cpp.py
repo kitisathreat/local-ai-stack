@@ -466,6 +466,26 @@ def _gpu_total_gb_default() -> float:
     return 24.0
 
 
+def _gpu_free_gb() -> float:
+    """Free VRAM right now. Used by the offload computer instead of
+    total VRAM so embedding/reranker/orphan llama-servers/other GPU
+    consumers don't make the partial-offload calc OOM at runtime.
+    Falls back to total - 6 GB (a reasonable assumption that ~6 GB is
+    typically reserved by other stack components) if nvidia-smi
+    isn't available."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=4,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            mb = int(r.stdout.strip().split("\n")[0])
+            return mb / 1024.0
+    except Exception:
+        pass
+    return max(0.0, _gpu_total_gb_default() - 6.0)
+
+
 def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     """Return a `-ot` regex value that pins the lower-N layers' MoE
     expert tensors to CPU and leaves the upper layers on GPU. Returns
@@ -543,18 +563,23 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     if getattr(tier, "draft_gguf_path", None):
         draft_gb = _model_total_size_gb(tier.draft_gguf_path) * 0.6  # weights only
 
-    # 6 GB covers CUDA graphs, prompt-evaluation scratch buffers, and
-    # general activation overhead beyond the weights + KV. Empirical
-    # observation on this rig (versatile loaded with full-CPU experts
-    # measured 15 GB GPU but theoretical weight+KV+draft was only 7 GB),
-    # the gap is ~5-8 GB of CUDA-side overhead that scales with model
-    # size and prompt length. Sized at 6 GB to absorb variation across
-    # tiers without pushing partial-offload tiers into "fits entirely"
-    # (which would actually OOM at runtime).
-    safety_gb = 6.0
+    # Safety: 4 GB covers CUDA graphs, prompt-evaluation scratch
+    # buffers, and longer-prompt activation spikes. We use FREE VRAM
+    # (not total) so embedding/reranker/other GPU consumers are
+    # already deducted — no need to over-pad here.
+    #
+    # Why FREE matters: a previous version used `total - safety` and
+    # OOM-killed versatile at GSM8K problem 6 because the running
+    # embedding tier (5 GB) wasn't accounted for. Treating the free
+    # reading as the budget naturally adapts to whatever else is
+    # GPU-resident.
+    safety_gb = 4.0
     gpu_total_gb = _gpu_total_gb_default()
+    gpu_free_gb = _gpu_free_gb()
+    # Budget = current free VRAM minus per-spawn fixed costs (this
+    # tier's nonexpert weights, KV cache, draft model, safety).
     gpu_baseline_gb = nonexpert_gb + kv_gb + draft_gb + safety_gb
-    gpu_budget_for_experts_gb = max(0.0, gpu_total_gb - gpu_baseline_gb)
+    gpu_budget_for_experts_gb = max(0.0, gpu_free_gb - gpu_baseline_gb)
 
     if per_layer_expert_gb <= 0:
         return None
@@ -586,10 +611,12 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     logger.info(
         "moe-offload[%s]: arch=%s layers=%d experts=%d/%d  "
         "file=%.1f GB  nonexpert=%.1f GB  KV=%.1f GB  draft=%.1f GB  "
+        "free_vram=%.1f GB  budget=%.1f GB  per_layer=%.2f GB  "
         "→ CPU layers 0..%d (%d), GPU layers %d..%d (%d)",
         tier.gguf_path.split("\\")[-1].split("/")[-1], arch,
         block_count, meta.get("expert_used_count") or 0, expert_count,
         file_gb, nonexpert_gb, kv_gb, draft_gb,
+        gpu_free_gb, gpu_budget_for_experts_gb, per_layer_expert_gb,
         cpu_layers - 1, cpu_layers, cpu_layers, block_count - 1, gpu_layers,
     )
     return regex
