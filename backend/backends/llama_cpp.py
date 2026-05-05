@@ -201,6 +201,400 @@ def _is_serving_role(tier: TierConfig) -> bool:
     return role in ("embedding", "reranker", "vision")
 
 
+# ── MoE expert offload computer ─────────────────────────────────────
+#
+# For Mixture-of-Experts models, llama.cpp lets us pin specific tensors
+# to CPU via --override-tensor. The original config used a blanket
+# `-ot ".ffn_.*_exps.=CPU"` that pushed EVERY expert tensor onto CPU,
+# trading throughput for the ability to fit big-MoE weights on a 24 GB
+# card. With ~9 GB of GPU headroom free during bench-mode we can
+# instead pick a layer-bounded subset that fits — the bench's CPU-bound
+# bottleneck (CPU ~99 %, GPU ~30 %) eases as more layers' experts run
+# on HBM-fed tensor cores.
+#
+# This computer reads block_count + expert_count + expert_used_count
+# from the model's GGUF metadata, estimates per-layer expert footprint
+# from the actual file size, and solves for the maximum number of
+# layers whose experts will fit alongside attention + KV + draft on
+# the GPU. Returns a regex that pins the LOWER (CPU) layers, leaving
+# the upper layers' experts on GPU.
+
+# Architecture-specific share of file weight that is expert tensor
+# (the rest is attention, embeddings, layer norms, output head). Hand-
+# measured from gguf-dump on representative checkpoints.
+_EXPERT_FRACTION_BY_ARCH: dict[str, float] = {
+    "qwen3moe":   0.92,
+    "qwen35moe":  0.92,
+    "qwen3next":  0.90,
+    "gpt-oss":    0.85,
+    "deepseek2":  0.92,
+    "glm45":      0.90,
+    # Fallback for unknown MoE architectures
+    "default":    0.88,
+}
+
+
+def _gguf_meta(path: str) -> dict:
+    """Pull architecture, block_count, expert_count, expert_used_count
+    from the GGUF header AND scan the tensor list to compute the exact
+    size of expert tensors per layer. Multi-shard GGUFs are aggregated:
+    metadata comes from shard 1, tensor sizes are summed across every
+    shard (the experts of a sharded model often live in shards 2-N).
+    Returns an empty dict on any parse failure (caller falls back to
+    full-CPU offload)."""
+    # Bytes/element by GGUF type. Source: ggml/src/ggml-quants.h. Q4
+    # block size 32 elem in 18 bytes = 0.5625 byte/elem.
+    GGUF_TYPE_BPE = {
+        0: 4.0,        # F32
+        1: 2.0,        # F16
+        2: 0.5625,     # Q4_0   (block 32, 18 bytes)
+        3: 0.625,      # Q4_1   (block 32, 20 bytes)
+        6: 0.6875,     # Q5_0   (block 32, 22 bytes)
+        7: 0.75,       # Q5_1   (block 32, 24 bytes)
+        8: 1.0625,     # Q8_0   (block 32, 34 bytes)
+        9: 1.0625,     # Q8_1
+        10: 0.5625,    # Q2_K   (super-block 256, 144 bytes ≈ 0.5625)
+        11: 0.40625,   # Q3_K_S (super-block 256, 104 bytes)
+        12: 0.4375,    # Q3_K   (super-block 256, 112 bytes)
+        13: 0.5,       # Q4_K_S
+        14: 0.5625,    # Q4_K   (super-block 256, 144 bytes)
+        15: 0.625,     # Q5_K   (super-block 256, 160 bytes)
+        16: 0.6875,    # Q6_K   (super-block 256, 176 bytes)
+        17: 1.0625,    # Q8_K
+        18: 0.5625,    # IQ2_XXS — actual: ~2.06 bpw → 0.2575 byte/elem
+        19: 0.5625,    # IQ2_XS
+        20: 0.5625,    # IQ3_XXS
+        21: 0.5625,    # IQ1_S
+        22: 0.5625,    # IQ4_NL
+        23: 0.5625,    # IQ3_S
+        24: 0.5625,    # IQ2_S
+        25: 0.5625,    # IQ4_XS
+        26: 0.3125,    # IQ2_M  (~2.5 bpw)
+        27: 0.5,       # BF16
+        # ... many more; default to 0.5 byte/elem if unknown
+    }
+    try:
+        with open(path, "rb") as f:
+            import struct
+            if f.read(4) != b"GGUF":
+                return {}
+            struct.unpack("<I", f.read(4))[0]
+            tensor_count = struct.unpack("<Q", f.read(8))[0]
+            mcount = struct.unpack("<Q", f.read(8))[0]
+            out: dict = {}
+            for _ in range(mcount):
+                klen = struct.unpack("<Q", f.read(8))[0]
+                key = f.read(klen).decode("utf-8", "ignore")
+                vt = struct.unpack("<I", f.read(4))[0]
+
+                def read_val(t):
+                    if t in (0, 1):
+                        f.read(1); return None
+                    if t in (2, 3):
+                        f.read(2); return None
+                    if t == 4:
+                        return struct.unpack("<I", f.read(4))[0]
+                    if t == 5:
+                        return struct.unpack("<i", f.read(4))[0]
+                    if t == 6:
+                        f.read(4); return None
+                    if t == 7:
+                        f.read(1); return None
+                    if t == 8:
+                        sl = struct.unpack("<Q", f.read(8))[0]
+                        return f.read(sl).decode("utf-8", "ignore")
+                    if t == 9:
+                        at = struct.unpack("<I", f.read(4))[0]
+                        al = struct.unpack("<Q", f.read(8))[0]
+                        for _i in range(al):
+                            read_val(at)
+                        return None
+                    if t == 10:
+                        return struct.unpack("<Q", f.read(8))[0]
+                    if t == 11:
+                        return struct.unpack("<q", f.read(8))[0]
+                    if t == 12:
+                        f.read(8); return None
+
+                v = read_val(vt)
+                if key == "general.architecture":
+                    out["arch"] = v
+                for tail in ("block_count", "expert_count",
+                             "expert_used_count", "embedding_length",
+                             "context_length"):
+                    if key.endswith("." + tail):
+                        out[tail] = v
+
+            # Now scan THIS shard's tensor list. Each entry: name,
+            # n_dims, dim[0..n-1], type (uint32), offset (uint64).
+            expert_bytes = 0
+            nonexpert_bytes = 0
+            for _ in range(tensor_count):
+                nlen = struct.unpack("<Q", f.read(8))[0]
+                tname = f.read(nlen).decode("utf-8", "ignore")
+                ndims = struct.unpack("<I", f.read(4))[0]
+                dims = [struct.unpack("<Q", f.read(8))[0] for _ in range(ndims)]
+                ttype = struct.unpack("<I", f.read(4))[0]
+                f.read(8)  # skip offset
+                n_elems = 1
+                for d in dims:
+                    n_elems *= d
+                bpe = GGUF_TYPE_BPE.get(ttype, 0.5)
+                size = int(n_elems * bpe)
+                if "_exps" in tname:
+                    expert_bytes += size
+                else:
+                    nonexpert_bytes += size
+            out["expert_bytes"] = expert_bytes
+            out["nonexpert_bytes"] = nonexpert_bytes
+
+            # If this is a multi-shard model (filename ends in
+            # -NNNNN-of-MMMMM.gguf), open shards 2..M and accumulate
+            # their tensor bytes into the same expert/nonexpert totals.
+            # Sharded GGUFs store metadata only in shard 1, so we just
+            # need their tensor lists.
+            try:
+                p = Path(path)
+                m = re.match(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$", p.name)
+                if m:
+                    prefix = m.group(1)
+                    n_shards = int(m.group(3))
+                    for i in range(2, n_shards + 1):
+                        shard = p.parent / f"{prefix}-{i:05d}-of-{n_shards:05d}.gguf"
+                        if not shard.exists():
+                            continue
+                        e2, n2 = _gguf_tensor_bytes(str(shard), GGUF_TYPE_BPE)
+                        out["expert_bytes"] += e2
+                        out["nonexpert_bytes"] += n2
+            except Exception as exc:
+                logger.debug("gguf_meta shard scan failed: %s", exc)
+            return out
+    except Exception as e:
+        logger.debug("gguf_meta parse failed for %s: %s", path, e)
+        return {}
+
+
+def _gguf_tensor_bytes(path: str, bpe_table: dict) -> tuple[int, int]:
+    """Helper: scan tensor list of a (typically non-first) GGUF shard
+    and return (expert_bytes, nonexpert_bytes). Skips the metadata KV
+    block (shards 2..N have empty metadata in practice but we parse
+    them anyway since some tools write per-shard metadata)."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return (0, 0)
+            struct.unpack("<I", f.read(4))[0]
+            tcount = struct.unpack("<Q", f.read(8))[0]
+            mcount = struct.unpack("<Q", f.read(8))[0]
+
+            def skip_val(t):
+                if t in (0, 1): f.read(1)
+                elif t in (2, 3): f.read(2)
+                elif t == 4: f.read(4)
+                elif t == 5: f.read(4)
+                elif t == 6: f.read(4)
+                elif t == 7: f.read(1)
+                elif t == 8:
+                    sl = struct.unpack("<Q", f.read(8))[0]; f.read(sl)
+                elif t == 9:
+                    at = struct.unpack("<I", f.read(4))[0]
+                    al = struct.unpack("<Q", f.read(8))[0]
+                    for _i in range(al): skip_val(at)
+                elif t == 10: f.read(8)
+                elif t == 11: f.read(8)
+                elif t == 12: f.read(8)
+            for _ in range(mcount):
+                kl = struct.unpack("<Q", f.read(8))[0]
+                f.read(kl)  # key
+                vt = struct.unpack("<I", f.read(4))[0]
+                skip_val(vt)
+            ex = ne = 0
+            for _ in range(tcount):
+                nl = struct.unpack("<Q", f.read(8))[0]
+                nm = f.read(nl).decode("utf-8", "ignore")
+                nd = struct.unpack("<I", f.read(4))[0]
+                ds = [struct.unpack("<Q", f.read(8))[0] for _ in range(nd)]
+                tt = struct.unpack("<I", f.read(4))[0]
+                f.read(8)
+                ne_ = 1
+                for d in ds: ne_ *= d
+                bpe = bpe_table.get(tt, 0.5)
+                sz = int(ne_ * bpe)
+                if "_exps" in nm: ex += sz
+                else: ne += sz
+            return (ex, ne)
+    except Exception:
+        return (0, 0)
+
+
+def _model_total_size_gb(gguf_path: str) -> float:
+    """File size on disk for a GGUF, summing shards if the path is the
+    first of an N-shard set (filename pattern ...-00001-of-NNNNN.gguf).
+    Returns 0 when the file is missing."""
+    p = Path(gguf_path)
+    if not p.exists():
+        return 0.0
+    total = p.stat().st_size
+    # Detect multi-shard pattern and sum siblings
+    name = p.name
+    m = re.match(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$", name)
+    if m:
+        prefix, _idx, total_shards = m.group(1), m.group(2), int(m.group(3))
+        for i in range(1, total_shards + 1):
+            shard = p.parent / f"{prefix}-{i:05d}-of-{total_shards:05d}.gguf"
+            if shard.exists() and shard != p:
+                total += shard.stat().st_size
+    return total / (1024 ** 3)
+
+
+def _gpu_total_gb_default() -> float:
+    """Best effort: read total VRAM from nvidia-smi. Falls back to 24
+    when nvidia-smi isn't available (matches the rig the configs were
+    sized against — operators running smaller cards get a more
+    conservative offload than ideal but no OOM)."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=4,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            mb = int(r.stdout.strip().split("\n")[0])
+            return mb / 1024.0
+    except Exception:
+        pass
+    return 24.0
+
+
+def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
+    """Return a `-ot` regex value that pins the lower-N layers' MoE
+    expert tensors to CPU and leaves the upper layers on GPU. Returns
+    None when:
+      - The model isn't MoE (no expert_count in GGUF)
+      - The whole model fits on GPU (no offload needed)
+      - The model is so big even one layer of experts won't fit
+        (caller should use full-CPU offload as fallback)
+
+    The split is computed from architecture metrics: per-layer expert
+    weight × layer count vs available GPU budget."""
+    if not tier.gguf_path:
+        return None
+    meta = _gguf_meta(tier.gguf_path)
+    expert_count = meta.get("expert_count") or 0
+    block_count = meta.get("block_count") or 0
+    if expert_count <= 0 or block_count <= 0:
+        # Not MoE, or metadata missing — caller decides.
+        return None
+
+    arch = (meta.get("arch") or "").lower()
+
+    # Use the EXACT tensor-list sums we extracted from the GGUF when
+    # available — file × global expert_fraction was off by 2× on
+    # heavy-shared MoEs like Qwen3.6-35B-A3B (50% non-expert) compared
+    # to sparse ones like Qwen3-Next-80B-A3B (12% non-expert). The
+    # tensor list gives us per-tier truth without architecture
+    # guessing.
+    file_gb = _model_total_size_gb(tier.gguf_path)
+    if file_gb <= 0:
+        return None
+    expert_bytes = meta.get("expert_bytes") or 0
+    nonexpert_bytes = meta.get("nonexpert_bytes") or 0
+    parser_total_gb = (expert_bytes + nonexpert_bytes) / (1024 ** 3)
+    if parser_total_gb > 0 and file_gb > 0:
+        # Normalise against the actual file size on disk — the BPE
+        # table is approximate (especially for UD-style mixed-quant
+        # GGUFs with IQ-family types) and can be off by 2× either way.
+        # We trust the EXPERT/NON-EXPERT RATIO from the parser but
+        # rescale to file size so absolute numbers align with reality.
+        scale = file_gb / parser_total_gb
+        expert_gb = (expert_bytes / (1024 ** 3)) * scale
+        nonexpert_gb = (nonexpert_bytes / (1024 ** 3)) * scale
+    else:
+        # No tensor scan or empty result — fall back to per-arch
+        # global fraction of file size.
+        expert_fraction = _EXPERT_FRACTION_BY_ARCH.get(
+            arch, _EXPERT_FRACTION_BY_ARCH["default"])
+        expert_gb = file_gb * expert_fraction
+        nonexpert_gb = file_gb * (1.0 - expert_fraction)
+    per_layer_expert_gb = expert_gb / block_count
+
+    # Baseline GPU footprint that is NOT expert weights:
+    #   - Non-expert weights (attention, embeds, output head, norms)
+    #   - KV cache at this tier's context_window × parallel × bytes/dtype
+    #   - Spec-decode draft model (if configured)
+    #   - 4 GB safety margin (activations, cuda graphs, prompt-eval
+    #     scratch buffers — measured 3-5 GB on Qwen3 spec-decode)
+
+    # KV cache = 2 (k+v) × block_count × n_kv_heads × head_dim × ctx × bytes
+    # Without n_kv_heads in the gguf scan, approximate from embedding_length
+    # × ctx_window × per-token-bytes-per-layer-pair. Q4_0 ≈ 0.5 byte/elem.
+    embed = meta.get("embedding_length") or 4096
+    ctx = tier.context_window
+    parallel = max(1, tier.parallel_slots) if not _is_bench_active() else 1
+    pool_ctx = ctx * parallel
+    bytes_per_kv_elem = 0.5 if (tier.cache_type_k or "").startswith("q4") else (
+        1.0 if (tier.cache_type_k or "").startswith("q8") else 2.0)
+    # Conservative: assume 1/4 of embed_dim is the KV head dim aggregate
+    # (typical GQA ratio). Result is a rough overestimate which is what
+    # we want for the safety budget.
+    kv_gb = (2 * block_count * (embed // 4) * pool_ctx * bytes_per_kv_elem) / (1024 ** 3)
+
+    draft_gb = 0.0
+    if getattr(tier, "draft_gguf_path", None):
+        draft_gb = _model_total_size_gb(tier.draft_gguf_path) * 0.6  # weights only
+
+    # 6 GB covers CUDA graphs, prompt-evaluation scratch buffers, and
+    # general activation overhead beyond the weights + KV. Empirical
+    # observation on this rig (versatile loaded with full-CPU experts
+    # measured 15 GB GPU but theoretical weight+KV+draft was only 7 GB),
+    # the gap is ~5-8 GB of CUDA-side overhead that scales with model
+    # size and prompt length. Sized at 6 GB to absorb variation across
+    # tiers without pushing partial-offload tiers into "fits entirely"
+    # (which would actually OOM at runtime).
+    safety_gb = 6.0
+    gpu_total_gb = _gpu_total_gb_default()
+    gpu_baseline_gb = nonexpert_gb + kv_gb + draft_gb + safety_gb
+    gpu_budget_for_experts_gb = max(0.0, gpu_total_gb - gpu_baseline_gb)
+
+    if per_layer_expert_gb <= 0:
+        return None
+    gpu_layers = int(gpu_budget_for_experts_gb // per_layer_expert_gb)
+    gpu_layers = max(0, min(gpu_layers, block_count))
+
+    if gpu_layers <= 0:
+        # Can't fit even one layer of experts — caller should use full
+        # CPU offload (which is what the existing config does).
+        logger.info(
+            "moe-offload[%s]: gpu_layers=0 (per-layer experts %.1f GB > budget %.1f GB) "
+            "→ keeping full-CPU expert offload",
+            tier.gguf_path.split("\\")[-1].split("/")[-1],
+            per_layer_expert_gb, gpu_budget_for_experts_gb,
+        )
+        return ".ffn_.*_exps.=CPU"
+    if gpu_layers >= block_count:
+        # Full model fits on GPU — no offload needed.
+        return ""
+
+    cpu_layers = block_count - gpu_layers
+    # Build a regex that matches blk.<i> for i in [0, cpu_layers).
+    # Pattern: 0|1|2|...|<cpu_layers-1>. Compact form using ranges.
+    cpu_indices = list(range(cpu_layers))
+    # Group by digit count for a tighter regex than verbose alternation.
+    # blk\.(0|1|2|...|9|10|11|...)\.ffn_.*_exps\.=CPU
+    alt = "|".join(str(i) for i in cpu_indices)
+    regex = rf"blk\.({alt})\.ffn_.*_exps\.=CPU"
+    logger.info(
+        "moe-offload[%s]: arch=%s layers=%d experts=%d/%d  "
+        "file=%.1f GB  nonexpert=%.1f GB  KV=%.1f GB  draft=%.1f GB  "
+        "→ CPU layers 0..%d (%d), GPU layers %d..%d (%d)",
+        tier.gguf_path.split("\\")[-1].split("/")[-1], arch,
+        block_count, meta.get("expert_used_count") or 0, expert_count,
+        file_gb, nonexpert_gb, kv_gb, draft_gb,
+        cpu_layers - 1, cpu_layers, cpu_layers, block_count - 1, gpu_layers,
+    )
+    return regex
+
+
 def build_argv(tier: TierConfig) -> list[str]:
     """Produce the llama-server argv for `tier`."""
     if not tier.gguf_path:
@@ -278,8 +672,36 @@ def build_argv(tier: TierConfig) -> list[str]:
         argv += ["--rope-scale", str(tier.rope_scaling.factor)]
         if tier.rope_scaling.orig_ctx:
             argv += ["--yarn-orig-ctx", str(tier.rope_scaling.orig_ctx)]
-    if tier.extra_args:
-        argv += list(tier.extra_args)
+    # Auto-compute MoE expert offload from GGUF metadata + GPU budget.
+    # If the model is MoE, this returns a regex that pins only the
+    # lower-N layers' experts to CPU (the rest run on GPU). The split
+    # is a function of block_count, expert_fraction, file size, KV
+    # footprint, draft model, and total VRAM — so each tier gets its
+    # own optimum without hand-baked layer indices in the YAML.
+    #
+    # An empty string means "no offload needed, model fits". Returning
+    # None means "not MoE or metadata missing" — in either case we
+    # fall through to whatever extra_args/override_tensors the YAML
+    # specifies.
+    auto_ot = _compute_moe_offload_regex(tier)
+    extra_args = list(tier.extra_args) if tier.extra_args else []
+    if auto_ot is not None:
+        # Strip any operator-supplied `-ot <expr>` pair when its expr
+        # targets MoE expert tensors — we replace it with auto_ot.
+        cleaned: list[str] = []
+        i = 0
+        while i < len(extra_args):
+            tok = extra_args[i]
+            nxt = extra_args[i + 1] if i + 1 < len(extra_args) else ""
+            if tok == "-ot" and "_exps" in nxt:
+                i += 2  # drop the pair
+                continue
+            cleaned.append(tok)
+            i += 1
+        extra_args = cleaned
+        if auto_ot:
+            extra_args += ["-ot", auto_ot]
+    argv += extra_args
     for pattern in tier.override_tensors:
         argv += ["-ot", pattern]
     # Speculative decoding. When a draft GGUF is resolved for this tier,
