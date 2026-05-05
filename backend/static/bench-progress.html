@@ -775,27 +775,49 @@
         document.getElementById('asciiDash').textContent =
           (ascJson.ascii || '').replace(/^```\n?/, '').replace(/\n?```$/, '');
         // Full-suite ETA: rolling mean wall over recent finished cells
-        // × remaining cell count. Suppressed when idle or no finished
-        // cells yet. TIERS=7, CAPS=10, conditions=4 → 280 cell target.
-        const TOTAL_CELLS = 280;
+        // × remaining cell count. TIERS=7, CAPS=11, conditions=4 = 308
+        // cells (plus the multi-agent post-suite which we don't count
+        // here — it's bonus measurement after the main matrix wraps).
+        const TOTAL_CELLS = 308;
         const cells = (resJson.cells || []);
         const finished = cells.filter(c => c.finished).length;
         const remaining = Math.max(0, TOTAL_CELLS - finished);
         const recent = cells
           .filter(c => c.finished && c.started_at && c.finished_at && c.finished_at > c.started_at)
           .slice(-12);
-        let etaTxt = '';
+        // Status pill: just live/idle + clock. Keep it short.
+        statusEl.textContent = resJson.running
+          ? `live · ${new Date().toLocaleTimeString()}`
+          : `idle · ${new Date().toLocaleTimeString()}`;
+        statusEl.className = 'pill ' + (resJson.running ? 'live' : '');
+        // Dedicated ETA pill alongside, so it's never hidden by the
+        // pill background or truncated in narrow viewports.
+        let etaEl = document.getElementById('etaPill');
+        if (!etaEl) {
+          etaEl = document.createElement('span');
+          etaEl.id = 'etaPill';
+          etaEl.className = 'pill';
+          etaEl.style.background = 'transparent';
+          etaEl.style.border = '1px solid var(--accent)';
+          etaEl.style.color = 'var(--accent)';
+          etaEl.style.marginLeft = '8px';
+          etaEl.title = 'Rolling mean wall over the last completed cells × remaining cell count. Updates each refresh.';
+          statusEl.parentNode.insertBefore(etaEl, statusEl.nextSibling);
+        }
         if (resJson.running && recent.length >= 2 && remaining > 0) {
           const meanWall = recent.reduce((s, c) => s + (c.finished_at - c.started_at), 0) / recent.length;
           const etaS = meanWall * remaining;
-          etaTxt = ` · ETA ${fmtSec(etaS)} (${finished}/${TOTAL_CELLS})`;
-        } else if (finished > 0) {
-          etaTxt = ` · ${finished}/${TOTAL_CELLS} cells`;
+          etaEl.textContent = `ETA ${fmtSec(etaS)} · ${finished}/${TOTAL_CELLS} cells`;
+          etaEl.style.display = '';
+        } else if (finished > 0 && remaining > 0) {
+          etaEl.textContent = `${finished}/${TOTAL_CELLS} cells (ETA computing)`;
+          etaEl.style.display = '';
+        } else if (finished >= TOTAL_CELLS) {
+          etaEl.textContent = `complete · ${finished}/${TOTAL_CELLS}`;
+          etaEl.style.display = '';
+        } else {
+          etaEl.style.display = 'none';
         }
-        statusEl.textContent = resJson.running
-          ? `live · ${new Date().toLocaleTimeString()}${etaTxt}`
-          : `idle · ${new Date().toLocaleTimeString()}${etaTxt}`;
-        statusEl.className = 'pill ' + (resJson.running ? 'live' : '');
       } catch (e) {
         statusEl.textContent = 'error: ' + e.message;
         statusEl.className = 'pill error';
