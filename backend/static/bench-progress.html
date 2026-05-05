@@ -530,26 +530,66 @@
       }
     }
 
+    function _zPropTest(p1n, n1, p2n, n2) {
+      // Two-proportion z. Returns null when either sample is too thin.
+      if (n1 < 5 || n2 < 5) return null;
+      const p1 = p1n / n1, p2 = p2n / n2;
+      const pool = (p1n + p2n) / (n1 + n2);
+      const se = Math.sqrt(pool * (1 - pool) * (1/n1 + 1/n2));
+      if (se === 0) return null;
+      const z = (p1 - p2) / se;
+      const erf = (x) => {
+        const sign = x < 0 ? -1 : 1; x = Math.abs(x);
+        const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+        const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+        const t = 1 / (1 + p * x);
+        const y = 1 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t * Math.exp(-x*x);
+        return sign * y;
+      };
+      const cdf = 0.5 * (1 + erf(Math.abs(z) / Math.sqrt(2)));
+      const pVal = 2 * (1 - cdf);
+      return { delta_pp: (p1 - p2) * 100, z, p: pVal, n_a: n1, n_b: n2,
+               significant: pVal < 0.05 };
+    }
     function renderZTests(data) {
       const root = document.getElementById('zTests');
       root.innerHTML = '';
-      const tests = data.z_tests || {};
-      const labels = {
-        "think_on_vs_off_tools_off": "think=on  vs  think=off  (tools=off held)",
-        "tools_auto_vs_off_think_off": "tools=auto  vs  tools=off  (think=off held)",
-        "think_on_tools_auto_vs_baseline": "think=on tools=auto  vs  baseline (off/off)",
-        "tools_auto_vs_off_think_on": "tools=auto  vs  tools=off  (think=on held)",
-      };
-      const order = [
-        "think_on_vs_off_tools_off",
-        "tools_auto_vs_off_think_off",
-        "tools_auto_vs_off_think_on",
-        "think_on_tools_auto_vs_baseline",
+      // Per-tier z-tests computed from the cell list. Aggregating across
+      // tiers (the backend's data.z_tests) hides per-model effects:
+      // think=on can hurt tiny models while helping bigger ones, and the
+      // overall delta would then be a near-zero average that masks both.
+      const cells = (data.cells || []).concat(data.current ? [data.current] : []);
+      const byTier = {};
+      for (const c of cells) {
+        if (!c.tier || c.passed == null) continue;
+        const total = (c.passed || 0) + (c.failed || 0);
+        if (total === 0) continue;
+        const key = `${c.think || 'off'}|${c.tools || 'off'}`;
+        const t = byTier[c.tier] = byTier[c.tier] || {};
+        const slot = t[key] = t[key] || { passed: 0, n: 0 };
+        slot.passed += (c.passed || 0);
+        slot.n += total;
+      }
+      const comparisons = [
+        ["think=on  vs  think=off  (tools=off held)",     "off|off", "on|off"],
+        ["tools=auto  vs  tools=off  (think=off held)",   "off|off", "off|auto"],
+        ["tools=auto  vs  tools=off  (think=on held)",    "on|off",  "on|auto"],
+        ["think=on tools=auto  vs  baseline (off/off)",   "off|off", "on|auto"],
       ];
+      // Maintain tier order from the bench config when known; fall back
+      // to whatever order keys were inserted in.
+      const TIER_ORDER = [
+        "swarm", "fast", "versatile", "coding",
+        "highest_quality", "reasoning_max", "reasoning_xl",
+        "multi_swarm", "multi_fast",
+      ];
+      const tiers = TIER_ORDER.filter(t => t in byTier)
+        .concat(Object.keys(byTier).filter(t => !TIER_ORDER.includes(t)));
       const table = document.createElement('table');
       table.innerHTML = `
         <thead>
           <tr>
+            <th>tier</th>
             <th>comparison</th>
             <th class="num">n_a</th>
             <th class="num">n_b</th>
@@ -563,28 +603,36 @@
       `;
       const tbody = table.querySelector('tbody');
       let any = false;
-      for (const k of order) {
-        const t = tests[k];
-        if (!t) continue;
-        any = true;
-        const tr = document.createElement('tr');
-        const sig = t.significant;
-        const dColor = t.delta_pp >= 0 ? 'var(--good)' : 'var(--bad)';
-        tr.innerHTML = `
-          <td>${labels[k]}</td>
-          <td class="num">${t.n_a}</td>
-          <td class="num">${t.n_b}</td>
-          <td class="num mono" style="color:${dColor}">${t.delta_pp >= 0 ? '+' : ''}${t.delta_pp.toFixed(1)}</td>
-          <td class="num mono">${t.z.toFixed(2)}</td>
-          <td class="num mono">${t.p < 0.0001 ? '<0.0001' : t.p.toFixed(4)}</td>
-          <td>${sig
-              ? '<span class="pill" style="background:var(--good);color:#fff">significant</span>'
-              : '<span class="pill" style="color:var(--muted)">not significant</span>'}</td>
-        `;
-        tbody.appendChild(tr);
+      for (const tier of tiers) {
+        const stats = byTier[tier];
+        let firstRow = true;
+        for (const [label, baseKey, altKey] of comparisons) {
+          const a = stats[altKey], b = stats[baseKey];
+          if (!a || !b) continue;
+          const t = _zPropTest(a.passed, a.n, b.passed, b.n);
+          if (!t) continue;
+          any = true;
+          const tr = document.createElement('tr');
+          if (firstRow) tr.style.borderTop = '2px solid var(--border)';
+          const dColor = t.delta_pp >= 0 ? 'var(--good)' : 'var(--bad)';
+          tr.innerHTML = `
+            <td>${firstRow ? `<strong>${tier}</strong>` : ''}</td>
+            <td>${label}</td>
+            <td class="num">${t.n_a}</td>
+            <td class="num">${t.n_b}</td>
+            <td class="num mono" style="color:${dColor}">${t.delta_pp >= 0 ? '+' : ''}${t.delta_pp.toFixed(1)}</td>
+            <td class="num mono">${t.z.toFixed(2)}</td>
+            <td class="num mono">${t.p < 0.0001 ? '<0.0001' : t.p.toFixed(4)}</td>
+            <td>${t.significant
+                ? '<span class="pill" style="background:var(--good);color:#fff">significant</span>'
+                : '<span class="pill" style="color:var(--muted)">not significant</span>'}</td>
+          `;
+          tbody.appendChild(tr);
+          firstRow = false;
+        }
       }
       if (!any) {
-        root.innerHTML = '<div class="small">Need at least one cell from two different conditions to compute. Tests will appear once the bench advances past condition 1.</div>';
+        root.innerHTML = '<div class="small">Need cells from ≥2 conditions for at least one tier. Tests appear per-tier as their condition 2 starts.</div>';
         return;
       }
       root.appendChild(table);

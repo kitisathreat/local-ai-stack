@@ -1,70 +1,61 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 360" font-family="Segoe UI, -apple-system, sans-serif" role="img" aria-label="Login dialog (admin required)">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 360"
+     role="img" aria-label="Sign-in dialog — Bloomberg Terminal aesthetic">
   <defs>
     <style><![CDATA[
-      .scrim   { fill: rgba(0,0,0,0.55); }
-      .bg      { fill: #0e1114; }
-      .alt     { fill: #161a22; }
-      .panel   { fill: #1a1f28; }
-      .fg      { fill: #e5e7eb; }
-      .dim     { fill: #8b94a6; }
-      .accent  { fill: #7c9cff; }
-      .danger  { fill: #ff6b6b; }
-      .sep     { stroke: #252a34; stroke-width: 1; }
-      text     { font-size: 12px; }
-      .h1      { font-size: 16px; font-weight: 600; fill: #e5e7eb; }
-      .label   { font-size: 11px; fill: #8b94a6; }
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+      .face   { font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace; }
+      .bg     { fill: #000000; }
+      .amber  { fill: #FFA028; }
+      .amber-dim { fill: #B87513; }
+      .green  { fill: #00FF66; }
+      .red    { fill: #FF3333; }
+      .border-amber { stroke: #FFA028; stroke-width: 1; fill: none; }
+      .border-dim   { stroke: #66421A; stroke-width: 1; fill: none; }
+      .b      { font-weight: 600; }
     ]]></style>
   </defs>
 
-  <!-- Faded backdrop (idle main window) -->
   <rect class="bg" width="480" height="360"/>
-  <text class="dim" x="20" y="28" font-size="11">Local AI Stack</text>
-  <line class="sep" x1="0" y1="42" x2="480" y2="42"/>
-  <rect class="panel" x="20" y="60" width="440" height="20" rx="4" opacity="0.35"/>
-  <rect class="panel" x="20" y="92" width="280" height="14" rx="3" opacity="0.25"/>
-  <rect class="panel" x="20" y="114" width="380" height="14" rx="3" opacity="0.25"/>
-  <rect class="scrim" width="480" height="360"/>
 
-  <!-- Modal dialog -->
-  <rect fill="rgba(0,0,0,0.45)" x="92" y="76" width="304" height="218" rx="10"/>
-  <rect class="alt" x="88" y="72" width="304" height="218" rx="8"/>
-  <rect class="alt" x="88" y="72" width="304" height="32" rx="8"/>
-  <text class="dim" x="106" y="92" font-size="11">Local AI Stack — Sign in</text>
-  <text class="dim" x="378" y="92" font-size="12">✕</text>
+  <!-- Frame -->
+  <rect class="border-amber" x="60" y="40" width="360" height="280"/>
+  <rect x="60" y="40" width="360" height="280" fill="#0a0a0a"/>
+  <rect class="border-amber" x="60" y="40" width="360" height="280"/>
 
-  <text class="h1" x="106" y="130">Admin sign-in required</text>
-  <text class="dim" x="106" y="148" font-size="11">An admin session is needed to open this window.</text>
+  <!-- Title -->
+  <text class="face amber b" x="240" y="74" font-size="14" text-anchor="middle"
+        letter-spacing="0.08em">LOCAL AI STACK</text>
+  <line x1="92" y1="86" x2="388" y2="86" class="border-amber"/>
 
   <!-- Username -->
-  <text class="label" x="106" y="174">Username</text>
-  <rect class="panel" x="106" y="180" width="268" height="26" rx="5" stroke="#252a34"/>
-  <text class="fg" x="118" y="198" font-family="ui-monospace, Consolas, monospace" font-size="11">admin</text>
+  <text class="face amber-dim" x="92" y="118" font-size="10" letter-spacing="0.08em">USERNAME</text>
+  <rect class="border-dim" x="92" y="124" width="296" height="28"/>
+  <text class="face amber" x="100" y="143" font-size="13">kitisathreat</text>
+  <rect x="178" y="132" width="8" height="14" fill="#FFA028">
+    <animate attributeName="opacity" values="1;1;0;0" dur="1s" repeatCount="indefinite"/>
+  </rect>
 
   <!-- Password -->
-  <text class="label" x="106" y="222">Password</text>
-  <rect class="panel" x="106" y="228" width="268" height="26" rx="5" stroke="#7c9cff">
-    <!-- Focused-field border glow -->
-    <animate attributeName="stroke-opacity" values="1;0.55;1" dur="1.6s" repeatCount="indefinite"/>
-  </rect>
-  <text class="fg" x="118" y="246" font-size="14" letter-spacing="3">••••••••••••</text>
-  <!-- Blinking cursor at end of password -->
-  <rect fill="#e5e7eb" x="232" y="234" width="1.5" height="14">
-    <animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.05s" repeatCount="indefinite"/>
-  </rect>
+  <text class="face amber-dim" x="92" y="178" font-size="10" letter-spacing="0.08em">PASSWORD</text>
+  <rect class="border-dim" x="92" y="184" width="296" height="28"/>
+  <text class="face amber" x="100" y="203" font-size="14" letter-spacing="0.2em">••••••••••</text>
 
-  <!-- Remember me + buttons -->
-  <rect fill="#7c9cff" x="106" y="266" width="14" height="14" rx="3"/>
-  <text fill="#ffffff" x="109" y="278" font-size="10" font-weight="700">✓</text>
-  <text class="dim" x="126" y="278" font-size="11">Remember username</text>
+  <!-- Sign in button -->
+  <rect x="92" y="232" width="296" height="34" fill="#FFA028"/>
+  <text class="face b" x="240" y="254" font-size="12" text-anchor="middle"
+        letter-spacing="0.1em" fill="#000">SIGN IN</text>
 
-  <rect class="panel" x="246" y="262" width="60" height="22" rx="5" stroke="#252a34"/>
-  <text class="dim" x="262" y="278" font-size="11">Cancel</text>
-  <!-- Sign-in button: subtle attention pulse -->
-  <rect class="accent" x="312" y="262" width="62" height="22" rx="5">
-    <animate attributeName="fill" values="#7c9cff;#9bb1ff;#7c9cff" dur="2.4s" repeatCount="indefinite"/>
-  </rect>
-  <text fill="#ffffff" x="328" y="278" font-size="11" font-weight="600">Sign in</text>
+  <!-- Status / connection probe (animated) -->
+  <text class="face amber-dim" x="92" y="294" font-size="10" letter-spacing="0.06em">STATUS</text>
+  <text class="face green b" x="148" y="294" font-size="10" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" begin="0.5s" dur="0.3s" fill="freeze"/>
+    BACKEND ONLINE
+  </text>
+  <circle cx="380" cy="290" r="3" class="green">
+    <animate attributeName="opacity" values="1;0.2;1" dur="1.4s" repeatCount="indefinite"/>
+  </circle>
 
-  <!-- Status note -->
-  <text class="dim" x="106" y="316" font-size="10">QSettings remembers your username · sessions live in a JWT cookie</text>
+  <!-- Bottom info bar -->
+  <text class="face amber-dim" x="240" y="340" font-size="9" text-anchor="middle"
+        letter-spacing="0.1em">F1 HELP · F2 RESET · F8 ABORT</text>
 </svg>

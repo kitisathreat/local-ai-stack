@@ -3933,28 +3933,76 @@
         deltas += `</tbody></table></div>`;
       }
 
-      // z-tests
-      const zT = data.z_tests || {};
-      const zLabels = {
-        "think_on_vs_off_tools_off": "think on vs off (tools=off)",
-        "tools_auto_vs_off_think_off": "tools auto vs off (think=off)",
-        "tools_auto_vs_off_think_on": "tools auto vs off (think=on)",
-        "think_on_tools_auto_vs_baseline": "on+auto vs baseline (off/off)",
-      };
-      let zHtml = `<table class="dash-table"><thead><tr><th>comparison</th><th class="num">Δpp</th><th class="num">z</th><th class="num">p</th><th>verdict</th></tr></thead><tbody>`;
+      // z-tests — computed PER TIER on the frontend from the same cell
+      // data the heatmap uses. Each row in the table is one tier × one
+      // condition comparison. The backend's data.z_tests is aggregate-
+      // across-tiers, which masks per-model effects (e.g. think=on hurts
+      // small models but helps big ones). Compute fresh from `all`.
+      function _zPropTest(p1n, n1, p2n, n2) {
+        if (n1 < 5 || n2 < 5) return null;
+        const p1 = p1n / n1, p2 = p2n / n2;
+        const pool = (p1n + p2n) / (n1 + n2);
+        const se = Math.sqrt(pool * (1 - pool) * (1/n1 + 1/n2));
+        if (se === 0) return null;
+        const z = (p1 - p2) / se;
+        // Two-tailed p via Φ(|z|) using erf approx (Abramowitz & Stegun
+        // 7.1.26). Accurate to ~1.5e-7 — way more than we need for α=0.05.
+        const erf = (x) => {
+          const sign = x < 0 ? -1 : 1; x = Math.abs(x);
+          const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+          const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+          const t = 1 / (1 + p * x);
+          const y = 1 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t * Math.exp(-x*x);
+          return sign * y;
+        };
+        const cdf = 0.5 * (1 + erf(Math.abs(z) / Math.sqrt(2)));
+        const pVal = 2 * (1 - cdf);
+        return { delta_pp: (p1 - p2) * 100, z, p: pVal, significant: pVal < 0.05 };
+      }
+      // Group cells per tier × condition (think,tools); pool passes + N
+      // across all capabilities so a comparison reflects model-level
+      // sensitivity rather than a single capability.
+      const _zByTier = {};
+      for (const c of all) {
+        if (!c.tier || c.passed == null || !(c.passed + c.failed > 0)) continue;
+        const key = `${c.think || 'off'}|${c.tools || 'off'}`;
+        const t = _zByTier[c.tier] = _zByTier[c.tier] || {};
+        const slot = t[key] = t[key] || { passed: 0, n: 0 };
+        slot.passed += (c.passed || 0);
+        slot.n += (c.passed || 0) + (c.failed || 0);
+      }
+      const zComparisons = [
+        ["think_on_vs_off_tools_off", "think on vs off (tools=off)", "off|off", "on|off"],
+        ["tools_auto_vs_off_think_off", "tools auto vs off (think=off)", "off|off", "off|auto"],
+        ["tools_auto_vs_off_think_on", "tools auto vs off (think=on)", "on|off", "on|auto"],
+        ["think_on_tools_auto_vs_baseline", "on+auto vs baseline (off/off)", "off|off", "on|auto"],
+      ];
+      let zHtml = `<table class="dash-table"><thead><tr><th>tier</th><th>comparison</th><th class="num">Δpp</th><th class="num">z</th><th class="num">p</th><th>verdict</th></tr></thead><tbody>`;
       let zAny = false;
-      for (const k of Object.keys(zLabels)) {
-        const t = zT[k]; if (!t) continue;
-        zAny = true;
-        const dColor = t.delta_pp >= 0 ? 'var(--success)' : 'var(--danger)';
-        zHtml += `<tr><td>${zLabels[k]}</td>
-          <td class="num" style="color:${dColor}">${t.delta_pp >= 0 ? '+' : ''}${t.delta_pp.toFixed(1)}</td>
-          <td class="num">${t.z.toFixed(2)}</td>
-          <td class="num">${t.p < 0.0001 ? '<.0001' : t.p.toFixed(4)}</td>
-          <td>${t.significant ? '<span class="pill" style="background:#2ea043;color:#fff">significant</span>' : '<span class="pill" style="color:var(--muted)">n.s.</span>'}</td></tr>`;
+      for (const tier of BENCH_TIERS) {
+        const tStats = _zByTier[tier];
+        if (!tStats) continue;
+        let firstRow = true;
+        for (const [key, label, baseKey, altKey] of zComparisons) {
+          const a = tStats[altKey], b = tStats[baseKey];
+          if (!a || !b) continue;
+          const t = _zPropTest(a.passed, a.n, b.passed, b.n);
+          if (!t) continue;
+          zAny = true;
+          const dColor = t.delta_pp >= 0 ? 'var(--success)' : 'var(--danger)';
+          zHtml += `<tr${firstRow ? ' style="border-top:2px solid var(--border)"' : ''}>
+            <td>${firstRow ? `<strong>${tier}</strong>` : ''}</td>
+            <td>${label}</td>
+            <td class="num" style="color:${dColor}">${t.delta_pp >= 0 ? '+' : ''}${t.delta_pp.toFixed(1)}</td>
+            <td class="num">${t.z.toFixed(2)}</td>
+            <td class="num">${t.p < 0.0001 ? '<.0001' : t.p.toFixed(4)}</td>
+            <td>${t.significant ? '<span class="pill" style="background:#2ea043;color:#fff">significant</span>' : '<span class="pill" style="color:var(--muted)">n.s.</span>'}</td>
+          </tr>`;
+          firstRow = false;
+        }
       }
       zHtml += `</tbody></table>`;
-      if (!zAny) zHtml = `<div class="dash-empty">Need cells from ≥2 conditions to compute. Tests appear once condition 2 starts.</div>`;
+      if (!zAny) zHtml = `<div class="dash-empty">Need cells from ≥2 conditions for at least one tier. Tests appear per-tier as their condition 2 starts.</div>`;
 
       // Cell table (Wilson CI). Full column names — no abbreviations.
       let table = `<details><summary>Cell results with Wilson 95% CI (${all.length} cells) — click to expand</summary>

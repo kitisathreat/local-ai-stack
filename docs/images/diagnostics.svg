@@ -1,142 +1,202 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 560" font-family="Segoe UI, -apple-system, sans-serif" role="img" aria-label="Diagnostics window — health check results with auto-fix">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 540"
+     role="img" aria-label="Diagnostics window — health check results with auto-fix, Bloomberg-themed">
   <defs>
     <style><![CDATA[
-      .bg     { fill: #0e1114; }
-      .alt    { fill: #141820; }
-      .panel  { fill: #1a1f28; }
-      .fg     { fill: #e5e7eb; }
-      .dim    { fill: #8b94a6; }
-      .accent { fill: #7c9cff; }
-      .ok     { fill: #2ecc71; }
-      .warn   { fill: #f39c12; }
-      .fail   { fill: #e74c3c; }
-      .skip   { fill: #95a5a6; }
-      .sep    { stroke: #252a34; stroke-width: 1; }
-      text    { font-size: 12px; }
-      .h1     { font-size: 15px; font-weight: 600; fill: #e5e7eb; }
-      .label  { font-size: 10px; fill: #8b94a6; letter-spacing: 0.05em; }
-      .mono   { font-family: ui-monospace, Consolas, monospace; }
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+      .face   { font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace; }
+      .bg     { fill: #000000; }
+      .panel  { fill: #0a0a0a; }
+      .amber  { fill: #FFA028; }
+      .amber-dim { fill: #B87513; }
+      .yellow { fill: #FFFF00; }
+      .green  { fill: #00FF66; }
+      .red    { fill: #FF3333; }
+      .cyan   { fill: #00DDFF; }
+      .header-bg { fill: #8B0000; }
+      .border-amber { stroke: #FFA028; stroke-width: 1; fill: none; }
+      .border-dim   { stroke: #66421A; stroke-width: 1; fill: none; }
+      .b      { font-weight: 600; }
     ]]></style>
   </defs>
 
-  <rect class="bg" width="920" height="560"/>
+  <rect class="bg" width="900" height="540"/>
+  <rect class="header-bg" x="0" y="0" width="900" height="22"/>
+  <text class="face amber b" x="14" y="16" font-size="11">DIAGNOSTICS  ::  python -m backend.diagnostics</text>
+  <text class="face amber-dim" x="884" y="16" font-size="11" text-anchor="end">F2=AUTOFIX  F8=ABORT</text>
 
-  <!-- Title bar -->
-  <rect class="alt" width="920" height="38"/>
-  <line class="sep" x1="0" y1="38" x2="920" y2="38"/>
-  <text class="h1" x="20" y="25">Local AI Stack — Diagnostics</text>
-  <text class="dim" x="870" y="25" font-size="12">— ▢ ✕</text>
-
-  <!-- Toolbar -->
-  <rect class="alt" x="0" y="38" width="920" height="40"/>
-  <line class="sep" x1="0" y1="78" x2="920" y2="78"/>
-  <rect class="accent" x="20" y="48" width="124" height="22" rx="5"/>
-  <text fill="#ffffff" x="36" y="64" font-size="11" font-weight="600">⚡ Auto-fix selected</text>
-  <rect class="panel" x="152" y="48" width="84" height="22" rx="5" stroke="#252a34"/>
-  <text class="fg" x="170" y="64" font-size="11">↻ Re-run all</text>
-  <rect class="panel" x="244" y="48" width="76" height="22" rx="5" stroke="#252a34"/>
-  <text class="fg" x="266" y="64" font-size="11">⤓ Save log</text>
-
-  <text class="ok"   x="640" y="64" font-size="11">● 18 PASS</text>
-  <text class="warn" x="724" y="64" font-size="11">● 2 WARN</text>
-  <text class="fail" x="788" y="64" font-size="11">● 1 FAIL</text>
-  <text class="skip" x="852" y="64" font-size="11">● 3 SKIP</text>
-
-  <!-- Tree panel (top half) -->
-  <rect class="alt" x="0" y="78" width="920" height="280"/>
-
-  <!-- Tree header -->
-  <rect class="panel" x="0" y="78" width="920" height="28"/>
-  <line class="sep" x1="0" y1="106" x2="920" y2="106"/>
-  <text class="label" x="20"  y="97">STATUS</text>
-  <text class="label" x="100" y="97">AREA</text>
-  <text class="label" x="240" y="97">TEST</text>
-  <text class="label" x="600" y="97">DETAIL</text>
-
-  <!-- Rows -->
-  <text class="ok"   x="20" y="128" font-size="11">PASS</text>
-  <text class="dim mono" x="100" y="128" font-size="11">backend</text>
-  <text class="fg" x="240" y="128">backend.healthz returns ok</text>
-  <text class="dim" x="600" y="128" font-size="11">200 in 8 ms</text>
-  <line class="sep" x1="0" y1="138" x2="920" y2="138"/>
-
-  <text class="ok"   x="20" y="156" font-size="11">PASS</text>
-  <text class="dim mono" x="100" y="156" font-size="11">vram</text>
-  <text class="fg" x="240" y="156">scheduler can spawn tier.fast</text>
-  <text class="dim" x="600" y="156" font-size="11">spawn in 1.2 s · 6.9 GB</text>
-  <line class="sep" x1="0" y1="166" x2="920" y2="166"/>
-
-  <!-- Selected row — pulses to draw eye to the failing test -->
-  <rect fill="#7c9cff" x="0" y="170" width="920" height="22">
-    <animate attributeName="fill-opacity" values="0.08;0.18;0.08" dur="2.2s" repeatCount="indefinite"/>
+  <!-- Top progress -->
+  <text class="face amber-dim" x="14" y="48" font-size="11">RUNNING 14 CHECKS</text>
+  <rect x="14" y="56" width="872" height="6" class="border-dim"/>
+  <rect x="14" y="56" width="0" height="6" class="amber">
+    <animate attributeName="width" from="0" to="872" begin="0s" dur="3.6s" fill="freeze"/>
   </rect>
-  <text class="fail" x="20"  y="186" font-size="11" font-weight="700">FAIL</text>
-  <text class="dim mono" x="100" y="186" font-size="11">cloudflared</text>
-  <text class="fg"  x="240" y="186" font-weight="600">tunnel service is not running</text>
-  <text class="dim" x="600" y="186" font-size="11">cloudflared.exe → STOPPED</text>
-  <line class="sep" x1="0" y1="194" x2="920" y2="194"/>
+  <text class="face green b" x="884" y="76" font-size="11" text-anchor="end" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" begin="3.6s" dur="0.3s" fill="freeze"/>
+    14 / 14 PASS  ::  0 FAIL
+  </text>
 
-  <text class="warn" x="20" y="214" font-size="11">WARN</text>
-  <text class="dim mono" x="100" y="214" font-size="11">models</text>
-  <text class="fg" x="240" y="214">highest_quality tier GGUF missing</text>
-  <text class="dim" x="600" y="214" font-size="11">data\models\highest_quality.gguf not found</text>
-  <line class="sep" x1="0" y1="222" x2="920" y2="222"/>
+  <!-- Check list -->
+  <g class="face" font-size="11.5">
+    <!-- Each row: timestamp + status pill + check name + detail -->
+    <g>
+      <text class="amber-dim" x="14" y="100">12:31:02</text>
+      <text class="green b"   x="80" y="100" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="0.2s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="100">PowerShell version  ≥ 7.0</text>
+      <text class="amber-dim" x="884" y="100" font-size="10" text-anchor="end" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="0.2s" dur="0.2s" fill="freeze"/>
+        7.4.1
+      </text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="120">12:31:02</text>
+      <text class="green b"   x="80" y="120" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="0.4s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="120">CUDA toolkit + nvcc ≥ 12.0</text>
+      <text class="amber-dim" x="884" y="120" font-size="10" text-anchor="end" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="0.4s" dur="0.2s" fill="freeze"/>
+        12.4.131
+      </text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="140">12:31:03</text>
+      <text class="green b"   x="80" y="140" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="0.6s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="140">RTX A4500 Laptop GPU detected</text>
+      <text class="amber-dim" x="884" y="140" font-size="10" text-anchor="end" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="0.6s" dur="0.2s" fill="freeze"/>
+        16 GB VRAM
+      </text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="160">12:31:03</text>
+      <text class="green b"   x="80" y="160" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="0.8s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="160">Python 3.12 venvs intact (backend, jupyter, agents)</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="180">12:31:04</text>
+      <text class="green b"   x="80" y="180" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="1.0s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="180">llama-server binary  ::  b8992</text>
+      <text class="amber-dim" x="884" y="180" font-size="10" text-anchor="end" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="1.0s" dur="0.2s" fill="freeze"/>
+        --jinja supported
+      </text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="200">12:31:04</text>
+      <text class="yellow b"  x="80" y="200" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="1.2s" dur="0.2s" fill="freeze"/>
+        WARN
+      </text>
+      <text class="amber"     x="118" y="200">cloudflared service in pending-delete state</text>
+      <text class="cyan"      x="884" y="200" font-size="10" text-anchor="end" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="1.2s" dur="0.2s" fill="freeze"/>
+        autofix avail
+      </text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="220">12:31:05</text>
+      <text class="green b"   x="80" y="220" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="1.4s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="220">Qdrant healthy on :6333</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="240">12:31:06</text>
+      <text class="green b"   x="80" y="240" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="1.6s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="240">Embedding tier  ::  Qwen3-Embedding-8B  Q5_K_M</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="260">12:31:06</text>
+      <text class="green b"   x="80" y="260" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="1.8s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="260">Reranker tier  ::  Qwen3-Reranker-4B</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="280">12:31:07</text>
+      <text class="green b"   x="80" y="280" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="2.0s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="280">SQLite schema 12  ::  users + conversations + memory</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="300">12:31:07</text>
+      <text class="green b"   x="80" y="300" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="2.2s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="300">Auth secret + history secret present in .env</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="320">12:31:08</text>
+      <text class="green b"   x="80" y="320" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="2.4s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="320">Tools registry loaded  ::  91 tools across 23 modules</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="340">12:31:09</text>
+      <text class="green b"   x="80" y="340" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="2.6s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="340">Skills registry loaded  ::  7 skills</text>
+    </g>
+    <g>
+      <text class="amber-dim" x="14" y="360">12:31:10</text>
+      <text class="green b"   x="80" y="360" opacity="0">
+        <animate attributeName="opacity" from="0" to="1" begin="3.0s" dur="0.2s" fill="freeze"/>
+        OK
+      </text>
+      <text class="amber"     x="118" y="360">Backend  ::  /healthz returned 200 (degraded=false)</text>
+    </g>
+  </g>
 
-  <text class="warn" x="20" y="242" font-size="11">WARN</text>
-  <text class="dim mono" x="100" y="242" font-size="11">storage</text>
-  <text class="fg" x="240" y="242">free disk &lt; 30 GB on data drive</text>
-  <text class="dim" x="600" y="242" font-size="11">28.4 GB free</text>
-  <line class="sep" x1="0" y1="250" x2="920" y2="250"/>
+  <!-- Autofix section -->
+  <rect class="border-amber" x="14" y="386" width="872" height="118"/>
+  <text class="face amber b" x="22" y="404" font-size="12">AUTOFIX QUEUE  ::  1 ACTION SUGGESTED</text>
+  <g class="face" font-size="11">
+    <text class="amber-dim" x="22" y="426">[1]</text>
+    <text class="amber"     x="50" y="426">cloudflared service pending-delete →</text>
+    <text class="cyan"      x="320" y="426">sc delete cloudflared; cloudflared service install</text>
+    <text class="amber-dim" x="22" y="446">est. impact</text>
+    <text class="amber"     x="120" y="446">restores tunnel persistence after the next reboot; no impact on running tunnel</text>
+    <text class="amber-dim" x="22" y="466">est. duration</text>
+    <text class="amber"     x="120" y="466">&lt; 5s</text>
+  </g>
 
-  <text class="ok" x="20" y="270" font-size="11">PASS</text>
-  <text class="dim mono" x="100" y="270" font-size="11">qdrant</text>
-  <text class="fg" x="240" y="270">qdrant collections reachable</text>
-  <text class="dim" x="600" y="270" font-size="11">http://127.0.0.1:6333 · 4 cols</text>
-  <line class="sep" x1="0" y1="278" x2="920" y2="278"/>
+  <!-- Action buttons -->
+  <rect class="border-amber" x="606" y="476" width="120" height="22"/>
+  <text class="face amber" x="666" y="491" font-size="11" text-anchor="middle">DISMISS</text>
+  <rect x="734" y="476" width="142" height="22" class="amber"/>
+  <text class="face b" x="805" y="491" font-size="11" text-anchor="middle" fill="#000">APPLY AUTOFIX</text>
 
-  <text class="skip" x="20" y="298" font-size="11">SKIP</text>
-  <text class="dim mono" x="100" y="298" font-size="11">cloudflare</text>
-  <text class="fg" x="240" y="298">DNS routing check (offline mode)</text>
-  <text class="dim" x="600" y="298" font-size="11">--Offline flag set</text>
-  <line class="sep" x1="0" y1="306" x2="920" y2="306"/>
-
-  <text class="ok" x="20" y="326" font-size="11">PASS</text>
-  <text class="dim mono" x="100" y="326" font-size="11">auth</text>
-  <text class="fg" x="240" y="326">JWT round-trip succeeds</text>
-  <text class="dim" x="600" y="326" font-size="11">issue → verify → revoke ok</text>
-
-  <!-- Scanning indicator: a 4 px dot drifts down the gutter to suggest
-       sequential test execution. Loops the height of the visible test list. -->
-  <circle cx="8" cy="120" r="3" fill="#7c9cff">
-    <animate attributeName="cy" values="120;200;240;280;330;120" dur="6s" repeatCount="indefinite"/>
-    <animate attributeName="opacity" values="0;1;1;1;1;0" keyTimes="0;0.06;0.4;0.6;0.94;1" dur="6s" repeatCount="indefinite"/>
-  </circle>
-
-  <!-- Splitter handle -->
-  <rect class="panel" x="0" y="358" width="920" height="6"/>
-
-  <!-- Detail panel (selected row context) -->
-  <rect class="bg" x="0" y="364" width="920" height="166"/>
-  <text class="label" x="20" y="384">DETAIL</text>
-  <rect class="alt" x="20" y="392" width="600" height="120" rx="6" stroke="#252a34"/>
-  <text class="fg mono" x="32" y="412" font-size="10.5">subprocess.run([&quot;sc.exe&quot;, &quot;query&quot;, &quot;Cloudflared&quot;], capture_output=True)</text>
-  <text class="fg mono" x="32" y="428" font-size="10.5">→ STATE: 1  STOPPED</text>
-  <text class="fg mono" x="32" y="444" font-size="10.5"></text>
-  <text class="fg mono" x="32" y="460" font-size="10.5">expected: STATE: 4  RUNNING</text>
-  <text class="fg mono" x="32" y="488" font-size="10.5">last successful boot: 2026-04-30 18:41:22</text>
-
-  <!-- Fix hint — orange border pulses to advertise the auto-fix path -->
-  <text class="label" x="640" y="384">FIX HINT</text>
-  <rect fill="#2a1f12" x="640" y="392" width="260" height="120" rx="6" stroke="#ffb860" stroke-width="1.5">
-    <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="1.8s" repeatCount="indefinite"/>
-    <animate attributeName="stroke-width"   values="1;1.6;1"   dur="1.8s" repeatCount="indefinite"/>
-  </rect>
-  <text class="warn" x="654" y="412" font-size="11" font-weight="700">Auto-fix available</text>
-  <text class="fg" x="654" y="432" font-size="11">Click Auto-fix selected to:</text>
-  <text class="dim mono" x="654" y="452" font-size="10.5">Start-Service Cloudflared</text>
-  <text class="dim" x="654" y="476" font-size="11">Then re-run health check.</text>
-
-  <!-- Status bar -->
-  <line class="sep" x1="0" y1="530" x2="920" y2="530"/>
-  <text class="dim" x="20" y="550" font-size="10.5">Source: tests/local_health.py · log: %APPDATA%\LocalAIStack\logs\health-20260501-093412.log</text>
+  <!-- Status footer -->
+  <rect class="panel" x="0" y="518" width="900" height="22"/>
+  <text class="face amber-dim" x="14" y="533" font-size="10">STATUS</text>
+  <text class="face green b"   x="62" y="533" font-size="10" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" begin="3.6s" dur="0.3s" fill="freeze"/>
+    HEALTHY (1 warning)
+  </text>
+  <text class="face amber-dim" x="884" y="533" font-size="10" text-anchor="end">14 / 14 checks</text>
 </svg>

@@ -1,120 +1,140 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 540" font-family="Segoe UI, -apple-system, sans-serif" role="img" aria-label="First-run setup wizard — Public access page (Cloudflare tunnel)">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 540"
+     role="img" aria-label="First-run setup wizard — Public access page (Cloudflare tunnel), Bloomberg-themed">
   <defs>
     <style><![CDATA[
-      .bg     { fill: #0f1116; }
-      .alt    { fill: #161a22; }
-      .panel  { fill: #1a1f28; }
-      .fg     { fill: #e5e7eb; }
-      .dim    { fill: #8b94a6; }
-      .accent { fill: #7c9cff; }
-      .ok     { fill: #5fd18f; }
-      .warn   { fill: #ffb860; }
-      .sep    { stroke: #252a34; stroke-width: 1; }
-      text    { font-size: 12px; }
-      .h1     { font-size: 17px; font-weight: 600; fill: #e5e7eb; }
-      .h2     { font-size: 13px; font-weight: 600; fill: #e5e7eb; }
-      .label  { font-size: 10px; fill: #8b94a6; letter-spacing: 0.05em; }
-      .mono   { font-family: ui-monospace, Consolas, monospace; }
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+      .face   { font-family: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace; }
+      .bg     { fill: #000000; }
+      .panel  { fill: #0a0a0a; }
+      .amber  { fill: #FFA028; }
+      .amber-dim { fill: #B87513; }
+      .yellow { fill: #FFFF00; }
+      .green  { fill: #00FF66; }
+      .red    { fill: #FF3333; }
+      .cyan   { fill: #00DDFF; }
+      .header-bg { fill: #8B0000; }
+      .border-amber { stroke: #FFA028; stroke-width: 1; fill: none; }
+      .border-dim   { stroke: #66421A; stroke-width: 1; fill: none; }
+      .b      { font-weight: 600; }
     ]]></style>
   </defs>
 
   <rect class="bg" width="760" height="540"/>
 
   <!-- Title bar -->
-  <rect class="alt" width="760" height="34"/>
-  <line class="sep" x1="0" y1="34" x2="760" y2="34"/>
-  <text class="dim" x="14" y="22" font-size="11">Local AI Stack — Setup</text>
-  <text class="dim" x="730" y="22" font-size="12">— ▢ ✕</text>
+  <rect class="header-bg" x="0" y="0" width="760" height="22"/>
+  <text class="face amber b" x="14" y="16" font-size="11">SETUP WIZARD  ::  STEP 4 / 6  ::  PUBLIC ACCESS</text>
+  <text class="face amber-dim" x="744" y="16" font-size="11" text-anchor="end">F1=HELP</text>
 
-  <!-- Step rail (left) -->
-  <rect class="alt" x="0" y="34" width="190" height="466"/>
-  <line class="sep" x1="190" y1="34" x2="190" y2="500"/>
-
-  <text class="label" x="20" y="68">SETUP STEPS</text>
-
-  <g font-size="12">
-    <circle class="ok" cx="32" cy="100" r="8"/>
-    <text fill="#0e1114" x="29" y="104" font-size="10" font-weight="700">✓</text>
-    <text class="dim" x="50" y="104">1 · Welcome &amp; prereqs</text>
-
-    <circle class="ok" cx="32" cy="132" r="8"/>
-    <text fill="#0e1114" x="29" y="136" font-size="10" font-weight="700">✓</text>
-    <text class="dim" x="50" y="136">2 · Admin account</text>
-
-    <circle class="ok" cx="32" cy="164" r="8"/>
-    <text fill="#0e1114" x="29" y="168" font-size="10" font-weight="700">✓</text>
-    <text class="dim" x="50" y="168">3 · Secrets</text>
-
-    <circle class="accent" cx="32" cy="196" r="8"/>
-    <text fill="#ffffff" x="29" y="200" font-size="10" font-weight="700">4</text>
-    <text class="fg" x="50" y="200" font-weight="600">4 · Public access</text>
-
-    <circle fill="#252a34" cx="32" cy="228" r="8"/>
-    <text class="dim" x="29" y="232" font-size="10">5</text>
-    <text class="dim" x="50" y="232">5 · SMTP</text>
-
-    <circle fill="#252a34" cx="32" cy="260" r="8"/>
-    <text class="dim" x="29" y="264" font-size="10">6</text>
-    <text class="dim" x="50" y="264">6 · Models</text>
-
-    <circle fill="#252a34" cx="32" cy="292" r="8"/>
-    <text class="dim" x="29" y="296" font-size="10">7</text>
-    <text class="dim" x="50" y="296">7 · Finish</text>
+  <!-- Step indicator (animated fill on the active step) -->
+  <g class="face" font-size="10">
+    <text class="amber-dim" x="20" y="46">1 ENV</text>
+    <line x1="60" y1="42" x2="100" y2="42" class="border-dim"/>
+    <text class="amber-dim" x="106" y="46">2 BIN</text>
+    <line x1="146" y1="42" x2="186" y2="42" class="border-dim"/>
+    <text class="amber-dim" x="192" y="46">3 MODELS</text>
+    <line x1="252" y1="42" x2="292" y2="42" class="border-dim"/>
+    <text class="amber b" x="298" y="46">4 PUBLIC</text>
+    <line x1="358" y1="42" x2="398" y2="42" class="border-dim"/>
+    <text class="amber-dim" x="404" y="46">5 ADMIN</text>
+    <line x1="448" y1="42" x2="488" y2="42" class="border-dim"/>
+    <text class="amber-dim" x="494" y="46">6 TEST</text>
+    <!-- Active dot pulse -->
+    <circle cx="280" cy="42" r="3" class="amber">
+      <animate attributeName="opacity" values="1;0.3;1" dur="1.4s" repeatCount="indefinite"/>
+    </circle>
   </g>
 
-  <text class="label" x="20" y="436">PREREQUISITES</text>
-  <text class="ok"  x="20" y="456" font-size="11">✓ Python 3.12.6</text>
-  <text class="ok"  x="20" y="472" font-size="11">✓ cloudflared 2024.10.1</text>
-  <text class="ok"  x="20" y="488" font-size="11">✓ NVIDIA driver 553.30</text>
+  <!-- Body card -->
+  <rect class="border-amber" x="20" y="62" width="720" height="420"/>
+  <text class="face amber b" x="32" y="86" font-size="14">Public access via Cloudflare Tunnel</text>
+  <text class="face amber-dim" x="32" y="106" font-size="11">Optional. Skips to step 5 if you only want LAN access.</text>
 
-  <!-- Page body -->
-  <text class="h1" x="216" y="76">Public access</text>
-  <text class="dim" x="216" y="98" font-size="11.5" >How do you want users to reach this stack?</text>
+  <!-- Two columns -->
+  <g class="face">
+    <!-- Left column: form -->
+    <text class="amber-dim" x="32" y="138" font-size="10">TUNNEL HOSTNAME</text>
+    <rect class="border-amber" x="32" y="146" width="320" height="28"/>
+    <text class="amber b" x="40" y="166" font-size="12">chat.mylensandi.com</text>
+    <rect x="346" y="156" width="2" height="14" class="amber">
+      <animate attributeName="opacity" values="1;1;0;0" dur="1s" repeatCount="indefinite"/>
+    </rect>
 
-  <!-- Radios -->
-  <circle fill="#252a34" stroke="#7c9cff" cx="228" cy="134" r="7"/>
-  <text class="fg" x="244" y="138" font-size="12.5">Local only</text>
-  <text class="dim" x="244" y="154" font-size="11">Bind to 127.0.0.1 — only this machine can reach the API.</text>
+    <text class="amber-dim" x="32" y="200" font-size="10">CREDENTIALS FILE  ::  .json</text>
+    <rect class="border-amber" x="32" y="208" width="320" height="28"/>
+    <text class="amber" x="40" y="228" font-size="11">5bf79db7-daaa-4225-9fe7-...</text>
+    <text class="green b" x="346" y="228" font-size="11" text-anchor="end">browse</text>
 
-  <circle fill="#7c9cff" cx="228" cy="190" r="7"/>
-  <circle fill="#0f1116" cx="228" cy="190" r="3"/>
-  <text class="accent" x="244" y="194" font-size="12.5" font-weight="600">Cloudflare Tunnel</text>
-  <text class="dim" x="244" y="210" font-size="11">Provision a named tunnel + DNS. HTTPS everywhere; no port-forwarding.</text>
+    <text class="amber-dim" x="32" y="262" font-size="10">INGRESS</text>
+    <rect class="panel" x="32" y="270" width="320" height="84"/>
+    <rect class="border-amber" x="32" y="270" width="320" height="84"/>
+    <text class="amber"     x="40" y="288" font-size="10.5">- hostname: chat.mylensandi.com</text>
+    <text class="amber"     x="40" y="304" font-size="10.5">  service: http://localhost:18000</text>
+    <text class="amber-dim" x="40" y="320" font-size="10.5">- hostname: stream.mylensandi.com</text>
+    <text class="amber-dim" x="40" y="336" font-size="10.5">  service: http://localhost:8096</text>
+    <text class="amber-dim" x="40" y="352" font-size="10.5">- service: http_status:404</text>
 
-  <!-- Tunnel form group -->
-  <rect class="panel" x="216" y="226" width="528" height="200" rx="8" stroke="#252a34"/>
+    <!-- Right column: live status -->
+    <text class="amber-dim" x="396" y="138" font-size="10">CONNECTIVITY CHECK</text>
+    <rect class="border-amber" x="396" y="146" width="332" height="208"/>
 
-  <text class="label"  x="232" y="250">DOMAIN (zone)</text>
-  <rect class="alt" x="232" y="256" width="240" height="28" rx="6" stroke="#252a34"/>
-  <text class="fg mono" x="244" y="274" font-size="11">mylensandi.com</text>
+    <text class="amber-dim" x="408" y="170" font-size="10">cloudflared binary</text>
+    <text class="green b"   x="716" y="170" font-size="11" text-anchor="end">found</text>
 
-  <text class="label"  x="492" y="250">CHAT HOSTNAME</text>
-  <rect class="alt" x="492" y="256" width="240" height="28" rx="6" stroke="#252a34"/>
-  <text class="fg mono" x="504" y="274" font-size="11">chat.mylensandi.com</text>
+    <text class="amber-dim" x="408" y="194" font-size="10">tunnel auth (cert.pem)</text>
+    <text class="green b"   x="716" y="194" font-size="11" text-anchor="end">valid</text>
 
-  <text class="label" x="232" y="306">TUNNEL NAME</text>
-  <rect class="alt" x="232" y="312" width="240" height="28" rx="6" stroke="#252a34"/>
-  <text class="fg mono" x="244" y="330" font-size="11">local-ai-stack-home</text>
+    <text class="amber-dim" x="408" y="218" font-size="10">tunnel info → Cloudflare</text>
+    <text class="amber b"   x="716" y="218" font-size="11" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="0.6s" dur="0.2s" fill="freeze"/>
+      probing...
+    </text>
+    <text class="green b"   x="716" y="218" font-size="11" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="2.2s" dur="0.2s" fill="freeze"/>
+      4 conns
+    </text>
+    <rect x="716" y="218" width="0" height="0">
+      <animate attributeName="x" from="716" to="0" begin="2.2s" dur="0.0s" fill="freeze"/>
+    </rect>
 
-  <text class="label" x="492" y="306">CERT.PEM</text>
-  <rect class="alt" x="492" y="312" width="240" height="28" rx="6" stroke="#252a34"/>
-  <text class="ok mono" x="504" y="330" font-size="11">✓ ~/.cloudflared/cert.pem</text>
+    <text class="amber-dim" x="408" y="242" font-size="10">DNS routing</text>
+    <text class="green b"   x="716" y="242" font-size="11" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="2.6s" dur="0.2s" fill="freeze"/>
+      lax01, lax05, lax08
+    </text>
 
-  <!-- Provisioning progress -->
-  <rect class="alt" x="232" y="354" width="500" height="56" rx="6" stroke="#7c9cff"/>
-  <text class="accent" x="244" y="374" font-size="11.5" font-weight="600">Provisioning tunnel…</text>
-  <text class="dim mono" x="244" y="390" font-size="10.5">created tunnel · routing chat.mylensandi.com → :18000 · installing svc</text>
-  <rect fill="#0f1116" x="244" y="396" width="476" height="6" rx="3" stroke="#252a34"/>
-  <rect class="accent" x="244" y="396" width="320" height="6" rx="3">
-    <animate attributeName="width" values="120;320;380;460" dur="2.5s" repeatCount="indefinite"/>
-  </rect>
+    <text class="amber-dim" x="408" y="266" font-size="10">ingress dispatch</text>
+    <text class="green b"   x="716" y="266" font-size="11" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="3.0s" dur="0.2s" fill="freeze"/>
+      ready
+    </text>
 
-  <!-- Wizard nav buttons -->
-  <line class="sep" x1="0" y1="500" x2="760" y2="500"/>
-  <rect class="panel" x="216" y="510" width="68" height="24" rx="5" stroke="#252a34"/>
-  <text class="dim" x="234" y="526" font-size="11">&lt; Back</text>
-  <rect class="panel" x="592" y="510" width="68" height="24" rx="5" stroke="#252a34"/>
-  <text class="dim" x="610" y="526" font-size="11">Skip</text>
-  <rect class="accent" x="668" y="510" width="76" height="24" rx="5"/>
-  <text fill="#ffffff" x="690" y="526" font-size="11" font-weight="600">Next &gt;</text>
+    <!-- Progress bar across bottom of card -->
+    <rect x="408" y="286" width="308" height="6" class="border-dim"/>
+    <rect x="408" y="286" width="0" height="6" class="amber">
+      <animate attributeName="width" from="0" to="308" begin="0.4s" dur="2.8s" fill="freeze"/>
+    </rect>
+    <text class="amber-dim" x="408" y="316" font-size="10">writes config.yml + cert to ProgramData</text>
+    <text class="amber-dim" x="408" y="332" font-size="10">restarts cloudflared service when "Apply" pressed</text>
+  </g>
+
+  <!-- Footer / actions -->
+  <rect class="panel" x="20" y="408" width="720" height="46"/>
+  <rect class="border-amber" x="20" y="408" width="720" height="46"/>
+  <text class="face amber-dim" x="32" y="436" font-size="11">Skip this step if you only need LAN access. You can revisit anytime via the Admin → Cloudflare tab.</text>
+
+  <rect class="border-amber" x="468" y="466" width="124" height="26"/>
+  <text class="face amber" x="530" y="484" font-size="11" text-anchor="middle">SKIP</text>
+
+  <rect x="600" y="466" width="140" height="26" class="amber"/>
+  <text class="face b" x="670" y="484" font-size="11" text-anchor="middle" fill="#000">APPLY + NEXT</text>
+
+  <!-- Status footer -->
+  <rect class="panel" x="0" y="514" width="760" height="22"/>
+  <text class="face amber-dim" x="14" y="529" font-size="10">STEP 4 / 6  ::  PUBLIC ACCESS</text>
+  <text class="face green b"   x="240" y="529" font-size="10" opacity="0">
+    <animate attributeName="opacity" from="0" to="1" begin="3.2s" dur="0.3s" fill="freeze"/>
+    READY
+  </text>
+  <text class="face amber-dim" x="744" y="529" font-size="10" text-anchor="end">elapsed 3.2s</text>
 </svg>
