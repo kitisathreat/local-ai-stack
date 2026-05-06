@@ -477,7 +477,9 @@ class CompiledSignals(BaseModel):
     enable_thinking: list[re.Pattern]
     disable_thinking: list[re.Pattern]
     multi_agent_triggers: list[re.Pattern]
-    think_keyword_rules: list[dict[str, Any]]
+    # (alternation pattern matching any rule word at word-boundaries, min hits).
+    # Pre-compiled at build time so router hot-path doesn't recompile per request.
+    think_keyword_rules: list[tuple[re.Pattern, int]]
     multi_agent_question_mark_min: int | None
     multi_agent_token_gt: int | None
 
@@ -486,10 +488,18 @@ class CompiledSignals(BaseModel):
         def _compile(rules: list[SignalRule]) -> list[re.Pattern]:
             return [re.compile(r.regex, re.IGNORECASE) for r in rules if r.regex]
 
-        keyword_rules = [
-            r.keyword_count for r in cfg.router.auto_thinking_signals.enable_when_any
-            if r.keyword_count
-        ]
+        keyword_rules: list[tuple[re.Pattern, int]] = []
+        for r in cfg.router.auto_thinking_signals.enable_when_any:
+            if not r.keyword_count:
+                continue
+            words = [w for w in r.keyword_count.get("words", []) if w]
+            if not words:
+                continue
+            pattern = re.compile(
+                rf"\b(?:{'|'.join(re.escape(w) for w in words)})\b",
+                re.IGNORECASE,
+            )
+            keyword_rules.append((pattern, int(r.keyword_count.get("min", 1))))
 
         qm = next(
             (r.min_question_marks for r in cfg.router.multi_agent.trigger_when_any

@@ -119,6 +119,20 @@ class AppState:
 state = AppState()
 
 
+# Strong references to fire-and-forget background tasks. asyncio holds only
+# weak refs to scheduled tasks, so a task with no other reference can be
+# garbage-collected mid-execution. This set keeps them alive until done;
+# the done-callback discards them so it doesn't grow unbounded.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 # ── Bench live-token buffer ───────────────────────────────────────────────
 # Holds the last N whitespace-split tokens of the most recent streamed
 # completion. Populated only when a bench process is running (otherwise we'd
@@ -385,7 +399,7 @@ async def lifespan(app: FastAPI):
     # tier list. Spawn the resolver as a child process so a slow
     # multi-GB download doesn't block startup or hold the event loop.
     if not state.airgap.enabled and os.getenv("OFFLINE", "").strip() not in ("1", "true", "yes"):
-        asyncio.create_task(_auto_pull_missing_tiers())
+        _spawn_background(_auto_pull_missing_tiers())
 
     # Self-diagnostics — results go to the application log only (lai.diagnostics logger).
     # OK results are DEBUG-level (silent at default INFO log level).
@@ -709,8 +723,6 @@ async def resolved_models():
     data_dir = Path(os.getenv("LAI_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
     path = data_dir / "resolved-models.json"
     empty = {"tiers": {}, "resolved_at": 0, "offline": False, "cached": False}
-    if not path.exists():
-        return empty
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -1660,7 +1672,7 @@ async def _single_agent_sse(
 
     # Phase 6: post-stream persistence + memory distillation (fire-and-forget).
     full_text = "".join(assembled_text)
-    asyncio.create_task(_finalize_conversation(req, user, decision, full_text))
+    _spawn_background(_finalize_conversation(req, user, decision, full_text))
 
     yield _openai_chunk("", model_id, done=True)
     yield "data: [DONE]\n\n"
@@ -1746,7 +1758,7 @@ async def _finalize_conversation(
         # rest of finalization. Best-effort: failures are logged and
         # the chat keeps the default title.
         if asst_count == 1 and (conv.get("title") or "").strip().lower() == "new chat":
-            asyncio.create_task(_auto_title_chat(
+            _spawn_background(_auto_title_chat(
                 req.conversation_id, user["id"], user_text or "", assistant_text,
             ))
     except Exception:
@@ -2163,7 +2175,7 @@ async def api_warm(
     fire this before /auth/login completes (race with cookie set)."""
     requested = (body or {}).get("tiers") if isinstance(body, dict) else None
     tiers = tuple(requested) if isinstance(requested, list) and requested else _DEFAULT_WARM_TIERS
-    asyncio.create_task(_warm_chat_tiers(tiers))
+    _spawn_background(_warm_chat_tiers(tiers))
     return {"ok": True, "warming": list(tiers), "user": user["email"] if user else None}
 
 
@@ -2212,7 +2224,7 @@ async def auth_login(body: LoginRequest, request: Request):
     # Pre-warm the everyday chat tiers in the background so the user's
     # first message doesn't pay the 5-30s cold-spawn cost. Fire-and-
     # forget — never blocks the login response.
-    asyncio.create_task(_warm_chat_tiers(_DEFAULT_WARM_TIERS))
+    _spawn_background(_warm_chat_tiers(_DEFAULT_WARM_TIERS))
     return resp
 
 

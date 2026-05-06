@@ -44,32 +44,32 @@ Rules:
 """
 
 
-AMBIGUOUS_PATTERNS = [
+_AMBIGUOUS_PATTERNS = [re.compile(p) for p in (
     r"\b(something|anything|whatever|some kind of|any kind of)\b",
     r"\b(best|good|nice|cool|interesting|useful)\b.{0,20}\b(for me|to use|option)\b",
     r"\b(make|create|build|write|generate|design)\b.{0,10}\b(a|an|some)\b.{0,20}$",
     r"\b(analyze|analyse|look at|check out|explore)\b.{0,10}\b(this|it|that)\b",
     r"\b(help me with|assist with|work on)\b",
     r"^(help|ideas|suggestions|options|recommendations)\b",
-]
+)]
 
-CLEAR_INTENT_PATTERNS = [
+_CLEAR_INTENT_PATTERNS = [re.compile(p) for p in (
     r"\b(specifically|exactly|precisely|step by step|in detail)\b",
     r"\bwhat (is|are|does|do|was|were|will|would)\b",
     r"\bhow (do|does|can|should|to)\b",
     r"\bwhy (is|are|does|did|would|should)\b",
     r"\b(explain|define|show me (how|the|a|an))\b",
-]
+)]
 
 
 def is_likely_ambiguous(message: str) -> bool:
     msg = message.strip().lower()
     if len(msg) < 15:
         return False
-    for p in CLEAR_INTENT_PATTERNS:
-        if re.search(p, msg):
+    for p in _CLEAR_INTENT_PATTERNS:
+        if p.search(msg):
             return False
-    return any(re.search(p, msg) for p in AMBIGUOUS_PATTERNS)
+    return any(p.search(msg) for p in _AMBIGUOUS_PATTERNS)
 
 
 def has_recent_clarification(messages: list[ChatMessage], window: int = 4) -> bool:

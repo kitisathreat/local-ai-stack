@@ -46,14 +46,20 @@ def parse_slash_commands(
     result = SlashParseResult(cleaned_message=message)
     text = message.strip()
 
-    # Sort commands by length descending so "/think on" matches before "/think"
-    ordered = sorted(slash_map.items(), key=lambda kv: -len(kv[0]))
+    # Sort commands by length descending so "/think on" matches before "/think".
+    # Pre-lowercase each command so the inner-loop startswith check can compare
+    # against a single text.lower() per outer iteration instead of per-command.
+    ordered = sorted(
+        ((cmd.lower(), cmd, effects) for cmd, effects in slash_map.items()),
+        key=lambda x: -len(x[0]),
+    )
 
     changed = True
     while changed:
         changed = False
-        for cmd, effects in ordered:
-            if not text.lower().startswith(cmd.lower()):
+        text_lower = text.lower()
+        for cmd_lower, cmd, effects in ordered:
+            if not text_lower.startswith(cmd_lower):
                 continue
 
             # "/tier " consumes the next whitespace-delimited token
@@ -149,11 +155,12 @@ def auto_think_decision(
     for pat in signals.enable_thinking:
         if pat.search(text):
             return True
-    for rule in signals.think_keyword_rules:
-        words = [w.lower() for w in rule.get("words", [])]
-        min_count = int(rule.get("min", 1))
-        hits = sum(1 for w in words if re.search(rf"\b{re.escape(w)}\b", text, re.IGNORECASE))
-        if hits >= min_count:
+    for pattern, min_count in signals.think_keyword_rules:
+        # Count distinct matched words — original semantics was "how many of
+        # the rule's words appear at least once", and the alternation regex
+        # enforces word boundaries with case-insensitive match.
+        matched = {m.group(0).lower() for m in pattern.finditer(text)}
+        if len(matched) >= min_count:
             return True
     return None
 

@@ -240,7 +240,7 @@ def _load_all_sync(user_id: int, *, airgap: bool = False) -> list[dict[str, Any]
                 continue
             try:
                 out.append(json.loads(plaintext.decode("utf-8")))
-            except Exception:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 logger.warning("history for user %d: record has invalid JSON", user_id)
     return out
 
