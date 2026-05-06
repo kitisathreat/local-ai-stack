@@ -133,6 +133,12 @@ def parse_log(path: Path) -> dict:
                 "errors": 0,
                 "last_problem": 0,
                 "wall_so_far": 0.0,
+                # Per-trial timestamps. Each entry =
+                #   {"started_ts": <unix>, "ended_ts": <unix>, "wall": <s>}
+                # so the dashboard's bench-relative scales (This problem run /
+                # Last 5 / Last half of cell) can pick the actual start time
+                # of any in-flight or recent problem.
+                "problems": [],
             }
             cells.append(current)
             if run_start_ts is None and ts:
@@ -153,6 +159,15 @@ def parse_log(path: Path) -> dict:
             current["wall_so_far"] += wall
             if ts:
                 current["last_ts"] = ts
+                # Log line ts is when the trial COMPLETED. The trial
+                # started `wall` seconds earlier. Record both endpoints
+                # so the frontend can pick "since this problem run"
+                # = trial's started_ts (= ts - wall).
+                current.setdefault("problems", []).append({
+                    "started_ts": ts - wall,
+                    "ended_ts": ts,
+                    "wall": wall,
+                })
             continue
         m = err_re.search(ln)
         if m:

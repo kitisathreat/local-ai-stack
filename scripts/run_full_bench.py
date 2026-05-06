@@ -25,6 +25,25 @@ import argparse
 import os
 import sys
 import time
+
+# CRITICAL: write the bench-mode flag BEFORE any heavy imports below.
+# The backend's _is_bench_active() reads data/bench/active.lock and
+# uses it to override --parallel to 1 for chat tiers. Earlier the flag
+# was written near the top of main() — but argparse + project imports
+# took ~30 s, during which any concurrent warm probe spawned llama-
+# server with chat-mode --parallel 3 (KV bloat → poor GPU offload).
+# Writing the flag here, before the slow imports, closes that gap.
+try:
+    from pathlib import Path as _BootstrapPath
+    _flag = _BootstrapPath(os.environ.get("LAI_DATA_DIR", "data")) / "bench" / "active.lock"
+    _flag.parent.mkdir(parents=True, exist_ok=True)
+    _flag.write_text(str(os.getpid()), encoding="utf-8")
+    import atexit as _bootstrap_atexit
+    _bootstrap_atexit.register(
+        lambda p=_flag: p.unlink(missing_ok=True) if p.exists() else None
+    )
+except Exception as _exc:
+    print(f"  [bench-flag] bootstrap write failed: {_exc}", flush=True)
 from datetime import datetime
 from pathlib import Path
 
@@ -126,6 +145,61 @@ TIER_DEPTH = {
     "frontier":           "full",
 }
 
+# Per-tier generation budget. Sized to ~half the context window so the
+# prompt + generation comfortably fit, with tiers in the "full" depth
+# class getting whatever their context window allows after a 4k prompt
+# headroom. Bigger context tiers (coding @ 131k) get the most room;
+# 32k-ctx tiers (highest_quality, reasoning_max) cap near 28k. Override
+# the lot with --max-tokens.
+TIER_MAX_TOKENS = {
+    "swarm":              8192,
+    "fast":               32768,   # 65k ctx
+    "fast_r1_distill":    32768,
+    "fast_phi4":          24000,   # 32k ctx
+    "versatile":          32768,   # 65k ctx
+    "coding":             65536,   # 131k ctx — biggest budget
+    "highest_quality":    28000,   # 32k ctx, leave 4k for prompt
+    "reasoning_max":      28000,
+    "reasoning_xl":       32768,   # 65k ctx
+    "frontier":           28000,
+    "vision":             32768,
+}
+
+
+def _max_tokens_for(tier: str, override: int | None) -> int:
+    """Resolve the max_tokens budget for a tier. CLI --max-tokens is
+    treated as a hard override applied uniformly when set; otherwise
+    look up TIER_MAX_TOKENS, falling back to a safe 8192 default."""
+    if override and override > 0:
+        return override
+    return TIER_MAX_TOKENS.get(tier, 8192)
+
+
+# Per-capability per-problem timeout. Hardest reasoning/math caps get
+# the full 900s budget so a single rare 5000-token derivation can
+# complete; easy caps cap much lower so a stuck request doesn't
+# stretch a fast cell into 30+ minutes. Override via --per-problem-
+# timeout (uniform) for every cap when set on the CLI.
+CAP_TIMEOUT_S = {
+    "knowledge":             120,
+    "knowledge_specialized": 180,
+    "math":                   90,
+    "math_competition":      300,
+    "math_hard":             900,
+    "reasoning":             900,
+    "coding":                300,
+    "coding_basic":          120,
+    "intent":                 60,
+    "clarity":                90,
+    "long_context":          240,
+}
+
+
+def _timeout_for(cap: str, override: int | None) -> int:
+    if override and override > 0:
+        return override
+    return CAP_TIMEOUT_S.get(cap, 300)
+
 # Mirror of `context_window` per tier in config/models.yaml. Used by
 # run_cell to skip needle problems whose ctx_target exceeds the tier's
 # capacity (otherwise llama-server returns empty content for over-budget
@@ -178,8 +252,14 @@ def main() -> int:
                         "the model's first response looks inadequate.")
     p.add_argument("--judge-tier", default="highest_quality",
                    help="Tier used as LLM judge for clarity scoring.")
-    p.add_argument("--max-tokens", type=int, default=16384)
-    p.add_argument("--per-problem-timeout", type=int, default=900)
+    p.add_argument("--max-tokens", type=int, default=0,
+                   help="Override per-tier max_tokens budget. 0 = auto "
+                        "(fast=8192, medium=16384, full=32000 per "
+                        "DEPTH_MAX_TOKENS).")
+    p.add_argument("--per-problem-timeout", type=int, default=0,
+                   help="Override per-cap timeout. 0 = auto from "
+                        "CAP_TIMEOUT_S (60s for intent up to 900s "
+                        "for math_hard / reasoning).")
     p.add_argument("--out-dir", default="data/eval/results")
     p.add_argument("--resume-from", default=None,
                    help="Path to a previous cumulative JSON. Cells already "
@@ -208,6 +288,21 @@ def main() -> int:
     p.add_argument("--confidence", type=float, default=0.95,
                    help="CI confidence level (0.90/0.95/0.99 supported, default 0.95).")
     args = p.parse_args()
+
+    # Bench-mode flag file: write our PID before anything else so the
+    # backend's _is_bench_active() sees us BEFORE the first warm probe
+    # spawns a chat tier. Eliminates the WMI race where freshly-launched
+    # bench processes were invisible to the scan for 1-3 s, long enough
+    # for warm probe to spawn parallel=3 chat-mode args.
+    import atexit as _atexit
+    from pathlib import Path as _Path
+    _flag_path = _Path(os.environ.get("LAI_DATA_DIR", "data")) / "bench" / "active.lock"
+    try:
+        _flag_path.parent.mkdir(parents=True, exist_ok=True)
+        _flag_path.write_text(str(os.getpid()), encoding="utf-8")
+        _atexit.register(lambda p=_flag_path: p.unlink(missing_ok=True) if p.exists() else None)
+    except Exception as _exc:
+        print(f"  [bench-flag] failed to write {_flag_path}: {_exc}", flush=True)
 
     # Wire the LLM-judge config before anything calls into graders.
     import backend.eval.graders as _g
@@ -358,12 +453,20 @@ def main() -> int:
             print(f"  [resume] failed to load {args.resume_from}: {exc}",
                   flush=True)
 
-    for tier in tiers:
+    for tier_idx, tier in enumerate(tiers):
+        # Between tiers, hard-evict any chat-tier llama-servers left over
+        # from the previous tier. The scheduler's own acquire() path will
+        # evict-on-need when the warm probe runs, BUT only if it sees the
+        # prior tier as RESIDENT — leaks happen when a tier crashed
+        # silently and the scheduler kept the entry as RESIDENT-but-dead.
+        # Skipping the first tier (nothing to evict yet) and preserving
+        # embedding/reranker (ports 8090/8091, kept across tiers).
+        if tier_idx > 0:
+            _evict_other_llama_servers()
         # Per-tier warm-up: block synchronously until the new tier responds
-        # with non-empty content. The scheduler handles tier eviction via
-        # its own acquire() path; killing llama-server processes externally
-        # leaves the scheduler's loaded dict stale (phantom-tracked VRAM)
-        # which then rejects subsequent loads with VRAMExhausted.
+        # with non-empty content. The scheduler handles fresh tier loading
+        # via acquire(); the explicit evict above just ensures we start
+        # from a known-clean GPU state instead of layered residue.
         if not _warm_tier_blocking(args.api, tier):
             print(f"  FAIL warm {tier} — skipping all cells for this tier",
                   flush=True)
@@ -389,8 +492,8 @@ def main() -> int:
                     t0 = time.time()
                     cell = run_cell(
                         args.api, tier, cap, depth,
-                        max_tokens=args.max_tokens,
-                        per_problem_timeout=args.per_problem_timeout,
+                        max_tokens=_max_tokens_for(tier, args.max_tokens),
+                        per_problem_timeout=_timeout_for(cap, args.per_problem_timeout),
                         think=think,
                         tools=tools_label,
                         early_stop_margin=early_stop_margin,
@@ -468,8 +571,8 @@ def main() -> int:
                         t0 = time.time()
                         cell = run_cell(
                             args.api, tier, cap, depth,
-                            max_tokens=args.max_tokens,
-                            per_problem_timeout=args.per_problem_timeout,
+                            max_tokens=_max_tokens_for(tier, args.max_tokens),
+                            per_problem_timeout=_timeout_for(cap, args.per_problem_timeout),
                             think=think,
                             tools=tools_label,
                             early_stop_margin=early_stop_margin,
@@ -562,8 +665,8 @@ def main() -> int:
                         cell = run_cell(
                             args.api, args.multi_agent_orchestrator, cap,
                             _depth_for(worker_tier),
-                            max_tokens=args.max_tokens,
-                            per_problem_timeout=args.per_problem_timeout * 3,
+                            max_tokens=_max_tokens_for(args.multi_agent_orchestrator, args.max_tokens),
+                            per_problem_timeout=_timeout_for(cap, args.per_problem_timeout) * 3,
                             think=think,
                             tools=tools_label,
                             early_stop_margin=early_stop_margin,

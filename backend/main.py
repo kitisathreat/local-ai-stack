@@ -399,9 +399,39 @@ async def lifespan(app: FastAPI):
         web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "ddg"),
     )
 
+    # Background 1Hz sys-metrics sampler so the encrypted disk log +
+    # ring buffer fill at a constant cadence regardless of how often
+    # (or whether) the dashboard polls. The frontend's "Poll" dropdown
+    # only controls how often it FETCHES from the ring — it never
+    # changes how often we LOG. Without this task, a slow poll rate
+    # would create gaps in the historical record.
+    async def _sys_metrics_sampler():
+        from . import admin as _admin
+        # 10 Hz sampling — sub-second granularity dropdowns (200ms/500ms)
+        # need the underlying ring to carry multiple samples per second
+        # otherwise binning is a no-op. ~10× the 1 Hz disk writes
+        # (~170 MB/day on the encrypted log) but the underlying
+        # collectors (psutil cpu_percent is instant; nvidia-smi
+        # subprocess takes ~30-80ms; PawnIO ~100µs) keep up.
+        SAMPLE_INTERVAL_S = 0.1
+        try:
+            while True:
+                try:
+                    _admin._sys_metrics()  # appends to ring + encrypted log
+                except Exception:
+                    pass
+                await asyncio.sleep(SAMPLE_INTERVAL_S)
+        except asyncio.CancelledError:
+            pass
+    state.sys_metrics_task = asyncio.create_task(_sys_metrics_sampler())
+
     try:
         yield
     finally:
+        try:
+            state.sys_metrics_task.cancel()
+        except Exception:
+            pass
         await state.scheduler.stop()
         await state.llama_cpp.stop_all()
         if state.redis is not None:
@@ -1060,6 +1090,17 @@ async def chat_completions(
                             out_text.append(t)
                             if _live_capture:
                                 _bench_live_append(t)
+                            # Incremental session-token recording: bump
+                            # the global counter on every chunk so the
+                            # token-rate readout updates DURING a stream,
+                            # not just at end. Using whitespace-split as
+                            # an approximation (consistent with the
+                            # finally-block tokens_out calculation).
+                            try:
+                                from . import admin as _admin
+                                _admin.record_session_tokens(0, max(0, len(t.split())))
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 yield chunk
@@ -1083,6 +1124,14 @@ async def chat_completions(
                 latency_ms=int((time.time() - started) * 1000),
                 error=err,
             )
+            try:
+                # Output tokens were recorded incrementally during the
+                # stream loop above; here we only add prompt_words (the
+                # input side that's only knowable at the end).
+                from . import admin as _admin
+                _admin.record_session_tokens(prompt_words, 0)
+            except Exception:
+                pass
 
     if decision.multi_agent:
         producer = _wrap(_multi_agent_sse(req, decision, options=req.multi_agent_options))

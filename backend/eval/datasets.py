@@ -34,7 +34,7 @@ Depth = Literal["fast", "medium", "full", "stat_sig", "stat_sig_strict"]
 _DEPTHS: dict[str, dict[Depth, int]] = {
     "humaneval":  {"fast": 30,  "medium": 80,  "full": 164,   "stat_sig": 164,  "stat_sig_strict": 164},
     "gsm8k":      {"fast": 50,  "medium": 200, "full": 1319,  "stat_sig": 200,  "stat_sig_strict": 385},
-    "aime2024":   {"fast": 15,  "medium": 30,  "full": 30,    "stat_sig": 30,   "stat_sig_strict": 30},
+    "aime2024":   {"fast": 30,  "medium": 60,  "full": 89,    "stat_sig": 89,   "stat_sig_strict": 89},
     "mmlu":       {"fast": 50,  "medium": 150, "full": 399,   "stat_sig": 200,  "stat_sig_strict": 385},
     "needle":     {"fast": 4,   "medium": 8,   "full": 16,    "stat_sig": 16,   "stat_sig_strict": 16},
     "mmlu_pro":   {"fast": 100, "medium": 300, "full": 12032, "stat_sig": 200,  "stat_sig_strict": 385},
@@ -146,11 +146,23 @@ def load_gsm8k(depth: Depth = "fast") -> list[Problem]:
 # ── AIME 2024 ─────────────────────────────────────────────────────────────
 
 def load_aime2024(depth: Depth = "fast") -> list[Problem]:
-    """American Invitational Mathematics Exam 2024 — 30 hard math
-    olympiad problems with integer answers in [0, 999]. Strong reasoning
-    benchmark; even Qwen3-Next-80B-Thinking only solves ~50% at
-    `think_default: true`."""
-    df = pd.read_parquet(_datasets_dir() / "aime2024" / "aime2024.parquet")
+    """AIME 2022 + 2023 + 2024 combined — 89 olympiad problems with
+    integer answers in [0, 999]. Strong reasoning benchmark; even
+    Qwen3-Next-80B-Thinking only solves ~50% at `think_default: true`.
+
+    Originally 2024-only (30 problems); expanded to three years so
+    Wilson-CI early-stop has a chance to settle within the 5pp margin
+    (n=30 ceiling at ~17pp half-width never fired)."""
+    base = _datasets_dir()
+    frames = []
+    for year_dir in ("aime2022", "aime2023", "aime2024"):
+        p = base / year_dir / f"{year_dir}.parquet"
+        if p.exists():
+            frames.append(pd.read_parquet(p))
+    if not frames:
+        # Fallback to legacy single-file path
+        frames = [pd.read_parquet(base / "aime2024" / "aime2024.parquet")]
+    df = pd.concat(frames, ignore_index=True)
     rows = df.to_dict("records")
     n = _DEPTHS["aime2024"][depth]
     sampled = _sample(rows, n)

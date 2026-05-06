@@ -510,7 +510,16 @@
       font-size: 14px;
       display: flex; flex-direction: column;
       -webkit-font-smoothing: antialiased;
+      /* Page itself never scrolls — long content scrolls inside its
+         own pane (#log, #dashboard, #conv-list). Without this, when
+         a chat or admin pane grows tall, the body scrolls and drags
+         the sidebar header/footer along with it. */
+      overflow: hidden;
+      height: 100vh; height: 100dvh;
     }
+    /* The chat-app row container also clamps so a long inner pane
+       can't expand the row's height past the viewport. */
+    #chatapp { min-height: 0; height: 100%; overflow: hidden; }
     /* Typeface dial — controlled by html[data-typeface]. Default ("system")
        leaves the body face as the cross-platform sans stack; "times" and
        "ibm_plex_sans" override via the --ui-font custom property so child
@@ -836,6 +845,11 @@
       font-size: 20px; font-weight: 600; margin-top: 4px;
       font-family: 'Cascadia Code', Consolas, monospace;
     }
+    /* Compact variant for the bench tab — same component, smaller type
+       so the system row coexists with the heatmap on one screen. */
+    .dash-card.dash-card-sm { padding: 6px 8px; }
+    .dash-card.dash-card-sm .lbl { font-size: 9px; letter-spacing: 0.4px; }
+    .dash-card.dash-card-sm .val { font-size: 14px; margin-top: 2px; }
     .dash-table {
       width: 100%; border-collapse: collapse; font-size: 13px;
       margin-top: 8px;
@@ -898,12 +912,25 @@
       border-right: 1px solid var(--border);
       background: var(--panel);
       display: flex; flex-direction: column;
+      /* Fixed height so the flex column inside can give conv-list a
+         finite remainder to scroll within. Without these the
+         conv-list expands with content and the footer (settings +
+         archived toggle) gets pushed below the viewport. */
+      height: 100%;
+      min-height: 0;
+      max-height: 100vh; max-height: 100dvh;
     }
     #sidebar header {
       border-right: 0; border-bottom: 1px solid var(--border);
       justify-content: space-between;
+      flex-shrink: 0;
     }
-    #conv-list { flex: 1; overflow-y: auto; padding: 6px; }
+    /* min-height:0 unlocks the standard flex shrink-below-content
+       fix; without it flex items default to min-height:auto = content
+       size, which means a long conv-list never shrinks and the
+       footer gets clipped instead of conv-list scrolling. */
+    #conv-list { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 6px; }
+    #new-conv-btn, #archived-toggle, #settings-btn { flex-shrink: 0; }
     .conv-item {
       padding: 8px 10px; border-radius: 6px; cursor: pointer;
       font-size: 13px; color: var(--fg);
@@ -960,6 +987,23 @@
       box-shadow: 0 24px 64px rgba(0,0,0,0.5);
     }
     #settings-modal.hidden, #settings-backdrop.hidden { display: none; }
+    /* Full-screen mode for the benchmark tab — gives the heatmap +
+       baseline tables room to breathe. Toggled via the ⤢ button on
+       the benchmark tab; persists for that modal session only. */
+    #settings-modal.settings-fullscreen {
+      width: 98vw; max-width: 98vw;
+      height: 96vh; max-height: 96vh;
+      display: flex; flex-direction: column;
+    }
+    #settings-modal.settings-fullscreen .settings-body {
+      flex: 1; min-height: 0; overflow: auto;
+    }
+    #settings-modal.settings-fullscreen .settings-pane[data-pane="benchmark"] {
+      height: 100%; display: flex !important; flex-direction: column;
+    }
+    #settings-modal.settings-fullscreen .settings-pane[data-pane="benchmark"] > section {
+      flex: 1; min-height: 0; display: flex; flex-direction: column;
+    }
     .settings-head {
       display: flex; align-items: center; justify-content: space-between;
       padding: 14px 18px; border-bottom: 1px solid var(--border);
@@ -985,10 +1029,11 @@
     .settings-tab:hover { color: var(--fg); }
     .settings-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
     .settings-pane { display: none; }
-    .settings-body[data-active-tab="general"]   .settings-pane[data-pane="general"],
-    .settings-body[data-active-tab="connectors"] .settings-pane[data-pane="connectors"],
-    .settings-body[data-active-tab="skills"]    .settings-pane[data-pane="skills"],
-    .settings-body[data-active-tab="benchmark"] .settings-pane[data-pane="benchmark"] {
+    .settings-body[data-active-tab="general"]     .settings-pane[data-pane="general"],
+    .settings-body[data-active-tab="connectors"]  .settings-pane[data-pane="connectors"],
+    .settings-body[data-active-tab="skills"]      .settings-pane[data-pane="skills"],
+    .settings-body[data-active-tab="benchmark"]   .settings-pane[data-pane="benchmark"],
+    .settings-body[data-active-tab="performance"] .settings-pane[data-pane="performance"] {
       display: block;
     }
     .settings-section {
@@ -1304,10 +1349,11 @@
         <button id="settings-close" type="button" aria-label="Close settings">✕</button>
       </div>
       <div class="settings-tabs" role="tablist">
-        <button class="settings-tab active" data-tab="general"   type="button">General</button>
-        <button class="settings-tab"        data-tab="connectors" type="button">Connectors</button>
-        <button class="settings-tab"        data-tab="skills"     type="button">Skills</button>
-        <button class="settings-tab"        data-tab="benchmark"  type="button">Benchmark</button>
+        <button class="settings-tab active" data-tab="general"     type="button">General</button>
+        <button class="settings-tab"        data-tab="connectors"  type="button">Connectors</button>
+        <button class="settings-tab"        data-tab="skills"      type="button">Skills</button>
+        <button class="settings-tab"        data-tab="benchmark"   type="button">Benchmark</button>
+        <button class="settings-tab"        data-tab="performance" type="button">Performance</button>
       </div>
       <div class="settings-body" data-active-tab="general">
         <div class="settings-pane" data-pane="general">
@@ -1454,20 +1500,36 @@
         </div><!-- /.settings-pane[general] -->
 
         <div class="settings-pane" data-pane="benchmark">
+          <section class="settings-section" style="border-bottom:0;display:flex;flex-direction:column;height:100%">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+              <h3 style="margin:0">Benchmark dashboard</h3>
+              <span style="flex:1"></span>
+              <button id="settings-bench-fullscreen" type="button" title="Toggle full-screen view"
+                      style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px">⤢ Full screen</button>
+              <a href="/bench" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px">Open in new tab</a>
+            </div>
+            <div id="settings-bench-pane" class="dash-pane active" style="flex:1;min-height:0;overflow:auto">
+              <div class="dash-empty">Loading bench results…</div>
+            </div>
+          </section>
+        </div>
+        <div class="settings-pane" data-pane="performance">
           <section class="settings-section" style="border-bottom:0">
-            <h3>Benchmark dashboard</h3>
+            <h3>Performance</h3>
             <p class="settings-help">
-              Live + historical capability bench results — pass-rate per (tier × capability),
-              Wilson 95% CIs, two-proportion z-tests for condition comparisons.
-              Same data the admin dashboard shows; rendered here for all signed-in users.
+              Live system telemetry — CPU + GPU utilization, temperatures, VRAM,
+              and request/token counters. Same readings as the admin Overview tab,
+              available to all signed-in users. Polled at 1 Hz; logged at 1 Hz on
+              the backend regardless of how often the dashboard fetches.
             </p>
-            <div style="overflow:hidden;border:1px solid var(--border);border-radius:6px;background:var(--panel-2);width:100%">
-              <iframe id="settings-bench-iframe" src="about:blank" loading="lazy"
-                      style="display:block;width:100%;height:60vh;border:0;background:transparent"></iframe>
-            </div>
-            <div style="margin-top:6px;font-size:11px;color:var(--muted);text-align:right">
-              <a href="/bench" target="_blank" rel="noopener" style="color:var(--accent)">Open in new tab</a>
-            </div>
+            <div id="perfCardsControlsHost"></div>
+            <div id="perfSysRow"    class="dash-cards" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:10px"></div>
+            <div id="perfActivityRow" class="dash-cards" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:14px"></div>
+            <details id="perfGraphsSection" open style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--panel)">
+              <summary style="cursor:pointer;color:var(--muted);font-size:0.95em;font-weight:600;padding:2px 0">Graphs</summary>
+              <div id="perfControls" style="margin-top:8px"></div>
+              <div id="perfSysGraphs"></div>
+            </details>
           </section>
         </div>
       </div>
@@ -3539,7 +3601,7 @@
     let _benchPollSeconds = (() => {
       try {
         const v = parseInt(localStorage.getItem('lai_bench_poll_secs') || '10', 10);
-        return [5, 10, 30, 60].includes(v) ? v : 10;
+        return [1, 2, 5, 10, 30, 60].includes(v) ? v : 10;
       } catch (_) { return 10; }
     })();
     // Sequential gradient stops per palette, used for horizontal bars
@@ -3595,8 +3657,10 @@
       if (s < 3600) return Math.round(s/60) + 'm';
       return (s/3600).toFixed(1) + 'h';
     }
-    function _benchRenderInline(data) {
-      const pane = $('dash-pane-bench');
+    function _benchRenderInline(data, paneId = 'dash-pane-bench', opts = {}) {
+      const pane = document.getElementById(paneId);
+      if (!pane) return;
+      const hideSysMon = !!opts.hideSysMonitoring;
       const totalCells = BENCH_TIERS.length * BENCH_CAPS.length * 4;
       const finished = data.cells.filter(c => c.finished).length;
       const cur = data.current;
@@ -3687,7 +3751,7 @@
       // Refresh-cadence control bar — sticky at the top so the user can
       // tune the poll rate without scrolling. Mirrors the standalone
       // /bench page; binds to _benchPollSeconds + _restartBenchPoll.
-      const cadenceOpts = [5, 10, 30, 60].map(s =>
+      const cadenceOpts = [1, 2, 5, 10, 30, 60].map(s =>
         `<option value="${s}"${s === _benchPollSeconds ? ' selected' : ''}>${s}s</option>`
       ).join('');
       const ctrlBar = `<div class="bench-ctrl-bar" style="display:flex;align-items:center;gap:10px;padding:6px 8px;margin:0 0 10px 0;border:1px solid var(--border);border-radius:6px;background:var(--panel-2);font-size:13px;flex-wrap:wrap">
@@ -3708,11 +3772,14 @@
       // and on the `resize` event so the dashboard tracks live as the
       // user rotates / drags the window.
       const grouped = {};
+      const groupedCells = {};  // full per-cell rows for the tooltip
       for (const c of all) {
         if (c.passed + c.failed + c.errors === 0) continue;
         const k = c.tier + '|' + c.capability;
         grouped[k] = grouped[k] || [];
         grouped[k].push(c.pass_rate * 100);
+        groupedCells[k] = groupedCells[k] || [];
+        groupedCells[k].push(c);
       }
       const vw = window.innerWidth || 800;
       const compact = vw < 720;
@@ -3723,6 +3790,40 @@
       const tierFontSz = compact ? '0.85em' : '0.95em';
       const lit = (data.lit_baselines && data.lit_baselines.tiers) || {};
       const hist = (data.historical_baselines && data.historical_baselines.tiers) || {};
+      // Per-tier "highest / lowest cap diff vs literature" — used by the
+      // heatmap tooltip. The lit JSON nests `tiers.<tier>.metrics.<cap>`
+      // with `.value` already in 0-100 scale (NOT 0-1 fractions).
+      // _litVal centralises the lookup so the tooltip + heatmap agree.
+      const _litVal = (tier, cap) => {
+        const t = lit[tier];
+        if (!t || !t.metrics) return null;
+        const m = t.metrics[cap];
+        if (!m) return null;
+        // Guard against legacy shape where the value lives directly
+        // on the cap (some older baselines did this).
+        if (typeof m === 'number') return m;
+        return (typeof m.value === 'number') ? m.value : null;
+      };
+      const tierLitStats = {};
+      for (const tier of BENCH_TIERS) {
+        let best = null, worst = null, sumDelta = 0, nDeltas = 0;
+        for (const cap of BENCH_CAPS) {
+          const samples = grouped[tier + '|' + cap];
+          if (!samples || samples.length === 0) continue;
+          const litVal = _litVal(tier, cap);
+          if (litVal == null) continue;
+          const avg = samples.reduce((a,b)=>a+b,0) / samples.length;
+          const delta = avg - litVal;
+          sumDelta += delta;
+          nDeltas++;
+          if (best === null || delta > best.delta)  best  = { cap, delta };
+          if (worst === null || delta < worst.delta) worst = { cap, delta };
+        }
+        tierLitStats[tier] = {
+          avgDelta: nDeltas > 0 ? sumDelta / nDeltas : null,
+          best, worst, n: nDeltas,
+        };
+      }
       // Heatmap shows current-run pass-rate only — single number per
       // cell, colored by performance. Baseline comparisons (current vs
       // prev best vs published) live in their own panel below.
@@ -3743,18 +3844,81 @@
             heat += `<td class="num" style="background:var(--hm-na-bg);color:var(--muted);padding:8px 2px;width:${cellW}px">—</td>`;
           } else {
             const avg = samples.reduce((a,b)=>a+b,0) / samples.length;
-            heat += `<td class="num" style="background:${_benchPctColor(avg)};color:var(--hm-text);padding:8px 2px;width:${cellW}px;border-radius:3px;font-weight:500" title="${tier} × ${cap}: ${avg.toFixed(1)}% (${samples.length} cell${samples.length===1?'':'s'})">${avg.toFixed(0)}</td>`;
+            // Encode the full row data on the cell so the tooltip can
+            // pull per-condition pass rates + wall times without a
+            // re-render. Keep it compact — just the fields the tooltip
+            // shows.
+            const cellPayload = (groupedCells[tier + '|' + cap] || []).map(c => ({
+              think: c.think, tools: c.tools,
+              pass: c.passed, n: c.passed + c.failed + c.errors,
+              rate: c.pass_rate, wall: c.wall_seconds || 0,
+            }));
+            const litVal = _litVal(tier, cap);  // already in 0-100 scale
+            const tipData = {
+              tier, cap,
+              avg,
+              n_cells: samples.length,
+              conditions: cellPayload,
+              lit: litVal,
+              tier_stats: tierLitStats[tier] || null,
+            };
+            const tipJson = encodeURIComponent(JSON.stringify(tipData));
+            heat += `<td class="num bench-heat-cell" data-tip="${tipJson}" style="background:${_benchPctColor(avg)};color:var(--hm-text);padding:8px 2px;width:${cellW}px;border-radius:3px;font-weight:500;cursor:pointer">${avg.toFixed(0)}</td>`;
           }
         }
         heat += `</tr>`;
       }
       heat += `</tbody></table></div>`;
+      // Hover/tap tooltip element. One per dashboard, positioned by JS
+      // when a cell is hovered. Hidden by default.
+      heat += `<div id="benchHeatTip" role="tooltip" style="position:fixed;display:none;z-index:50;background:#000;border:1px solid var(--accent);border-radius:4px;padding:8px 10px;font-family:'Cascadia Code',Consolas,monospace;font-size:11px;color:var(--fg);max-width:340px;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.6)"></div>`;
 
       // Baseline comparisons panel — collapsed per-tier view with
       // expandable per-capability breakdown. The visible row averages
       // current / prev / published across all caps for that tier. Click
       // to expand the details, which list every (tier, cap) pair with
       // its individual deltas.
+      // One-sample binomial z-test vs published baseline.
+      //   H0: true pass-rate p == p_lit
+      //   p_hat = pooled passes / pooled n across all cells of (tier,cap)
+      //   z = (p_hat - p_lit) / sqrt( p_lit * (1 - p_lit) / n )
+      // Two-sided. |z| ≥ 1.96 → p<0.05, ≥2.58 → p<0.01, ≥3.29 → p<0.001.
+      // Returns null if lit is null or n == 0. Uses two-sided erf
+      // approximation for the p-value (Abramowitz-Stegun) — same path
+      // we already use for two-proportion z elsewhere.
+      const _erf = (x) => {
+        const sign = x < 0 ? -1 : 1; const a = Math.abs(x);
+        const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+        const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+        const t = 1.0 / (1.0 + p * a);
+        const y = 1.0 - ((((a5*t + a4)*t + a3)*t + a2)*t + a1) * t * Math.exp(-a*a);
+        return sign * y;
+      };
+      const _zPvalueTwoSided = (z) => 2 * (1 - 0.5 * (1 + _erf(Math.abs(z) / Math.SQRT2)));
+      const _litZTest = (passes, n, litPct) => {
+        if (litPct == null || n <= 0) return null;
+        const p_lit = Math.min(0.999, Math.max(0.001, litPct / 100));
+        const p_hat = passes / n;
+        const se = Math.sqrt(p_lit * (1 - p_lit) / n);
+        if (se <= 0) return null;
+        const z = (p_hat - p_lit) / se;
+        return { z, p: _zPvalueTwoSided(z), p_hat: p_hat * 100 };
+      };
+      const _sigBadge = (sig, dLit) => {
+        if (!sig) return '<span style="color:var(--muted)">—</span>';
+        const z = sig.z, pv = sig.p;
+        const dirArrow = z > 0 ? '↑' : '↓';
+        const isWin = (dLit != null && dLit >= 0);
+        const col = pv >= 0.05 ? 'var(--muted)'
+                  : (isWin ? 'var(--success)' : 'var(--danger)');
+        let stars = '';
+        if (pv < 0.001) stars = dirArrow.repeat(3);
+        else if (pv < 0.01)  stars = dirArrow.repeat(2);
+        else if (pv < 0.05)  stars = dirArrow;
+        else stars = 'ns';
+        return `<span style="color:${col};font-weight:600" title="z=${z.toFixed(2)}, p=${pv.toExponential(1)}">${stars} <span style="opacity:0.7;font-weight:400">z=${z.toFixed(1)}</span></span>`;
+      };
+
       let baselineHtml = '';
       const tierRows = [];
       for (const tier of BENCH_TIERS) {
@@ -3767,7 +3931,17 @@
           const cur = samples.reduce((a,b)=>a+b,0) / samples.length;
           const litVal = (litMetrics[cap] && litMetrics[cap].value);
           const histVal = (histMetrics[cap] && histMetrics[cap].value);
-          subRows.push({cap, cur, litVal, histVal});
+          // Pool trial counts across all cells of this (tier,cap) for the
+          // significance test. groupedCells already carries the raw rows.
+          const cells = groupedCells[tier + '|' + cap] || [];
+          let pooledN = 0, pooledPass = 0;
+          for (const c of cells) {
+            const n = (c.passed || 0) + (c.failed || 0) + (c.errors || 0);
+            pooledN += n;
+            pooledPass += (c.passed || 0);
+          }
+          const sigVsLit = _litZTest(pooledPass, pooledN, litVal);
+          subRows.push({cap, cur, litVal, histVal, pooledN, pooledPass, sigVsLit});
         }
         if (subRows.length === 0) continue;
         // Compute averages across caps that have a value in each baseline
@@ -3796,19 +3970,22 @@
           <th class="num">avg current</th>
           <th class="num">avg prev</th><th class="num">avg Δ vs prev</th>
           <th class="num">avg pub</th><th class="num">avg Δ vs pub</th>
+          <th class="num" title="Per-capability significance vs published baseline. ↑↑↑/↓↓↓ counts of caps above/below at p<0.05, normalized by caps with a published number. Hover the per-cap table for individual z-scores.">sig profile</th>
           <th></th>
         </tr></thead><tbody>`;
         for (const r of tierRows) {
           const colH = r.avgDHist == null ? 'var(--muted)' : (r.avgDHist >= 0 ? 'var(--success)' : 'var(--danger)');
           const colL = r.avgDLit  == null ? 'var(--muted)' : (r.avgDLit  >= 0 ? 'var(--success)' : 'var(--danger)');
           // Build the expandable per-capability sub-table
-          let sub = `<tr><td colspan="8" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
+          let sub = `<tr><td colspan="9" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
             <summary style="cursor:pointer;color:var(--muted);font-size:0.85em">per-capability breakdown</summary>
             <table class="dash-table" style="margin-top:6px"><thead><tr>
               <th>capability</th>
+              <th class="num">n</th>
               <th class="num">current</th>
               <th class="num">prev</th><th class="num">Δ</th>
               <th class="num">pub</th><th class="num">Δ</th>
+              <th class="num" title="One-sample z-test vs published baseline. arrows = direction (↑ over, ↓ under), repeats = strength (1× p<0.05, 2× p<0.01, 3× p<0.001), ns = not significant">sig vs pub</th>
             </tr></thead><tbody>`;
           for (const sr of r.subRows) {
             const dH = sr.histVal != null ? sr.cur - sr.histVal : null;
@@ -3817,14 +3994,42 @@
             const cL = dL == null ? 'var(--muted)' : (dL >= 0 ? 'var(--success)' : 'var(--danger)');
             sub += `<tr>
               <td>${sr.cap}</td>
+              <td class="num" style="color:var(--muted)">${sr.pooledN || '—'}</td>
               <td class="num">${sr.cur.toFixed(1)}%</td>
               <td class="num" style="color:var(--accent)">${sr.histVal != null ? sr.histVal.toFixed(1) : '—'}</td>
               <td class="num" style="color:${cH}">${dH != null ? (dH >= 0 ? '+' : '') + dH.toFixed(1) : '—'}</td>
               <td class="num" style="color:var(--warn)">${sr.litVal != null ? sr.litVal.toFixed(1) : '—'}</td>
               <td class="num" style="color:${cL}">${dL != null ? (dL >= 0 ? '+' : '') + dL.toFixed(1) : '—'}</td>
+              <td class="num">${_sigBadge(sr.sigVsLit, dL)}</td>
             </tr>`;
           }
           sub += `</tbody></table></details></td></tr>`;
+          // Tier sig profile: count caps that are significantly above /
+          // below / not-different-from pub at p<0.05. Render as a tiny
+          // stacked-bar visualization (green up, gray ns, red down).
+          let sigUp = 0, sigDown = 0, sigNs = 0, sigSkip = 0;
+          for (const sr of r.subRows) {
+            if (!sr.sigVsLit) { sigSkip++; continue; }
+            if (sr.sigVsLit.p >= 0.05) sigNs++;
+            else if (sr.sigVsLit.z > 0) sigUp++;
+            else sigDown++;
+          }
+          const sigTotal = sigUp + sigDown + sigNs;
+          let sigCell = '<span style="color:var(--muted)">—</span>';
+          if (sigTotal > 0) {
+            const pUp = (sigUp / sigTotal) * 100;
+            const pNs = (sigNs / sigTotal) * 100;
+            const pDn = (sigDown / sigTotal) * 100;
+            sigCell =
+              `<div style="display:flex;align-items:center;gap:6px">
+                <div style="display:flex;height:10px;width:80px;border-radius:2px;overflow:hidden;border:1px solid var(--border)" title="${sigUp}↑ / ${sigNs}ns / ${sigDown}↓ of ${sigTotal} caps with pub baseline">
+                  <div style="width:${pUp}%;background:var(--success)"></div>
+                  <div style="width:${pNs}%;background:var(--muted);opacity:0.4"></div>
+                  <div style="width:${pDn}%;background:var(--danger)"></div>
+                </div>
+                <span style="font-size:0.85em;color:var(--muted)">${sigUp}↑ ${sigNs}ns ${sigDown}↓</span>
+              </div>`;
+          }
           baselineHtml += `<tr style="border-top:2px solid var(--border)">
             <td><strong>${r.tier}</strong></td>
             <td class="num">${r.nCur}</td>
@@ -3833,15 +4038,22 @@
             <td class="num" style="color:${colH};font-weight:500">${r.avgDHist != null ? (r.avgDHist >= 0 ? '+' : '') + r.avgDHist.toFixed(1) + 'pp' : '—'}</td>
             <td class="num" style="color:var(--warn)">${r.avgLitBase != null ? r.avgLitBase.toFixed(1) + '%' : '—'}</td>
             <td class="num" style="color:${colL};font-weight:500">${r.avgDLit != null ? (r.avgDLit >= 0 ? '+' : '') + r.avgDLit.toFixed(1) + 'pp' : '—'}</td>
+            <td>${sigCell}</td>
             <td></td>
           </tr>${sub}`;
         }
         baselineHtml += `</tbody></table></div>
-          <div style="font-size:0.8em;color:var(--muted);padding:6px 0">
+          <div style="font-size:0.8em;color:var(--muted);padding:6px 0;line-height:1.5">
             One row per model. Click "per-capability breakdown" to expand.
             <span style="color:var(--accent)">prev</span> = our prior best run.
             <span style="color:var(--warn)">pub</span> = published model-card baseline.
             Models sorted by largest |Δ| so regressions surface first.
+            <br>
+            <strong>sig profile</strong>: stacked-bar showing per-cap one-sample
+            z-test results vs pub at α=0.05. <span style="color:var(--success)">green</span>=cap above pub significantly,
+            <span style="color:var(--muted)">gray</span>=consistent with pub (ns), <span style="color:var(--danger)">red</span>=below pub significantly.
+            Hover the per-cap "sig vs pub" cell for the actual z-score and p-value.
+            Arrow strength: ↑/↓ p&lt;0.05, ↑↑/↓↓ p&lt;0.01, ↑↑↑/↓↓↓ p&lt;0.001, ns ≥ 0.05.
           </div>`;
       }
 
@@ -4172,6 +4384,20 @@
           <a href="/bench" target="_blank" style="color:var(--accent);font-size:0.85em">open in new tab</a>
         </div>
         ${live}
+        ${hideSysMon ? '' : `<details id="benchSysSection" ${_loadDetailsState('lai_bench_sys_section', true) ? 'open' : ''} style="margin-bottom:14px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--panel-2)">
+          <summary style="cursor:pointer;color:var(--muted);font-weight:600;font-size:0.95em;padding:2px 0">System monitoring</summary>
+          <div style="margin-top:8px">
+            ${_sysCardsControls('bench')}
+            <div id="benchSysRow" class="dash-cards" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px"></div>
+            <details id="benchSysGraphsSection" ${_loadDetailsState('lai_bench_sys_graphs', false) ? 'open' : ''} style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--panel)">
+              <summary style="cursor:pointer;color:var(--muted);font-size:0.9em;padding:2px 0">Graphs</summary>
+              <div style="margin-top:8px">
+                ${_sysGraphControls('bench')}
+                <div id="benchSysGraphs"></div>
+              </div>
+            </details>
+          </div>
+        </details>`}
         <h4 style="margin:6px 0;color:var(--muted)">Pass-rate heatmap (tier × capability — averaged across conditions)</h4>
         ${heat}
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:10px;margin-top:14px">
@@ -4191,6 +4417,23 @@
         <h4 style="margin:14px 0 6px 0;color:var(--muted)">Mean latency per problem (tier × capability)</h4>
         ${latHtml}
         <div style="margin-top:14px">${table}</div>
+        <div style="margin-top:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <strong>Live model output</strong>
+            <span id="adminLiveTokensMeta" style="color:var(--muted);font-size:12px"></span>
+          </div>
+          <pre id="adminLiveTokensPre" style="
+            margin:0;padding:10px;
+            background:var(--panel-2);
+            border:1px solid var(--border);
+            border-radius:6px;
+            max-height:160px;overflow:auto;
+            white-space:pre-wrap;word-break:break-word;
+            font:12px ui-monospace,Menlo,Consolas,monospace;
+            color:var(--muted);
+            min-height:48px;
+          ">(idle — no bench in flight)</pre>
+        </div>
       `;
 
       // Restore any drop-downs the user had expanded before this update,
@@ -4261,7 +4504,106 @@
       if (refreshBtn && _benchTickFn) {
         refreshBtn.addEventListener('click', () => _benchTickFn());
       }
+      _wireBenchHeatTooltip(pane);
+      // Re-attach sys-graph dropdown listeners after each render — the
+      // pane.innerHTML rebuild above wipes them out. Skip the initial
+      // bootstrap (loadDashBench owns the first attach) so we don't
+      // double-arm before the timer is even set.
+      if (_benchSysPoll && !hideSysMon) {
+        _sysGraphAttachHandlers('bench', _restartBenchSysPoll);
+        // Synchronous re-paint of the graphs from the cached timeseries
+        // BEFORE the next async refresh fires, so #benchSysGraphs is
+        // never visibly empty between bench-results poll (which just
+        // wiped the pane) and the next 1Hz sys poll.
+        _sysPaintFromCache('bench', _benchLastData);
+        // Async refresh in the background to update the cache.
+        _refreshBenchSysCards();
+      }
     }
+    function _wireBenchHeatTooltip(root) {
+      // Pointer/touch tooltip for the pass-rate heatmap. Each cell
+      // carries a base64-ish URL-encoded JSON payload via data-tip
+      // (see heat-table renderer above). Tooltip element is reused —
+      // one #benchHeatTip div per render — so handler binding is
+      // O(cells) but cheap.
+      const tip = root.querySelector('#benchHeatTip');
+      if (!tip) return;
+      const fmtPct = (v) => v == null ? '—' : `${v.toFixed(1)}%`;
+      const fmtDelta = (d) => {
+        if (d == null) return '—';
+        const s = d >= 0 ? '+' : '';
+        const col = d >= 0 ? 'var(--success)' : 'var(--danger)';
+        return `<span style="color:${col}">${s}${d.toFixed(1)}pp</span>`;
+      };
+      const fmtWall = (s) => {
+        if (!s) return '—';
+        if (s < 90) return `${s.toFixed(0)}s`;
+        if (s < 5400) return `${(s/60).toFixed(1)}m`;
+        return `${(s/3600).toFixed(1)}h`;
+      };
+      const buildContent = (d) => {
+        const condRows = (d.conditions || [])
+          .map(c => {
+            const tag = `${c.think === 'on' ? 'think' : 'plain'}/${c.tools === 'auto' ? 'tools' : 'no-tools'}`;
+            return `<tr>
+              <td style="color:var(--muted);padding-right:8px">${tag}</td>
+              <td style="text-align:right;color:var(--accent);padding-right:8px">${(c.rate*100).toFixed(0)}%</td>
+              <td style="color:var(--muted);text-align:right;padding-right:8px">${c.pass}/${c.n}</td>
+              <td style="color:var(--muted);text-align:right">${fmtWall(c.wall)}</td>
+            </tr>`;
+          }).join('');
+        const litRow = d.lit != null
+          ? `<div style="margin-top:6px;color:var(--muted)">vs lit (${d.lit.toFixed(1)}%): ${fmtDelta(d.avg - d.lit)}</div>`
+          : `<div style="margin-top:6px;color:var(--muted)">no lit baseline</div>`;
+        const ts = d.tier_stats || {};
+        let tierStatsHtml = '';
+        if (ts.n) {
+          tierStatsHtml = `<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border);color:var(--muted);line-height:1.5">
+            <div>${d.tier} avg Δ vs lit (${ts.n} caps): ${fmtDelta(ts.avgDelta)}</div>
+            <div>best cap: <span style="color:var(--fg)">${ts.best ? ts.best.cap : '—'}</span> ${ts.best ? fmtDelta(ts.best.delta) : ''}</div>
+            <div>worst cap: <span style="color:var(--fg)">${ts.worst ? ts.worst.cap : '—'}</span> ${ts.worst ? fmtDelta(ts.worst.delta) : ''}</div>
+          </div>`;
+        }
+        return `<div style="font-weight:600;color:var(--accent);margin-bottom:4px">${d.tier} × ${d.cap}</div>
+          <div style="color:var(--muted);margin-bottom:6px">avg ${fmtPct(d.avg)} (${d.n_cells} cell${d.n_cells===1?'':'s'})</div>
+          <table style="font-size:10.5px;border-collapse:collapse;width:100%">${condRows}</table>
+          ${litRow}
+          ${tierStatsHtml}`;
+      };
+      const onEnter = (e) => {
+        const cell = e.target.closest('.bench-heat-cell');
+        if (!cell) return;
+        const raw = cell.dataset.tip;
+        if (!raw) return;
+        try {
+          const d = JSON.parse(decodeURIComponent(raw));
+          tip.innerHTML = buildContent(d);
+          tip.style.display = 'block';
+          // Position near pointer; flip if near right/bottom edge.
+          const r = cell.getBoundingClientRect();
+          const tipR = tip.getBoundingClientRect();
+          let x = r.right + 8;
+          let y = r.top;
+          if (x + tipR.width > window.innerWidth)  x = r.left - tipR.width - 8;
+          if (y + tipR.height > window.innerHeight) y = window.innerHeight - tipR.height - 8;
+          tip.style.left = Math.max(8, x) + 'px';
+          tip.style.top  = Math.max(8, y) + 'px';
+        } catch (_) {}
+      };
+      const onLeave = () => { tip.style.display = 'none'; };
+      const onTap = (e) => {
+        // Tap on a cell shows the tooltip; tap elsewhere hides it.
+        const cell = e.target.closest('.bench-heat-cell');
+        if (cell) onEnter({ target: cell });
+        else onLeave();
+      };
+      // One delegated listener on the pane (cells are recreated each
+      // render, so we delegate at the parent level).
+      root.addEventListener('pointerover', onEnter);
+      root.addEventListener('pointerout',  onLeave);
+      root.addEventListener('click',       onTap);
+    }
+
     let _benchLastData = null;
     let _benchResizeHandler = null;
     let _benchTickFn = null;
@@ -4270,6 +4612,61 @@
       _benchPoll = setInterval(() => {
         if (dashboardActiveTab === 'bench' && _benchTickFn) _benchTickFn();
       }, _benchPollSeconds * 1000);
+    }
+    // Live token stream poll — independent of the heatmap refresh
+    // cadence (which can be 5-30s) so the model-output pane keeps
+    // up. Polls /admin/bench/live_tokens every 1s while the bench
+    // dashboard tab is visible. The pre's elements are re-rendered
+    // every heatmap tick but the IDs are stable, so we look them up
+    // each poll and update in place.
+    let _adminLiveTokensPoll = null;
+    let _adminLiveTokensLast = '';  // last non-empty render — held across inter-problem gaps
+    async function _adminLiveTokensTick() {
+      const pre = document.getElementById('adminLiveTokensPre');
+      if (!pre) return;
+      try {
+        const r = await api('/admin/bench/live_tokens');
+        if (!r.ok) return;
+        const j = await r.json();
+        const tokens = Array.isArray(j.tokens) ? j.tokens : [];
+        const meta = document.getElementById('adminLiveTokensMeta');
+        // Tier set → bench is between/in problems; keep last frame
+        // visible during the buffer-clear gap that fires at each
+        // problem boundary (`_bench_live_start` empties the deque
+        // BEFORE the first chunk of the next request arrives, so we
+        // briefly see tokens.length === 0 even though the bench is
+        // in flight). Only render "(idle)" when truly no tier set.
+        if (tokens.length === 0) {
+          if (j.tier) {
+            // Held — keep showing the last problem's tokens until the
+            // next one starts streaming. Update meta with "awaiting"
+            // hint so the user knows it's between problems, not stuck.
+            if (meta) meta.textContent = `${j.tier} · awaiting next problem…`;
+          } else {
+            pre.textContent = '(idle — no bench in flight)';
+            pre.style.color = 'var(--muted)';
+            _adminLiveTokensLast = '';
+            if (meta) meta.textContent = '';
+          }
+        } else {
+          const text = tokens.join(' ');
+          pre.textContent = text;
+          pre.style.color = 'var(--fg)';
+          pre.scrollTop = pre.scrollHeight;
+          _adminLiveTokensLast = text;
+          if (meta) {
+            const elapsed = j.started ? Math.max(0, (Date.now()/1000 - j.started)) : 0;
+            meta.textContent = `${j.tier || ''} · ${tokens.length} tok` +
+              (elapsed > 0 ? ` · ${elapsed.toFixed(1)}s` : '');
+          }
+        }
+      } catch (_) { /* network blip — keep last frame */ }
+    }
+    function _restartAdminLiveTokensPoll() {
+      if (_adminLiveTokensPoll) clearInterval(_adminLiveTokensPoll);
+      _adminLiveTokensPoll = setInterval(() => {
+        if (dashboardActiveTab === 'bench') _adminLiveTokensTick();
+      }, 1000);
     }
     async function loadDashBench() {
       const pane = $('dash-pane-bench');
@@ -4289,6 +4686,14 @@
       await tick();
       // Refresh on tab activity; keep one rolling poll while the tab is open.
       _restartBenchPoll();
+      // Live-token pane has its own faster cadence — start its poll
+      // alongside the heatmap poll. The cell pre is created on each
+      // _benchRenderInline so the pane is always present when this
+      // tab is active.
+      _restartAdminLiveTokensPoll();
+      _adminLiveTokensTick();
+      // System metrics row + graphs at user-chosen cadence (default 1 Hz).
+      _restartBenchSysPoll();
       // Window-resize listener: re-render with the cached payload so the
       // heatmap reflows for the new viewport width without waiting for
       // the next poll. Debounced so dragging the window doesn't thrash.
@@ -4322,6 +4727,1057 @@
       });
     }
 
+    let _overviewSysPoll = null;
+    let _benchSysPoll = null;
+    // Cached last /admin/sys/timeseries payload so _benchRenderInline
+    // can re-paint graphs synchronously (no fetch latency) immediately
+    // after rebuilding the pane innerHTML — eliminates the flicker
+    // gap between bench-results poll (wipes #benchSysGraphs) and the
+    // next 1Hz sys poll (re-fills it). The async refresh still runs
+    // and updates this cache for the next sync render.
+    let _sysTsCache = null;
+
+    // Cache the last sys-cards payload too so _benchRenderInline can
+    // re-paint synchronously and the cards never flash empty between
+    // a bench-results poll and the next sys poll.
+    let _sysLastCards = null;
+
+    function _renderSysCardsHtml(tab, sys) {
+      // Override the backend's tokens_in_per_s / tokens_out_per_s with
+      // a client-side rolling rate computed over the user-selected
+      // window — pulls cumulative session totals from _sysTsCache and
+      // diffs the oldest in-window sample against the latest.
+      const winSec = (_sysGraphState[tab] && _sysGraphState[tab].rateWinSec) || 10;
+      const sys2 = Object.assign({}, sys || {});
+      try {
+        const samples = (_sysTsCache && _sysTsCache.samples) || [];
+        // Only override token fields when the ring buffer actually
+        // carries session_tokens_* data. Older backend builds don't
+        // emit these fields — in that case leave whatever the cards
+        // renderer would do (which yields "—" via fmtInt(undefined)).
+        const hasTokenFields = samples.some(s =>
+          s.session_tokens_in != null || s.session_tokens_out != null);
+        if (samples.length >= 2 && hasTokenFields) {
+          const now = (_sysTsCache && _sysTsCache.now_ts) || (Date.now() / 1000);
+          const cutoff = now - winSec;
+          let first = null;
+          for (const s of samples) {
+            if (s.session_tokens_in == null && s.session_tokens_out == null) continue;
+            if (s.ts >= cutoff) { first = s; break; }
+          }
+          if (!first) {
+            for (const s of samples) {
+              if (s.session_tokens_in != null || s.session_tokens_out != null) {
+                first = s; break;
+              }
+            }
+          }
+          const last = samples[samples.length - 1];
+          if (first && last) {
+            const dt = Math.max(0.001, last.ts - first.ts);
+            const inDelta  = (last.session_tokens_in  || 0) - (first.session_tokens_in  || 0);
+            const outDelta = (last.session_tokens_out || 0) - (first.session_tokens_out || 0);
+            sys2.tokens_in_per_s  = Math.max(0, inDelta  / dt);
+            sys2.tokens_out_per_s = Math.max(0, outDelta / dt);
+            if (last.session_tokens_in  != null) sys2.session_tokens_in  = last.session_tokens_in;
+            if (last.session_tokens_out != null) sys2.session_tokens_out = last.session_tokens_out;
+            if (last.session_tokens_in != null && last.session_tokens_out != null) {
+              sys2.session_tokens_total = last.session_tokens_in + last.session_tokens_out;
+            }
+          }
+        }
+      } catch (_) {}
+      const cards = _renderSysCards(sys2);
+      const cls = tab === 'bench' ? 'dash-card dash-card-sm' : 'dash-card';
+      return cards.map(([l, v]) =>
+        `<div class="${cls}"><div class="lbl">${escapeHtml(l)}</div>`
+        + `<div class="val">${escapeHtml(String(v))}</div></div>`
+      ).join('');
+    }
+
+    // Top-level so _benchRenderInline can re-arm after each DOM rewrite
+    // (the bench tab's innerHTML is rebuilt every tick, wiping dropdown
+    // listeners). Also called from loadDashBench on initial entry.
+    function _restartBenchSysPoll() {
+      if (_benchSysPoll) clearInterval(_benchSysPoll);
+      _refreshBenchSysCards();
+      _benchSysPoll = setInterval(() => {
+        if (dashboardActiveTab === 'bench') _refreshBenchSysCards();
+      }, _sysGraphState.bench.pollMs);
+      _sysGraphAttachHandlers('bench', _restartBenchSysPoll);
+      _sysCardsAttachHandler('bench', _restartBenchSysPoll);
+    }
+
+    // ── Sys-metric graphs (CPU util, GPU util) ────────────────────────
+    //
+    // Both Overview and Bench tabs render a 2-graph row beneath their
+    // sys-metric cards: solid line = current value over time; horizontal
+    // dashed lines = window-wide avg + max. Time scale + poll frequency
+    // are user-controlled dropdowns. Bench tab adds bench-relative
+    // scales ("since current tier/condition/cell/run").
+    //
+    // Per-tab UI state lives on _sysGraphState[tab].
+    const _sysGraphState = {
+      overview:    { scaleSec: 600, pollMs: 1000, granSec: 1, xMode: 'elapsed', rateWinSec: 60 },
+      bench:       { scaleSec: 600, pollMs: 1000, granSec: 1, xMode: 'elapsed', rateWinSec: 60 },
+      performance: { scaleSec: 600, pollMs: 1000, granSec: 1, xMode: 'elapsed', rateWinSec: 60 },
+    };
+    const _sysRateOptions = [
+      { value: 1,    label: '1 s'   },
+      { value: 5,    label: '5 s'   },
+      { value: 10,   label: '10 s'  },
+      { value: 30,   label: '30 s'  },
+      { value: 60,   label: '1 min' },
+      { value: 300,  label: '5 min' },
+      { value: 900,  label: '15 min'},
+    ];
+    // Restore xMode from localStorage so the toggle survives reloads.
+    try {
+      const saved = JSON.parse(localStorage.getItem('lai_sys_xmode') || '{}');
+      if (saved.overview) _sysGraphState.overview.xMode = saved.overview;
+      if (saved.bench)    _sysGraphState.bench.xMode    = saved.bench;
+    } catch (_) {}
+
+    // Common time-scale options. Bench tab gets extras prepended at render.
+    const _sysScaleOptions = [
+      { value: 60,    label: 'Last 1 min' },
+      { value: 600,   label: 'Last 10 min' },
+      { value: 1800,  label: 'Last 30 min' },
+      { value: 3600,  label: 'Last 1 hour' },
+      { value: -1,    label: 'Since backend restart' },
+    ];
+    const _sysPollOptions = [
+      { value: 200,   label: '200 ms' },
+      { value: 500,   label: '500 ms' },
+      { value: 1000,  label: '1 s' },
+      { value: 2000,  label: '2 s' },
+      { value: 5000,  label: '5 s' },
+      { value: 10000, label: '10 s' },
+      { value: 30000, label: '30 s' },
+    ];
+    // Granularity = bin width for the displayed line. Independent of
+    // poll rate (which controls how often we ASK the server). Useful
+    // when looking at long windows: 1Hz raw is noisy over an hour, but
+    // 1-minute bins compress 3600 points to 60 and surface trends.
+    const _sysGranOptions = [
+      { value: 0.2,  label: '200 ms' },
+      { value: 0.5,  label: '500 ms' },
+      { value: 1,    label: '1 s' },
+      { value: 5,    label: '5 s' },
+      { value: 10,   label: '10 s' },
+      { value: 15,   label: '15 s' },
+      { value: 30,   label: '30 s' },
+      { value: 60,   label: '1 min' },
+      { value: 300,  label: '5 min' },
+      { value: 900,  label: '15 min' },
+      { value: 1800, label: '30 min' },
+      { value: 3600, label: '1 hr' },
+    ];
+
+    // Bloomberg-style semantic coloring:
+    //   live trace        → per-segment win/neutral/loss coloring vs
+    //                       window avg. Win = reduction by >10 units
+    //                       (lower util OR lower temp); loss =
+    //                       increase by >10 units; neutral = within
+    //                       ±10 of avg → white.
+    //   trend/avg/max/min → all amber (var(--accent)); distinguished
+    //                       by line style + stroke-width only, never
+    //                       by color. Keeps the eval signal (live)
+    //                       visually separate from the stat overlays.
+    const _SYS_COLOR_LIVE_NEUTRAL = '#ffffff';
+    const _SYS_COLOR_WIN  = 'var(--success, #2ea043)';
+    const _SYS_COLOR_LOSS = 'var(--danger, #f85149)';
+    const _SYS_DELTA_THRESHOLD = 10;
+    const _SYS_COLOR_OVERLAY = 'var(--accent)';
+
+    function _sysGraphSvg(samples, field, opts) {
+      // Single-field SVG line graph.
+      //   - Live trace coloured per segment relative to window avg:
+      //     v < avg - 10 → green (win, reduction)
+      //     v > avg + 10 → red   (loss, increase)
+      //     else         → white (neutral)
+      //     Area fill picks the dominant (latest sample's) color.
+      //   - Trend/avg/max/min overlays are all amber, differentiated
+      //     by line style + thickness only.
+      const w = opts.width || 880, h = opts.height || 440;
+      const padL = 44, padR = 44, padT = 22, padB = 28;
+      const pw = w - padL - padR, ph = h - padT - padB;
+      const muted = 'var(--muted)';
+      const unit = opts.unit || '';
+      const title = opts.title || '';
+      const overlay = _SYS_COLOR_OVERLAY;
+
+      const pts = samples
+        .map(r => ({ ts: r.ts, v: r[field] }))
+        .filter(p => p.v != null && Number.isFinite(p.v));
+      if (pts.length < 2) {
+        return `<svg width="${w}" height="${h}" style="display:block">`
+          + `<text x="${w/2}" y="${h/2}" text-anchor="middle" fill="${muted}" font-size="11">`
+          + `${title}: collecting…</text></svg>`;
+      }
+
+      const t0 = (opts.tStart != null && opts.tStart > 0) ? opts.tStart : pts[0].ts;
+      const t1 = (opts.tEnd   != null && opts.tEnd   > 0) ? opts.tEnd   : pts[pts.length - 1].ts;
+      const tspan = Math.max(1, t1 - t0);
+      // Smart Y-axis: fit the displayed range to the data with ~10%
+      // padding so the actual min/max samples sit a few pixels off
+      // the top/bottom edge. Optional `yFloor` / `yCeil` clamp the
+      // result (used to keep util in [0, 100] and temp ≤ 120 °C even
+      // when a glitch sample misreports). When the data range is
+      // tiny we still expand to a minimum span so the line isn't a
+      // dead-flat horizontal stripe.
+      const dataVals = pts.map(p => p.v);
+      const dataMin = Math.min(...dataVals);
+      const dataMax = Math.max(...dataVals);
+      const dataRange = Math.max(0, dataMax - dataMin);
+      const minSpan = (opts.unit === '%') ? 10 : 8;  // % vs °C
+      const pad = Math.max(2, dataRange * 0.1, minSpan / 2);
+      let rawMin = dataMin - pad;
+      let rawMax = dataMax + pad;
+      const yFloor = (typeof opts.yFloor === 'number') ? opts.yFloor : -Infinity;
+      const yCeil  = (typeof opts.yCeil  === 'number') ? opts.yCeil  :  Infinity;
+      rawMin = Math.max(yFloor, rawMin);
+      rawMax = Math.min(yCeil,  rawMax);
+      // Snap to nice round numbers so axis ticks read 60/65/70 instead
+      // of 58.7/64.2/69.7. Step size scales with span.
+      const span = rawMax - rawMin;
+      let step;
+      if      (span <= 10)  step = 1;
+      else if (span <= 25)  step = 2;
+      else if (span <= 50)  step = 5;
+      else if (span <= 100) step = 10;
+      else                  step = 20;
+      let yMin = Math.floor(rawMin / step) * step;
+      let yMax = Math.ceil(rawMax  / step) * step;
+      yMin = Math.max(yFloor, yMin);
+      yMax = Math.min(yCeil,  yMax);
+      if (yMax - yMin < minSpan) yMax = yMin + minSpan;
+      const yspan = Math.max(1, yMax - yMin);
+      const xs = (t) => padL + ((t - t0) / tspan) * pw;
+      const ys = (v) => {
+        const clamped = Math.max(yMin, Math.min(yMax, v));
+        return padT + ph - ((clamped - yMin) / yspan) * ph;
+      };
+      const baselineV = yMin;  // closing edge for area polygons
+
+      // Y-axis ticks at yMin / 25% / 50% / 75% / yMax of the displayed
+      // span, labeled on BOTH the left and the right edge so wide
+      // charts stay readable wherever the eye lands.
+      const ticks = [
+        yMin,
+        yMin + yspan * 0.25,
+        yMin + yspan * 0.5,
+        yMin + yspan * 0.75,
+        yMax,
+      ];
+      const tickLines = ticks.map(t =>
+        `<line x1="${padL}" x2="${w-padR}" y1="${ys(t)}" y2="${ys(t)}" stroke="${muted}" stroke-opacity="0.12"/>`
+        + `<text x="${padL-4}" y="${ys(t)+3}" text-anchor="end" fill="${muted}" font-size="10">${Math.round(t)}${unit}</text>`
+        + `<text x="${w-padR+4}" y="${ys(t)+3}" text-anchor="start" fill="${muted}" font-size="10">${Math.round(t)}${unit}</text>`
+      ).join('');
+
+      // Compute window avg first — needed to classify each live segment.
+      const avg = pts.reduce((a, p) => a + p.v, 0) / pts.length;
+      const classify = (v) => {
+        if (v < avg - _SYS_DELTA_THRESHOLD) return 'win';
+        if (v > avg + _SYS_DELTA_THRESHOLD) return 'loss';
+        return 'neutral';
+      };
+      const colorFor = (cls) => cls === 'win' ? _SYS_COLOR_WIN
+                              : cls === 'loss' ? _SYS_COLOR_LOSS
+                              : _SYS_COLOR_LIVE_NEUTRAL;
+      // Area-fill color for the neutral class is dark grey, NOT white,
+      // so the unshaded panel doesn't read as a glaring white block
+      // on a black background. The line above stays white for the
+      // sharp eval signal; the area is just ambient mood.
+      const areaColorFor = (cls) => cls === 'win' ? _SYS_COLOR_WIN
+                                  : cls === 'loss' ? _SYS_COLOR_LOSS
+                                  : '#3a3a3a';
+      // Per-segment live polylines: group adjacent points sharing a
+      // class so we emit one polyline per run instead of one per
+      // segment (~10× fewer SVG nodes for typical traces). Each
+      // segment is drawn from the previous point to the current —
+      // class is taken from the LATER point so transitions show up
+      // promptly.
+      const segGroups = []; // [{cls, pts: [{x,y}, ...]}]
+      for (let i = 0; i < pts.length; i++) {
+        const x = xs(pts[i].ts), y = ys(pts[i].v);
+        const cls = i === 0 ? classify(pts[i].v) : classify(pts[i].v);
+        if (i === 0) {
+          segGroups.push({ cls, pts: [{ x, y }] });
+        } else {
+          const last = segGroups[segGroups.length - 1];
+          if (last.cls === cls) {
+            last.pts.push({ x, y });
+          } else {
+            // Anchor the new run at the previous point so the colored
+            // segment connects continuously (no gap at class boundary).
+            const prev = last.pts[last.pts.length - 1];
+            segGroups.push({ cls, pts: [{ x: prev.x, y: prev.y }, { x, y }] });
+          }
+        }
+      }
+      const liveSegments = segGroups.map(g => {
+        if (g.pts.length < 1) return '';
+        let d = '';
+        for (let i = 0; i < g.pts.length; i++) {
+          d += (i === 0 ? 'M' : 'L') + g.pts[i].x.toFixed(1) + ' ' + g.pts[i].y.toFixed(1) + ' ';
+        }
+        return `<path d="${d}" fill="none" stroke="${colorFor(g.cls)}" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+      }).join('');
+      // Per-class area polygons matching the live line color runs:
+      // each colored segment of the trace gets its own area swatch
+      // beneath. Reads at a glance — green stretches under green line,
+      // red stretches under red, white under neutral. Colors match
+      // exactly so the area never disagrees with the line above it.
+      const baselineY = ys(baselineV);
+      const areaSegments = segGroups.map(g => {
+        if (g.pts.length < 2) return '';
+        const first = g.pts[0], last = g.pts[g.pts.length - 1];
+        let d = `M ${first.x.toFixed(1)} ${baselineY.toFixed(1)} `;
+        for (const p of g.pts) {
+          d += `L ${p.x.toFixed(1)} ${p.y.toFixed(1)} `;
+        }
+        d += `L ${last.x.toFixed(1)} ${baselineY.toFixed(1)} Z`;
+        return `<path d="${d}" fill="${areaColorFor(g.cls)}" fill-opacity="${g.cls === 'neutral' ? 0.55 : 0.18}" stroke="none"/>`;
+      }).join('');
+      // Use the latest segment's color for the corner cur readout.
+      const latestCls = classify(pts[pts.length - 1].v);
+      const areaColor = colorFor(latestCls);
+
+      // Time-window-adaptive rolling mean: 1/10 of visible span, min 5s.
+      const trendWinS = Math.max(5, tspan / 10);
+      let trendPath = '';
+      for (let i = 0; i < pts.length; i++) {
+        const tCenter = pts[i].ts;
+        let sum = 0, n = 0;
+        for (let j = i; j >= 0 && (tCenter - pts[j].ts) <= trendWinS; j--) { sum += pts[j].v; n++; }
+        for (let j = i + 1; j < pts.length && (pts[j].ts - tCenter) <= trendWinS; j++) { sum += pts[j].v; n++; }
+        const m = n > 0 ? sum / n : pts[i].v;
+        trendPath += (i === 0 ? 'M' : 'L') + xs(pts[i].ts).toFixed(1) + ' ' + ys(m).toFixed(1) + ' ';
+      }
+
+      const maxV = Math.max(...pts.map(p => p.v));
+      const minV = Math.min(...pts.map(p => p.v));
+      const cur = pts[pts.length - 1].v;
+      // Continuous running-average path. Same shape primitive as the
+      // trend line but with a wider window — trend uses tspan/10 to
+      // chase short-term wobble; avg uses tspan/3 to expose the
+      // big-picture drift without piecewise discontinuities. Both
+      // are smooth functions; thickness disambiguates (trend = thin,
+      // avg = bold per the operator's earlier ask).
+      const avgWinS = Math.max(15, tspan / 3);
+      let avgPath = '';
+      for (let i = 0; i < pts.length; i++) {
+        const tCenter = pts[i].ts;
+        let sum = 0, n = 0;
+        for (let j = i; j >= 0 && (tCenter - pts[j].ts) <= avgWinS; j--) { sum += pts[j].v; n++; }
+        for (let j = i + 1; j < pts.length && (pts[j].ts - tCenter) <= avgWinS; j++) { sum += pts[j].v; n++; }
+        const m = n > 0 ? sum / n : pts[i].v;
+        avgPath += (i === 0 ? 'M' : 'L') + xs(pts[i].ts).toFixed(1) + ' ' + ys(m).toFixed(1) + ' ';
+      }
+
+      const fmtSpan = (s) => s < 90 ? `${Math.round(s)}s`
+                          : s < 5400 ? `${Math.round(s/60)}m`
+                          : `${(s/3600).toFixed(1)}h`;
+      const spanLabel = fmtSpan(tspan);
+
+      // X-axis tick labels — 5 evenly spaced positions across the
+      // visible window. Format depends on opts.xMode:
+      //   'timestamps' → "21:35:00" / "21:35:30" (HH:MM[:SS])
+      //   'elapsed'    → "-10m" / "-5m" / "now" (relative to t1)
+      const xTickCount = 5;
+      const xMode = opts.xMode || 'elapsed';
+      const fmtAbs = (ts) => {
+        const d = new Date(ts * 1000);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        // Include seconds when window <5 min so labels don't all read identical.
+        if (tspan < 300) {
+          const ss = String(d.getSeconds()).padStart(2, '0');
+          return `${hh}:${mm}:${ss}`;
+        }
+        return `${hh}:${mm}`;
+      };
+      const fmtRel = (ts, isLast) => {
+        if (isLast) return 'now';
+        const d = t1 - ts;
+        if (d < 1) return 'now';
+        if (d < 90) return `-${Math.round(d)}s`;
+        if (d < 5400) return `-${Math.round(d/60)}m`;
+        return `-${(d/3600).toFixed(1)}h`;
+      };
+      let xTicks = '';
+      for (let i = 0; i < xTickCount; i++) {
+        const tt = t0 + (tspan * i / (xTickCount - 1));
+        const x = xs(tt);
+        const isLast = (i === xTickCount - 1);
+        const lbl = xMode === 'timestamps' ? fmtAbs(tt) : fmtRel(tt, isLast);
+        const anchor = i === 0 ? 'start' : (isLast ? 'end' : 'middle');
+        xTicks += `<line x1="${x}" x2="${x}" y1="${padT + ph}" y2="${padT + ph + 3}" stroke="${muted}" stroke-opacity="0.5"/>`
+                + `<text x="${x}" y="${padT + ph + 14}" text-anchor="${anchor}" fill="${muted}" font-size="10" font-family="'Cascadia Code',Consolas,monospace">${lbl}</text>`;
+      }
+
+      // Encode the points array as a data attribute so the tooltip
+      // wire-up can find the nearest sample without re-running the
+      // (potentially expensive) classify/binning pipeline. Format:
+      // ts,v;ts,v;... — compact and easy to parse.
+      const ptsData = pts.map(p => `${p.ts.toFixed(0)},${p.v.toFixed(2)}`).join(';');
+
+      return `<svg class="lai-sys-graph" data-pts="${ptsData}" data-pad-l="${padL}" data-pad-r="${padR}" data-pad-t="${padT}" data-pad-b="${padB}" data-w="${w}" data-h="${h}" data-t0="${t0}" data-t1="${t1}" data-y-max="${yMax}" data-unit="${unit}" data-x-mode="${xMode}"
+                 width="${w}" height="${h}" style="display:block;width:100%;height:auto" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <text x="${padL}" y="14" fill="${muted}" font-size="11">window ${spanLabel}</text>
+        <text x="${w-padR}" y="14" text-anchor="end" fill="${areaColor}" font-size="12" font-weight="600">cur ${cur.toFixed(0)}${unit}</text>
+        ${tickLines}
+        ${xTicks}
+        ${areaSegments}
+        <!-- live first (under), overlays last (on top) so the eval signal
+             stays visible even when it crosses an overlay's path. -->
+        ${liveSegments}
+        <!-- min: dash-dot pattern (4 dash, 2 gap, 1 dot, 2 gap) -->
+        <line x1="${padL}" x2="${w-padR}" y1="${ys(minV)}" y2="${ys(minV)}" stroke="${overlay}" stroke-dasharray="4 2 1 2" stroke-opacity="0.7"  stroke-width="1.2"/>
+        <!-- max: inverted (negative) of min — "2 4 2 1" swaps dash<->gap so the on/off cycles flip. -->
+        <line x1="${padL}" x2="${w-padR}" y1="${ys(maxV)}" y2="${ys(maxV)}" stroke="${overlay}" stroke-dasharray="2 4 2 1" stroke-opacity="0.7"  stroke-width="1.2"/>
+        <!-- avg: smooth running-mean path over tspan/3 window. -->
+        <path d="${avgPath}" fill="none" stroke="${overlay}" stroke-width="2.0" stroke-opacity="0.85" stroke-dasharray="10 3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+        <!-- Tooltip overlay: invisible rect captures pointer events;
+             cursor + value labels populate via _wireSysTooltip on mount. -->
+        <line   class="lai-sys-cursor" x1="0" x2="0" y1="${padT}" y2="${padT + ph}" stroke="${_SYS_COLOR_LIVE_NEUTRAL}" stroke-opacity="0" stroke-width="1" stroke-dasharray="2 2" pointer-events="none"/>
+        <circle class="lai-sys-dot"    cx="0" cy="0" r="3" fill="${_SYS_COLOR_LIVE_NEUTRAL}" fill-opacity="0" pointer-events="none"/>
+        <g      class="lai-sys-label"  pointer-events="none" opacity="0">
+          <rect x="0" y="0" width="120" height="32" rx="3" fill="#000" fill-opacity="0.85" stroke="${overlay}" stroke-opacity="0.7"/>
+          <text class="lai-sys-label-ts" x="6" y="13" fill="${muted}" font-size="10" font-family="'Cascadia Code',Consolas,monospace"></text>
+          <text class="lai-sys-label-v"  x="6" y="26" fill="${_SYS_COLOR_LIVE_NEUTRAL}" font-size="11" font-weight="600" font-family="'Cascadia Code',Consolas,monospace"></text>
+        </g>
+        <rect class="lai-sys-hit" x="${padL}" y="${padT}" width="${pw}" height="${ph}" fill="transparent" pointer-events="all"/>
+      </svg>`;
+    }
+
+    function _wireSysTooltips(root) {
+      // Attach pointer/touch handlers to every .lai-sys-graph SVG under
+      // `root`. Idempotent — the dataset of the SVG carries everything
+      // we need, so re-runs after a re-paint just re-bind handlers.
+      const svgs = root.querySelectorAll('svg.lai-sys-graph');
+      svgs.forEach(svg => {
+        if (svg._tipBound) return;
+        svg._tipBound = true;
+        const hit = svg.querySelector('.lai-sys-hit');
+        const cursor = svg.querySelector('.lai-sys-cursor');
+        const dot = svg.querySelector('.lai-sys-dot');
+        const label = svg.querySelector('.lai-sys-label');
+        const labelTs = svg.querySelector('.lai-sys-label-ts');
+        const labelV  = svg.querySelector('.lai-sys-label-v');
+        if (!hit || !cursor || !dot || !label) return;
+
+        const ptsRaw = svg.dataset.pts || '';
+        if (!ptsRaw) return;
+        const pts = ptsRaw.split(';').map(s => {
+          const [ts, v] = s.split(',');
+          return { ts: parseFloat(ts), v: parseFloat(v) };
+        });
+        const padL = +svg.dataset.padL, padR = +svg.dataset.padR;
+        const padT = +svg.dataset.padT, padB = +svg.dataset.padB;
+        const w = +svg.dataset.w, h = +svg.dataset.h;
+        const t0 = +svg.dataset.t0, t1 = +svg.dataset.t1;
+        const yMax = +svg.dataset.yMax;
+        const unit = svg.dataset.unit || '';
+        const xMode = svg.dataset.xMode || 'elapsed';
+        const pw = w - padL - padR, ph = h - padT - padB;
+        const tspan = Math.max(1, t1 - t0);
+        const xs = (t) => padL + ((t - t0) / tspan) * pw;
+        const ys = (v) => padT + ph - (v / Math.max(1, yMax)) * ph;
+
+        const fmtAbsTs = (ts) => {
+          const d = new Date(ts * 1000);
+          const z = (n) => String(n).padStart(2, '0');
+          return `${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
+        };
+        const fmtElapsed = (ts) => {
+          const d = t1 - ts;
+          if (d < 1) return 'now';
+          if (d < 90) return `-${Math.round(d)}s`;
+          if (d < 5400) return `-${Math.round(d/60)}m`;
+          return `-${(d/3600).toFixed(1)}h`;
+        };
+
+        const onMove = (clientX, clientY) => {
+          // Convert client coords → SVG viewBox coords. The SVG is
+          // styled width:100% so scale factor differs from the
+          // viewBox numbers.
+          const rect = svg.getBoundingClientRect();
+          const vbX = ((clientX - rect.left) / rect.width) * w;
+          // Find the sample whose x is closest to the cursor
+          const tCursor = t0 + ((vbX - padL) / pw) * tspan;
+          let best = pts[0], bestDt = Math.abs(pts[0].ts - tCursor);
+          for (let i = 1; i < pts.length; i++) {
+            const dt = Math.abs(pts[i].ts - tCursor);
+            if (dt < bestDt) { best = pts[i]; bestDt = dt; }
+          }
+          const cx = xs(best.ts), cy = ys(best.v);
+          cursor.setAttribute('x1', cx);
+          cursor.setAttribute('x2', cx);
+          cursor.setAttribute('stroke-opacity', 0.6);
+          dot.setAttribute('cx', cx);
+          dot.setAttribute('cy', cy);
+          dot.setAttribute('fill-opacity', 1);
+          // Label: position to the right of the dot unless near the
+          // right edge, in which case flip to the left.
+          const lblW = 120;
+          const flip = cx + lblW + 8 > w - padR;
+          const lblX = flip ? Math.max(padL, cx - lblW - 6) : (cx + 6);
+          const lblY = Math.max(padT, cy - 36);
+          label.setAttribute('transform', `translate(${lblX} ${lblY})`);
+          label.setAttribute('opacity', 1);
+          if (labelTs) labelTs.textContent = `${fmtAbsTs(best.ts)} · ${fmtElapsed(best.ts)}`;
+          if (labelV)  labelV.textContent  = `${best.v.toFixed(1)}${unit}`;
+        };
+        const onLeave = () => {
+          cursor.setAttribute('stroke-opacity', 0);
+          dot.setAttribute('fill-opacity', 0);
+          label.setAttribute('opacity', 0);
+        };
+
+        hit.addEventListener('pointermove', (e) => onMove(e.clientX, e.clientY));
+        hit.addEventListener('pointerleave', onLeave);
+        // Touch: keep tooltip visible after tap, hide on tap-outside.
+        hit.addEventListener('touchstart', (e) => {
+          if (e.touches[0]) onMove(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: true });
+        hit.addEventListener('touchmove', (e) => {
+          if (e.touches[0]) onMove(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: true });
+      });
+    }
+
+    function _sysGraphLegend(samples, field, unit) {
+      // Per-chart legend mirroring the SVG's color/style coding.
+      // Live key is split three ways (win/neutral/loss) since the line
+      // recolors per segment based on |v - avg| > 10. All overlay
+      // entries share the amber color — style/thickness disambiguate.
+      const pts = samples.map(r => r[field]).filter(v => v != null && Number.isFinite(v));
+      const cur = pts.length ? pts[pts.length - 1] : null;
+      const avg = pts.length ? pts.reduce((a, b) => a + b, 0) / pts.length : null;
+      const maxV = pts.length ? Math.max(...pts) : null;
+      const minV = pts.length ? Math.min(...pts) : null;
+      const f = (v) => v == null ? '—' : v.toFixed(0);
+      const overlay = _SYS_COLOR_OVERLAY;
+      const key = (color, dash, width, label, val) =>
+        `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);margin-right:12px">
+          <svg width="16" height="6" style="flex-shrink:0"><line x1="0" y1="3" x2="16" y2="3" stroke="${color}" stroke-width="${width}" ${dash ? `stroke-dasharray="${dash}"` : ''}/></svg>
+          ${label}${val != null ? ` <span style="color:${color}">${val}${unit}</span>` : ''}
+        </span>`;
+      // Live: 3-segment swatch — green/white/red — to teach the
+      // win/neutral/loss tri-color at a glance.
+      const liveSwatch =
+        `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);margin-right:12px">
+          <svg width="36" height="6" style="flex-shrink:0">
+            <line x1="0"  y1="3" x2="12" y2="3" stroke="${_SYS_COLOR_WIN}"          stroke-width="1.8"/>
+            <line x1="12" y1="3" x2="24" y2="3" stroke="${_SYS_COLOR_LIVE_NEUTRAL}" stroke-width="1.8"/>
+            <line x1="24" y1="3" x2="36" y2="3" stroke="${_SYS_COLOR_LOSS}"         stroke-width="1.8"/>
+          </svg>
+          live <span style="color:${_SYS_COLOR_WIN}">win</span>/<span style="color:${_SYS_COLOR_LIVE_NEUTRAL}">±10</span>/<span style="color:${_SYS_COLOR_LOSS}">loss</span>
+          ${cur != null ? `<span>cur ${f(cur)}${unit}</span>` : ''}
+        </span>`;
+      return `<div style="margin-top:4px;line-height:1.7;font-family:'Cascadia Code',Consolas,monospace">`
+        + liveSwatch
+        + key(overlay, '10 3',    '2.0', 'avg',   f(avg))
+        + key(overlay, '2 4 2 1', '1.2', 'max',   f(maxV))
+        + key(overlay, '4 2 1 2', '1.2', 'min',   f(minV))
+        + '</div>';
+    }
+
+    function _sysGraphControls(tab) {
+      const st = _sysGraphState[tab];
+      const opts = (tab === 'bench')
+        ? [
+            { value: 'run',       label: 'Since test run started' },
+            { value: 'tier',      label: 'Since tier started' },
+            { value: 'condition', label: 'Since condition started' },
+            { value: 'cell',      label: 'Since cell started' },
+            { value: 'problem',     label: 'This problem run' },
+            { value: 'last5',       label: 'Last 5 problem runs' },
+            { value: 'cell_half',   label: 'Last half of cell' },
+          ].concat(_sysScaleOptions).concat([
+            { value: 'custom',    label: 'Time since…' },
+          ])
+        : _sysScaleOptions.concat([
+            { value: 'custom',    label: 'Time since…' },
+          ]);
+      const scaleHtml = opts.map(o =>
+        `<option value="${o.value}"${st.scaleSec === o.value ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const pollHtml = _sysPollOptions.map(o =>
+        `<option value="${o.value}"${st.pollMs === o.value ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const granHtml = _sysGranOptions.map(o =>
+        `<option value="${o.value}"${st.granSec === o.value ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const rateHtml = _sysRateOptions.map(o =>
+        `<option value="${o.value}"${st.rateWinSec === o.value ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const xModeBtnLabel = st.xMode === 'timestamps' ? 'Time: HH:MM' : 'Time: -elapsed';
+      const sel = () => `background:transparent;color:var(--fg);border:1px solid var(--muted);border-radius:3px;padding:1px 4px;font-size:1em`;
+      const customVisible = st.scaleSec === 'custom';
+      // Pre-populate the datetime-local input from the saved unix-ts
+      // (defaults to 30 minutes ago so the input isn't empty).
+      const customTs = (typeof st.customStartTs === 'number' && st.customStartTs > 0)
+        ? st.customStartTs : (Date.now() / 1000 - 1800);
+      const customDtVal = (() => {
+        const d = new Date(customTs * 1000);
+        const z = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`;
+      })();
+      return `<div style="display:flex;gap:8px;align-items:center;font-size:0.8em;color:var(--muted);margin-bottom:6px;flex-wrap:wrap">
+        <label title="Time window shown on the graph">Scale:
+          <select id="${tab}SysScale" style="${sel()}">${scaleHtml}</select>
+        </label>
+        <label id="${tab}SysCustomLabel" title="Show data from this moment onwards" style="${customVisible ? '' : 'display:none'}">From:
+          <input type="datetime-local" id="${tab}SysCustom" value="${customDtVal}" style="${sel()}"/>
+        </label>
+        <label title="How often the dashboard fetches new samples from the backend">Poll:
+          <select id="${tab}SysPoll" style="${sel()}">${pollHtml}</select>
+        </label>
+        <label title="Bin width for the displayed line — coarser bins smooth the trace but lose per-second detail. Independent of poll rate.">Granularity:
+          <select id="${tab}SysGran" style="${sel()}">${granHtml}</select>
+        </label>
+        <label title="Rolling window for the tokens/s readout. Computed from cumulative session totals over this many seconds.">Rate window:
+          <select id="${tab}SysRate" style="${sel()}">${rateHtml}</select>
+        </label>
+        <button type="button" id="${tab}SysXMode" style="${sel()};cursor:pointer" title="Toggle X-axis between absolute timestamps and elapsed time">${xModeBtnLabel}</button>
+      </div>`;
+    }
+
+    function _binSamples(samples, binWidthSec) {
+      // Group samples into fixed-width time bins, taking the mean of
+      // each numeric field per bin. Empty bins are dropped (no
+      // interpolation). Pure-client side; backend ring buffer stores
+      // raw at the backend sampler rate (5 Hz) — granularity is
+      // purely a display choice. Skip binning only when smaller than
+      // the sampler interval (0.2s) where there's nothing to merge.
+      if (binWidthSec < 0.2 || samples.length === 0) return samples;
+      const FIELDS = ['cpu_pct', 'cpu_temp_c', 'gpu_util_pct', 'gpu_temp_c'];
+      const bins = new Map();
+      for (const s of samples) {
+        const k = Math.floor(s.ts / binWidthSec);
+        if (!bins.has(k)) bins.set(k, []);
+        bins.get(k).push(s);
+      }
+      const sortedKeys = [...bins.keys()].sort((a, b) => a - b);
+      return sortedKeys.map(k => {
+        const arr = bins.get(k);
+        const out = { ts: arr[arr.length - 1].ts };
+        for (const f of FIELDS) {
+          const vs = [];
+          for (const r of arr) {
+            const v = r[f];
+            if (v != null && Number.isFinite(v)) vs.push(v);
+          }
+          out[f] = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
+        }
+        return out;
+      });
+    }
+
+    function _sysCardsControls(tab) {
+      // Compact poll-frequency picker for the cards row, always
+      // visible inside the System monitoring section so the user can
+      // tune card refresh without expanding the Graphs sub-section.
+      // Shares state with the Graphs Poll dropdown — changing either
+      // one re-arms the same interval.
+      const st = _sysGraphState[tab];
+      const pollHtml = _sysPollOptions.map(o =>
+        `<option value="${o.value}"${st.pollMs === o.value ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const sel = `background:transparent;color:var(--fg);border:1px solid var(--muted);border-radius:3px;padding:1px 4px;font-size:1em`;
+      return `<div style="display:flex;gap:8px;align-items:center;font-size:0.8em;color:var(--muted);margin-bottom:6px;flex-wrap:wrap">
+        <label title="How often the cards (and graphs) refresh from /admin/sys/timeseries.">Poll:
+          <select id="${tab}CardsPoll" style="${sel}">${pollHtml}</select>
+        </label>
+      </div>`;
+    }
+
+    function _sysCardsAttachHandler(tab, restartFn) {
+      // Mirror handler for the cards-row Poll dropdown. On change we
+      // update the shared state, sync the Graphs Poll dropdown if it's
+      // mounted, and re-arm via restartFn.
+      const cp = document.getElementById(tab + 'CardsPoll');
+      if (!cp) return;
+      cp.addEventListener('change', () => {
+        const v = parseInt(cp.value, 10);
+        _sysGraphState[tab].pollMs = v;
+        // Sync the Graphs-controls Poll dropdown if it exists, so
+        // the two stay in lockstep visually.
+        const gp = document.getElementById(tab + 'SysPoll');
+        if (gp) gp.value = String(v);
+        if (restartFn) restartFn();
+      });
+    }
+
+    function _sysGraphAttachHandlers(tab, restartFn) {
+      // After innerHTML insert, wire dropdown / button / details
+      // listeners. Caller passes a restart callback to re-arm the poll
+      // interval at the new cadence.
+      const sc = document.getElementById(tab + 'SysScale');
+      const pl = document.getElementById(tab + 'SysPoll');
+      const gn = document.getElementById(tab + 'SysGran');
+      const xb = document.getElementById(tab + 'SysXMode');
+      if (sc) sc.addEventListener('change', () => {
+        const v = sc.value;
+        _sysGraphState[tab].scaleSec = isNaN(parseInt(v, 10)) ? v : parseInt(v, 10);
+        // Toggle the custom-datetime label visibility when the user
+        // picks "Time since…". No need to remount the controls — the
+        // input always exists and just hides/shows.
+        const cl = document.getElementById(tab + 'SysCustomLabel');
+        if (cl) cl.style.display = (v === 'custom') ? '' : 'none';
+        if (restartFn) restartFn();
+      });
+      const cu = document.getElementById(tab + 'SysCustom');
+      if (cu) cu.addEventListener('change', () => {
+        // Parse the datetime-local input into a unix ts. Empty input
+        // falls back to 30 min ago.
+        const v = cu.value;
+        if (v) {
+          const d = new Date(v);
+          if (!isNaN(d.getTime())) {
+            _sysGraphState[tab].customStartTs = d.getTime() / 1000;
+          }
+        }
+        // Re-paint immediately from cache so the user sees the new
+        // window without waiting for the next poll.
+        _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
+      });
+      if (pl) pl.addEventListener('change', () => {
+        _sysGraphState[tab].pollMs = parseInt(pl.value, 10);
+        if (restartFn) restartFn();
+      });
+      if (gn) gn.addEventListener('change', () => {
+        // Granularity is a render-only setting — re-paint from cache
+        // immediately, no need to re-poll the backend. parseFloat to
+        // preserve sub-second values (200ms / 500ms options).
+        _sysGraphState[tab].granSec = parseFloat(gn.value);
+        _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
+      });
+      const rt = document.getElementById(tab + 'SysRate');
+      if (rt) rt.addEventListener('change', () => {
+        // Rolling-window for tokens/s — recompute the cards row from
+        // cached samples on next paint.
+        _sysGraphState[tab].rateWinSec = parseInt(rt.value, 10);
+        _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
+      });
+      if (xb) xb.addEventListener('click', () => {
+        const cur = _sysGraphState[tab].xMode;
+        const next = cur === 'timestamps' ? 'elapsed' : 'timestamps';
+        _sysGraphState[tab].xMode = next;
+        try {
+          const saved = JSON.parse(localStorage.getItem('lai_sys_xmode') || '{}');
+          saved[tab] = next;
+          localStorage.setItem('lai_sys_xmode', JSON.stringify(saved));
+        } catch (_) {}
+        xb.textContent = next === 'timestamps' ? 'Time: HH:MM' : 'Time: -elapsed';
+        // Re-paint immediately from cache; no need to refetch.
+        _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
+      });
+      // Persist the open/closed state of the System / Graphs <details>
+      // accordions across reloads (per-tab).
+      const sec1 = document.getElementById(tab + 'SysSection');
+      const sec2 = document.getElementById(tab + 'SysGraphsSection');
+      if (sec1) sec1.addEventListener('toggle', () =>
+        _saveDetailsState(`lai_${tab}_sys_section`, sec1.open));
+      if (sec2) sec2.addEventListener('toggle', () =>
+        _saveDetailsState(`lai_${tab}_sys_graphs`, sec2.open));
+      // Inner Util / Temp groups live INSIDE #<tab>SysGraphs, which is
+      // rewritten on every refresh. We can't bind directly to them
+      // here (they don't exist yet on first call) — use event
+      // delegation on the parent so the binding survives rerenders.
+      const graphsRoot = document.getElementById(tab + 'SysGraphs');
+      if (graphsRoot && !graphsRoot._innerToggleBound) {
+        graphsRoot._innerToggleBound = true;
+        graphsRoot.addEventListener('toggle', (e) => {
+          const d = e.target;
+          if (!d || d.tagName !== 'DETAILS') return;
+          const key = d.dataset && d.dataset.key;
+          if (key) _saveDetailsState(key, d.open);
+        }, true);  // capture so per-element toggle bubbles up
+      }
+    }
+    function _loadDetailsState(key, defaultOpen) {
+      try {
+        const v = localStorage.getItem(key);
+        if (v === null) return !!defaultOpen;
+        return v === '1';
+      } catch (_) { return !!defaultOpen; }
+    }
+    function _saveDetailsState(key, isOpen) {
+      try { localStorage.setItem(key, isOpen ? '1' : '0'); } catch (_) {}
+    }
+
+    function _sysScaleCutoff(tab, backendStartedTs, benchData) {
+      // Resolve the dropdown value into a unix-ts cutoff for filtering
+      // the timeseries samples. Returns 0 to mean "no filter".
+      const sc = _sysGraphState[tab].scaleSec;
+      if (sc === 'custom') {
+        const ts = _sysGraphState[tab].customStartTs;
+        return (typeof ts === 'number' && ts > 0) ? ts : 0;
+      }
+      if (typeof sc === 'number') {
+        if (sc === -1) return backendStartedTs || 0;
+        return Date.now() / 1000 - sc;
+      }
+      // Bench-relative: derive from the cells list. The bench-results
+      // payload only carries per-cell started_ts/last_ts; we synthesise
+      // tier/condition starts by scanning. Problem-level scales lean on
+      // cur.n_done + mean_latency_s since per-problem timestamps aren't
+      // in the JSON.
+      if (!benchData) return 0;
+      const cur = benchData.current || {};
+      const cells = Array.isArray(benchData.cells) ? benchData.cells : [];
+      const allCells = cur && cur.tier ? cells.concat([cur]) : cells;
+      const cellStart = cur.started_ts || 0;
+      const meanLat = (typeof cur.mean_latency_s === 'number' && cur.mean_latency_s > 0)
+        ? cur.mean_latency_s : 30;
+      const nDone = cur.n_done || 0;
+
+      if (sc === 'cell')   return cellStart;
+      if (sc === 'run') {
+        // Earliest started_ts across every cell (cumulative + current).
+        let minTs = Infinity;
+        for (const c of allCells) {
+          const t = c && c.started_ts;
+          if (typeof t === 'number' && t > 0 && t < minTs) minTs = t;
+        }
+        return minTs === Infinity ? 0 : minTs;
+      }
+      if (sc === 'tier' && cur.tier) {
+        let minTs = Infinity;
+        for (const c of allCells) {
+          if (c && c.tier === cur.tier) {
+            const t = c.started_ts;
+            if (typeof t === 'number' && t > 0 && t < minTs) minTs = t;
+          }
+        }
+        return minTs === Infinity ? cellStart : minTs;
+      }
+      if (sc === 'condition' && cur.tier) {
+        // Same tier × same (think,tools) condition.
+        let minTs = Infinity;
+        for (const c of allCells) {
+          if (c && c.tier === cur.tier && c.think === cur.think && c.tools === cur.tools) {
+            const t = c.started_ts;
+            if (typeof t === 'number' && t > 0 && t < minTs) minTs = t;
+          }
+        }
+        return minTs === Infinity ? cellStart : minTs;
+      }
+      // Event-driven problem-level scales: cutoff is pinned to the
+      // started_ts of an already-completed problem (or the in-flight
+      // one's nominal start = previous problem's ended_ts). Cutoff
+      // only advances when a NEW problem completes (cur.problems
+      // grows). No time-based "now - meanLat" rolling.
+      const probs = Array.isArray(cur.problems) ? cur.problems : [];
+      const tsOf = (p) => (p && (p.started_ts || p.started_at)) || 0;
+      if (sc === 'problem') {
+        // The CURRENTLY in-flight problem started right after the
+        // last completion (or at cell start if no completions yet).
+        // Stays pinned until the next problem completes.
+        if (probs.length === 0) return cellStart;
+        return probs[probs.length - 1].ended_ts || cellStart;
+      }
+      if (sc === 'last5') {
+        // Window covers the last 5 completed problems + the in-flight
+        // one. Start = 5th-from-last completed problem's started_ts.
+        if (probs.length === 0) return cellStart;
+        return tsOf(probs[Math.max(0, probs.length - 5)]);
+      }
+      if (sc === 'cell_half') {
+        // Cutoff = started_ts of the middle completed problem of the
+        // cell so the window includes the second half of completions
+        // plus the in-flight one.
+        if (probs.length === 0) return cellStart;
+        return tsOf(probs[Math.floor(probs.length / 2)]);
+      }
+      return 0;
+    }
+
+    async function _sysGraphFetch(cutoffTs, tab) {
+      // The Performance settings tab is exposed to all signed-in
+      // users via /admin/me/sys/timeseries (no admin check). The
+      // Overview + Bench dashboard tabs stay on the admin route.
+      try {
+        const path = (tab === 'performance')
+          ? '/admin/me/sys/timeseries' : '/admin/sys/timeseries';
+        const since = cutoffTs > 0 ? `?since=${cutoffTs}` : '';
+        const r = await api(path + since);
+        if (!r.ok) return null;
+        return await r.json();
+      } catch (_) { return null; }
+    }
+
+    function _renderSysCards(s) {
+      // Format helpers — `?? '—'` shows an em-dash for fields the
+      // current platform can't collect (e.g. CPU temp on Windows
+      // without LibreHardwareMonitor).
+      const pct = (v) => v == null ? '—' : `${v.toFixed(0)}%`;
+      // 1 decimal on temps so the underlying precision is visible —
+      // PawnIO CPU temp has 0.125°C resolution, GPU temp from nvidia-
+      // smi is integer-only but rendering it as "54.0°C" is honest
+      // about the display precision.
+      const tmp = (v) => v == null ? '—' : `${v.toFixed(1)}°C`;
+      const vram = (used, total) => (used == null || total == null)
+        ? '—'
+        : `${used.toFixed(1)} / ${total.toFixed(1)} GB`;
+      const fmtInt = (v) => v == null ? '—' : v.toLocaleString();
+      const fmtRate = (vIn, vOut) => {
+        if (vIn == null && vOut == null) return '—';
+        const total = (vIn || 0) + (vOut || 0);
+        return `${total.toFixed(1)} t/s`;
+      };
+      return [
+        ['CPU util', pct(s?.cpu_pct)],
+        ['CPU temp', tmp(s?.cpu_temp_c)],
+        ['GPU util', pct(s?.gpu_util_pct)],
+        ['GPU temp', tmp(s?.gpu_temp_c)],
+        ['VRAM',     vram(s?.gpu_mem_used_gb, s?.gpu_mem_total_gb)],
+        ['Tokens/s', fmtRate(s?.tokens_in_per_s, s?.tokens_out_per_s)],
+        ['Sess in',  fmtInt(s?.session_tokens_in)],
+        ['Sess out', fmtInt(s?.session_tokens_out)],
+        ['Sess tot', fmtInt(s?.session_tokens_total)],
+      ];
+    }
+    function _sysGraphsHtml(tab, ts, benchData) {
+      // Full-width stacked charts (one per row): CPU util, GPU util,
+      // CPU temp, GPU temp. SVG width=100% so each chart consumes the
+      // pane's horizontal span instead of being cramped 3-up.
+      const cutoff = _sysScaleCutoff(tab, ts.backend_started_ts, benchData);
+      const windowed = cutoff > 0
+        ? ts.samples.filter(s => s.ts >= cutoff)
+        : ts.samples;
+      // Apply granularity binning — independent of poll rate. 1 s bin
+      // is a no-op (raw 1 Hz samples passed through). Larger bins
+      // average values within each interval, smoothing the line and
+      // making long windows readable.
+      const filtered = _binSamples(windowed, _sysGraphState[tab].granSec || 1);
+      const tEnd = ts.now_ts || (Date.now() / 1000);
+      const tStart = cutoff > 0 ? cutoff
+                   : (filtered.length ? filtered[0].ts : tEnd - 60);
+      const baseOpts = { width: 880, height: 440, tStart, tEnd, xMode: _sysGraphState[tab].xMode };
+      const cell = (c) => {
+        // Y axis auto-fits the data inside [yFloor, yCeil]. yFloor/Ceil
+        // are safety clamps (util can't be negative or exceed 100;
+        // temp can't realistically exceed 120 °C without sensor glitch).
+        const svg = _sysGraphSvg(filtered, c.field, {
+          ...baseOpts, unit: c.unit, yFloor: c.yFloor, yCeil: c.yCeil,
+        });
+        const leg = _sysGraphLegend(filtered, c.field, c.unit);
+        return `<div style="border:1px solid var(--muted);border-radius:4px;padding:8px;margin-top:8px">
+          <h4 style="margin:0 0 6px 0;color:var(--fg);font-size:1.05em;font-weight:700;letter-spacing:0.3px">${c.title}</h4>
+          ${svg}${leg}
+        </div>`;
+      };
+      // Util charts: yFloor=0 so the axis never extends below 0%
+      // (negative util is meaningless). The auto-scaler still tightens
+      // the top via yCeil=100 + dataMax + padding, so 92–100% data
+      // shows tight scaling AT the top while the floor stays anchored.
+      // Temp charts have no floor — CPUs/GPUs can sit at room temp
+      // when idle and showing 30°C as a y=0 anchor wastes vertical.
+      const utilCharts = [
+        { field: 'cpu_pct',      title: 'CPU utilization', unit: '%',  yFloor: 0, yCeil: 100 },
+        { field: 'gpu_util_pct', title: 'GPU utilization', unit: '%',  yFloor: 0, yCeil: 100 },
+      ];
+      const tempCharts = [
+        { field: 'cpu_temp_c', title: 'CPU temperature', unit: '°C', yCeil: 120 },
+        { field: 'gpu_temp_c', title: 'GPU temperature', unit: '°C', yCeil: 120 },
+      ];
+      const groupKeyU = `lai_${tab}_sys_util_group`;
+      const groupKeyT = `lai_${tab}_sys_temp_group`;
+      const utilOpen = _loadDetailsState(groupKeyU, true);
+      const tempOpen = _loadDetailsState(groupKeyT, true);
+      const groupStyle = 'border:1px solid var(--border);border-radius:4px;padding:6px 10px;margin-top:8px;background:var(--panel)';
+      const sumStyle = 'cursor:pointer;color:var(--muted);font-size:0.95em;font-weight:600;padding:2px 0';
+      return ''
+        + `<details data-sys-group="${tab}-util" data-key="${groupKeyU}" ${utilOpen ? 'open' : ''} style="${groupStyle}">`
+        +   `<summary style="${sumStyle}">Utilization</summary>`
+        +   utilCharts.map(cell).join('')
+        + '</details>'
+        + `<details data-sys-group="${tab}-temp" data-key="${groupKeyT}" ${tempOpen ? 'open' : ''} style="${groupStyle}">`
+        +   `<summary style="${sumStyle}">Temperature</summary>`
+        +   tempCharts.map(cell).join('')
+        + '</details>';
+    }
+
+    function _sysPaintFromCache(tab, benchData) {
+      // Synchronous re-paint of #<tab>SysRow + #<tab>SysGraphs from
+      // the last cached payloads.
+      try {
+        const cardsId = tab === 'performance' ? 'perfSysRow' : (tab + 'SysRow');
+        const graphsId = tab === 'performance' ? 'perfSysGraphs' : (tab + 'SysGraphs');
+        const cardsRoot = document.getElementById(cardsId);
+        if (cardsRoot && _sysLastCards) {
+          cardsRoot.innerHTML = _renderSysCardsHtml(tab, _sysLastCards);
+        }
+        const graphsRoot = document.getElementById(graphsId);
+        if (graphsRoot && _sysTsCache) {
+          graphsRoot.innerHTML = _sysGraphsHtml(tab, _sysTsCache, benchData);
+          _wireSysTooltips(graphsRoot);
+        }
+      } catch (_) { /* ignore — async refresh will recover */ }
+    }
+
+    async function _refreshSysTab(tab, benchData) {
+      // Unified refresh: updates sys-metric cards + sys graphs for the
+      // given tab ('overview' / 'bench' / 'performance'). benchData
+      // is only needed for bench-relative scales.
+      try {
+        const overviewPath = (tab === 'performance')
+          ? '/admin/me/sys' : '/admin/overview';
+        const r = await api(overviewPath);
+        if (!r.ok) return;
+        const o = await r.json();
+        const sys = o.sys || null;
+        if (sys) _sysLastCards = sys;
+        const root = document.getElementById(tab === 'performance' ? 'perfSysRow' : (tab + 'SysRow'));
+        if (root && sys) {
+          root.innerHTML = _renderSysCardsHtml(tab, sys);
+        }
+        // Performance tab also paints an activity row beneath the sys row.
+        if (tab === 'performance') {
+          const actRoot = document.getElementById('perfActivityRow');
+          if (actRoot) {
+            const actCards = [
+              ['Requests (24h)', o.requests],
+              ['Active users',   o.active_users],
+              ['Tokens in',      o.tokens_in],
+              ['Tokens out',     o.tokens_out],
+              ['Avg latency',    o.avg_latency_ms != null ? `${o.avg_latency_ms} ms` : '—'],
+              ['Errors',         o.errors],
+            ];
+            actRoot.innerHTML = actCards.map(([l, v]) =>
+              `<div class="dash-card"><div class="lbl">${escapeHtml(l)}</div>`
+              + `<div class="val">${escapeHtml(String(v ?? '—'))}</div></div>`
+            ).join('');
+          }
+        }
+        // Graphs: filter the ring buffer to the chosen window, render
+        // CPU+GPU util side-by-side. Backend-restart cutoff is supplied
+        // by the timeseries response itself.
+        const graphsId = tab === 'performance' ? 'perfSysGraphs' : (tab + 'SysGraphs');
+        const graphRoot = document.getElementById(graphsId);
+        if (graphRoot) {
+          const ts = await _sysGraphFetch(0, tab);
+          if (ts && Array.isArray(ts.samples)) {
+            _sysTsCache = ts;  // persist for sync re-render on flicker
+            graphRoot.innerHTML = _sysGraphsHtml(tab, ts, benchData);
+            _wireSysTooltips(graphRoot);
+          }
+        }
+      } catch (_) { /* keep last frame on transient error */ }
+    }
+    function _refreshBenchSysCards() {
+      return _refreshSysTab('bench', _benchLastData);
+    }
+    function _refreshOverviewSysCards() {
+      return _refreshSysTab('overview', null);
+    }
+
     async function loadDashOverview() {
       const pane = $('dash-pane-overview');
       pane.innerHTML = '<div class="dash-empty">Loading overview…</div>';
@@ -4342,12 +5798,45 @@
           ['RAG docs', `${o.total_rag_docs} (${fmtBytes(o.total_rag_bytes)})`],
           ['Memories', o.total_memories],
         ];
-        pane.innerHTML = '<div class="dash-cards">'
+        const sysCards = _renderSysCards(o.sys);
+        pane.innerHTML =
+          `<details id="overviewSysSection" ${_loadDetailsState('lai_overview_sys_section', true) ? 'open' : ''} style="margin-bottom:14px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--panel-2)">
+            <summary style="cursor:pointer;color:var(--muted);font-weight:600;font-size:0.95em;padding:2px 0">System monitoring</summary>
+            <div style="margin-top:8px">`
+          + _sysCardsControls('overview')
+          + `<div id="overviewSysRow" class="dash-cards">`
+          + sysCards.map(([l, v]) =>
+              `<div class="dash-card"><div class="lbl">${escapeHtml(l)}</div>`
+              + `<div class="val">${escapeHtml(String(v))}</div></div>`
+            ).join('')
+          + `</div>
+              <details id="overviewSysGraphsSection" ${_loadDetailsState('lai_overview_sys_graphs', false) ? 'open' : ''} style="margin-top:8px;border:1px solid var(--border);border-radius:4px;padding:6px 10px;background:var(--panel)">
+                <summary style="cursor:pointer;color:var(--muted);font-size:0.9em;padding:2px 0">Graphs</summary>
+                <div style="margin-top:8px">`
+          + _sysGraphControls('overview')
+          + `<div id="overviewSysGraphs"></div>
+                </div>
+              </details>
+            </div>
+          </details>`
+          + '<h4 style="margin:14px 0 6px 0;color:var(--muted)">Activity</h4>'
+          + '<div class="dash-cards">'
           + cards.map(([l, v]) =>
               `<div class="dash-card"><div class="lbl">${escapeHtml(l)}</div>`
               + `<div class="val">${escapeHtml(String(v))}</div></div>`
             ).join('')
           + '</div>';
+        // Wire dropdowns + arm the poll at the user-chosen cadence.
+        const _restartOverviewSysPoll = () => {
+          if (_overviewSysPoll) clearInterval(_overviewSysPoll);
+          _refreshOverviewSysCards();
+          _overviewSysPoll = setInterval(() => {
+            if (dashboardActiveTab === 'overview') _refreshOverviewSysCards();
+          }, _sysGraphState.overview.pollMs);
+        };
+        _sysGraphAttachHandlers('overview', _restartOverviewSysPoll);
+        _sysCardsAttachHandler('overview', _restartOverviewSysPoll);
+        _restartOverviewSysPoll();
       } catch (e) {
         pane.innerHTML = `<div class="dash-empty">Failed to load overview: ${escapeHtml(String(e))}</div>`;
       }
@@ -5376,6 +6865,16 @@
       function close() {
         modal.classList.add('hidden');
         backdrop.classList.add('hidden');
+        // Tear down per-tab poll intervals so they don't keep firing
+        // after the modal closes.
+        if (window._perfSysPoll) {
+          clearInterval(window._perfSysPoll);
+          window._perfSysPoll = null;
+        }
+        if (window._settingsBenchPoll) {
+          clearInterval(window._settingsBenchPoll);
+          window._settingsBenchPoll = null;
+        }
       }
       async function save() {
         // Build the full settings payload (display name + demographics +
@@ -5445,44 +6944,77 @@
           // the chat UI (same-origin, so contentDocument access is
           // allowed). Re-injects on every show so palette switches
           // propagate even with the iframe already loaded.
-          if (tab === 'benchmark') {
-            const iframe = document.getElementById('settings-bench-iframe');
-            const inject = () => {
-              try {
-                const doc = iframe.contentDocument;
-                if (!doc) return;
-                const html = doc.documentElement;
-                const myHtml = document.documentElement;
-                ['data-theme', 'data-palette', 'data-tint', 'data-cb'].forEach(a => {
-                  const v = myHtml.getAttribute(a);
-                  if (v != null) html.setAttribute(a, v);
-                });
-                // Pull palette CSS variable values from parent and write
-                // matching ones into the iframe's :root so its existing
-                // hardcoded vars adopt our palette colors.
-                const cs = getComputedStyle(myHtml);
-                const map = {
-                  '--bg': '--bg', '--panel': '--panel', '--panel2': '--panel-2',
-                  '--border': '--border', '--text': '--fg', '--muted': '--muted',
-                  '--accent': '--accent',
-                  '--good': '--success', '--warn': '--warn', '--bad': '--danger',
-                  '--grad-0': '--hm-0', '--grad-1': '--hm-20', '--grad-2': '--hm-40',
-                  '--grad-3': '--hm-60', '--grad-4': '--hm-75', '--grad-5': '--hm-90',
-                  '--grad-6': '--hm-90',
-                };
-                for (const [iframeVar, parentVar] of Object.entries(map)) {
-                  const v = cs.getPropertyValue(parentVar).trim();
-                  if (v) html.style.setProperty(iframeVar, v);
+          if (tab === 'performance') {
+            // Render controls + arm a 1Hz poll. _refreshSysTab uses
+            // /admin/me/* endpoints when tab='performance' so this
+            // works for non-admin users.
+            const ctrlRoot = document.getElementById('perfControls');
+            if (ctrlRoot) ctrlRoot.innerHTML = _sysGraphControls('performance');
+            const cardsCtrlRoot = document.getElementById('perfCardsControlsHost');
+            if (cardsCtrlRoot) cardsCtrlRoot.innerHTML = _sysCardsControls('performance');
+            const restart = () => {
+              if (window._perfSysPoll) clearInterval(window._perfSysPoll);
+              _refreshSysTab('performance', null);
+              window._perfSysPoll = setInterval(() => {
+                if (!modal.classList.contains('hidden')
+                    && body.getAttribute('data-active-tab') === 'performance') {
+                  _refreshSysTab('performance', null);
                 }
-              } catch (_) { /* cross-origin or pre-load — ignore */ }
+              }, _sysGraphState.performance.pollMs);
             };
-            if (iframe && (!iframe.src || iframe.src === 'about:blank' ||
-                           !iframe.src.endsWith('/bench'))) {
-              iframe.src = '/bench';
-              iframe.onload = inject;
-            } else if (iframe) {
-              inject();
+            _sysGraphAttachHandlers('performance', restart);
+            _sysCardsAttachHandler('performance', restart);
+            restart();
+          }
+          if (tab === 'benchmark') {
+            // Full-screen toggle for the benchmark pane — flips a class
+            // on the modal so it expands to viewport size for reading
+            // the heatmap + baseline tables comfortably.
+            const fsBtn = document.getElementById('settings-bench-fullscreen');
+            if (fsBtn && !fsBtn._bound) {
+              fsBtn._bound = true;
+              fsBtn.addEventListener('click', () => {
+                const isFs = modal.classList.toggle('settings-fullscreen');
+                fsBtn.textContent = isFs ? '⤡ Exit full screen' : '⤢ Full screen';
+              });
             }
+            // Avoid ID collisions: _benchRenderInline injects HTML
+            // with fixed IDs (benchSysRow, benchHeatTip, bench-cadence,
+            // etc). If the admin dashboard's dash-pane-bench is also
+            // rendered, getElementById would hit the wrong element.
+            // Clear the admin pane while settings owns the bench view.
+            const adminPane = document.getElementById('dash-pane-bench');
+            if (adminPane) adminPane.innerHTML = '';
+            // Render the FULL admin bench dashboard into the settings
+            // pane (heatmap, current-cell progress, baseline comparisons
+            // with z-tests, latency table, condition deltas, live token
+            // pane). _benchRenderInline targets a paneId so we can
+            // render into 'settings-bench-pane' instead of admin's
+            // 'dash-pane-bench'. Polls every 5s while tab is active.
+            const settingsBenchTick = async () => {
+              try {
+                const r = await api('/admin/bench/results');
+                if (!r.ok) return;
+                const d = await r.json();
+                _benchLastData = d;
+                // hideSysMonitoring: the settings Performance tab
+                // already shows CPU/GPU util/temp/VRAM cards + graphs,
+                // so suppress the duplicate System monitoring section
+                // here. Heatmap, baseline z-tests, latency, live
+                // tokens, current cell progress all stay.
+                _benchRenderInline(d, 'settings-bench-pane',
+                  { hideSysMonitoring: true });
+                _wireBenchHeatTooltip(document.getElementById('settings-bench-pane'));
+              } catch (_) {}
+            };
+            settingsBenchTick();
+            if (window._settingsBenchPoll) clearInterval(window._settingsBenchPoll);
+            window._settingsBenchPoll = setInterval(() => {
+              if (!modal.classList.contains('hidden')
+                  && body.getAttribute('data-active-tab') === 'benchmark') {
+                settingsBenchTick();
+              }
+            }, 5000);
           }
         });
       });
