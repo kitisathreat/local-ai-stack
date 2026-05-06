@@ -386,6 +386,18 @@ class VRAMScheduler:
                                 proc = self._llama_cpp_client.processes.get(tier_id)
                                 if proc and not proc.is_alive():
                                     proc_dead = True
+                                # Bench-killer pattern (Nov 2026): proc may
+                                # be marked alive by popen.poll()==None but
+                                # the server inside has deadlocked or its
+                                # listening socket has been torn down. If
+                                # the proc was last marked unreachable by
+                                # chat_stream, force a respawn. The flag is
+                                # set by `LlamaCppClient.mark_unreachable()`
+                                # in the chat path on ConnectError/ReadError
+                                # so the next acquire re-spawns instead of
+                                # routing into the same dead socket.
+                                if proc and getattr(proc, "unreachable", False):
+                                    proc_dead = True
                         except Exception:
                             pass
                         if proc_dead:

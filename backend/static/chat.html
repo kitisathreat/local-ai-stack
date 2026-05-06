@@ -4110,19 +4110,24 @@
         latHtml += `</tbody></table></div>`;
       }
 
-      // ETA to full-suite completion. Rolling mean wall over the most
-      // recent finished cells × remaining cell count. The main matrix
-      // is 7 tiers × 11 capabilities × 4 conditions = 308 cells (we
-      // exclude the multi-agent post-suite tiers, which run after the
-      // main matrix and have a different cell count by design). The
-      // ETA pill stays VISIBLE in 3 states: running with rolling
-      // average, running but not enough samples yet ("computing"), or
-      // complete. Only hidden when no cells have run at all.
+      // ETA to phase-1 completion. The user split the bench into
+      // phases — phase 1 is the priority capability set (8 of 11)
+      // across all 7 main tiers; phase 2 (knowledge, math,
+      // coding_basic) runs after phase 1 wraps. ETA reflects phase 1
+      // only so the rolling estimate doesn't smear over the deferred
+      // phase. The pill stays visible in 3 states: running with
+      // rolling avg, running but <2 samples ("computing"), or
+      // complete. Hidden only when nothing has finished.
       const MAIN_TIERS = ["swarm", "fast", "versatile", "coding",
                           "highest_quality", "reasoning_max", "reasoning_xl"];
-      const _etaCellsTotal = MAIN_TIERS.length * BENCH_CAPS.length * 4;
+      const PHASE_1_CAPS = new Set([
+        "knowledge_specialized", "math_competition", "math_hard",
+        "reasoning", "coding", "intent", "clarity", "long_context",
+      ]);
+      const _etaCellsTotal = MAIN_TIERS.length * PHASE_1_CAPS.size * 4;
       const _etaFinished = data.cells.filter(c =>
-        c.finished && MAIN_TIERS.includes(c.tier)).length;
+        c.finished && MAIN_TIERS.includes(c.tier)
+        && PHASE_1_CAPS.has(c.capability)).length;
       const _etaRemaining = Math.max(0, _etaCellsTotal - _etaFinished);
       // The /admin/bench/results endpoint exposes wall time as
       // `wall_seconds` (already computed by the runner). Earlier code

@@ -608,6 +608,17 @@ async def bench_progress():
     return {"ts": time.time(), "ascii": ascii_dash, "state": state}
 
 
+@router.get("/bench/live_tokens")
+async def bench_live_tokens():
+    """Return the last ~100 whitespace-tokens of the in-flight bench
+    completion. Empty when no bench is active. The dashboard polls this
+    to drive a streaming output pane. `seq` increments on each new
+    stream so the client can detect a fresh request and reset its view.
+    """
+    from . import main as _m
+    return _m.bench_live_snapshot()
+
+
 # ── Me ──────────────────────────────────────────────────────────────────
 
 @router.get("/me")

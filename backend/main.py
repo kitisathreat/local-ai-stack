@@ -119,6 +119,50 @@ class AppState:
 state = AppState()
 
 
+# ── Bench live-token buffer ───────────────────────────────────────────────
+# Holds the last N whitespace-split tokens of the most recent streamed
+# completion. Populated only when a bench process is running (otherwise we'd
+# leak ordinary user-chat output into the admin dashboard). Consumed by
+# /admin/bench/live_tokens for the dashboard's live stream pane.
+import collections as _bench_live_collections
+import threading as _bench_live_threading
+_BENCH_LIVE_BUF: _bench_live_collections.deque = _bench_live_collections.deque(maxlen=100)
+_BENCH_LIVE_LOCK = _bench_live_threading.Lock()
+_BENCH_LIVE_SEQ: int = 0
+_BENCH_LIVE_TIER: str = ""
+_BENCH_LIVE_STARTED: float = 0.0
+
+
+def _bench_live_start(tier: str) -> None:
+    global _BENCH_LIVE_SEQ, _BENCH_LIVE_TIER, _BENCH_LIVE_STARTED
+    with _BENCH_LIVE_LOCK:
+        _BENCH_LIVE_BUF.clear()
+        _BENCH_LIVE_SEQ += 1
+        _BENCH_LIVE_TIER = tier
+        _BENCH_LIVE_STARTED = time.time()
+
+
+def _bench_live_append(s: str) -> None:
+    if not s:
+        return
+    parts = s.split()
+    if not parts:
+        return
+    with _BENCH_LIVE_LOCK:
+        for p in parts:
+            _BENCH_LIVE_BUF.append(p)
+
+
+def bench_live_snapshot() -> dict:
+    with _BENCH_LIVE_LOCK:
+        return {
+            "tier": _BENCH_LIVE_TIER,
+            "seq": _BENCH_LIVE_SEQ,
+            "started": _BENCH_LIVE_STARTED,
+            "tokens": list(_BENCH_LIVE_BUF),
+        }
+
+
 async def _init_redis(cfg: AppConfig):
     """Lazy-imported so the `redis` package isn't required when unused."""
     url = cfg.concurrency.redis_url
@@ -985,6 +1029,16 @@ async def chat_completions(
 
     started = time.time()
 
+    # When a bench is running, mirror this stream's content into the
+    # bench live-token buffer so the dashboard pane can show the model
+    # generating in real time. Cleared at stream start (so each request
+    # starts fresh — the user's "clearing after each run" UX). Skipped
+    # when no bench is in flight to avoid leaking ordinary chat output.
+    from .backends.llama_cpp import _is_bench_active
+    _live_capture = _is_bench_active()
+    if _live_capture:
+        _bench_live_start(decision.tier_name)
+
     async def _wrap(inner: AsyncIterator[str]) -> AsyncIterator[str]:
         """Wrap an SSE producer to record a usage event on stream completion.
 
@@ -1004,6 +1058,8 @@ async def chat_completions(
                         t = delta.get("content")
                         if isinstance(t, str):
                             out_text.append(t)
+                            if _live_capture:
+                                _bench_live_append(t)
                     except Exception:
                         pass
                 yield chunk

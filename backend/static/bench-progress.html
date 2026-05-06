@@ -371,6 +371,24 @@
       <summary>Raw ASCII dashboard</summary>
       <pre id="asciiDash" class="mono">loading…</pre>
     </details>
+
+    <!-- Live token stream — last ~100 tokens of the in-flight completion. -->
+    <div class="panel" style="margin-top:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <strong>Live model output</strong>
+        <span id="liveTokensMeta" style="color:var(--muted);font-size:12px"></span>
+      </div>
+      <pre id="liveTokensPre" class="mono" style="
+        margin:0;padding:10px;
+        background:var(--panel2);
+        border:1px solid var(--border);
+        border-radius:6px;
+        max-height:160px;overflow:auto;
+        white-space:pre-wrap;word-break:break-word;
+        font-size:12px;color:var(--muted);
+        min-height:48px;
+      ">(idle — no bench in flight)</pre>
+    </div>
   </main>
 
   <script>
@@ -761,6 +779,46 @@
     const statusEl = document.getElementById('status');
     let timer = null;
 
+    // Live-token poll runs on its own faster cadence (1s) so the stream
+    // pane keeps up with the model's output even when the dashboard
+    // refresh interval is set to 5s+. Reset whenever `seq` advances —
+    // a new completion request started so the buffer cleared on the
+    // backend; the UI mirrors that reset by replacing the text.
+    let _liveTokensSeq = -1;
+    let _liveTokensTimer = null;
+    async function pollLiveTokens() {
+      try {
+        const j = await fetch('/admin/bench/live_tokens', { cache: 'no-store' })
+          .then(r => r.json());
+        const pre = document.getElementById('liveTokensPre');
+        const meta = document.getElementById('liveTokensMeta');
+        if (!pre) return;
+        const tokens = Array.isArray(j.tokens) ? j.tokens : [];
+        if (j.seq && j.seq !== _liveTokensSeq) {
+          _liveTokensSeq = j.seq;
+        }
+        if (tokens.length === 0) {
+          pre.textContent = '(idle — no bench in flight)';
+          pre.style.color = 'var(--muted)';
+          if (meta) meta.textContent = '';
+        } else {
+          pre.textContent = tokens.join(' ');
+          pre.style.color = 'var(--text)';
+          pre.scrollTop = pre.scrollHeight;
+          if (meta) {
+            const elapsed = j.started ? Math.max(0, (Date.now()/1000 - j.started)) : 0;
+            meta.textContent =
+              `${j.tier || ''} · ${tokens.length} tok` +
+              (elapsed > 0 ? ` · ${elapsed.toFixed(1)}s` : '');
+          }
+        }
+      } catch (_) { /* network blip — keep last frame */ }
+    }
+    if (!_liveTokensTimer) {
+      pollLiveTokens();
+      _liveTokensTimer = setInterval(pollLiveTokens, 1000);
+    }
+
     async function fetchAll() {
       try {
         const [resJson, ascJson] = await Promise.all([
@@ -774,19 +832,26 @@
         renderTable(resJson);
         document.getElementById('asciiDash').textContent =
           (ascJson.ascii || '').replace(/^```\n?/, '').replace(/\n?```$/, '');
-        // Full-suite ETA: rolling mean wall over recent finished cells
-        // × remaining cell count. TIERS=7, CAPS=11, conditions=4 = 308
-        // cells (plus the multi-agent post-suite which we don't count
-        // here — it's bonus measurement after the main matrix wraps).
-        const TOTAL_CELLS = 308;
+        // Phase-1 ETA: rolling mean wall over recent finished cells ×
+        // remaining cell count, restricted to the 8 priority caps the
+        // user split out for now. Phase 2 (knowledge, math,
+        // coding_basic) runs after phase 1 wraps and gets its own
+        // ETA at that point. TIERS=7, PHASE_1_CAPS=8, conditions=4
+        // = 224 cells.
+        const PHASE_1_CAPS = new Set([
+          'knowledge_specialized', 'math_competition', 'math_hard',
+          'reasoning', 'coding', 'intent', 'clarity', 'long_context',
+        ]);
+        const TOTAL_CELLS = 7 * PHASE_1_CAPS.size * 4;
         const cells = (resJson.cells || []);
-        const finished = cells.filter(c => c.finished).length;
+        const phase1 = cells.filter(c => PHASE_1_CAPS.has(c.capability));
+        const finished = phase1.filter(c => c.finished).length;
         const remaining = Math.max(0, TOTAL_CELLS - finished);
         // /admin/bench/results exposes wall time as `wall_seconds`
         // (not `started_at`/`finished_at` — those are Python-side
         // fields, not in the JSON). Earlier code filtered on the
         // wrong names so _recent was always empty.
-        const recent = cells
+        const recent = phase1
           .filter(c => c.finished && typeof c.wall_seconds === 'number' && c.wall_seconds > 0)
           .slice(-12);
         // Status pill: just live/idle + clock. Keep it short.

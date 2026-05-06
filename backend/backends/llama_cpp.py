@@ -564,7 +564,7 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     if getattr(tier, "draft_gguf_path", None):
         draft_gb = _model_total_size_gb(tier.draft_gguf_path) * 0.6  # weights only
 
-    # Safety: 8 GB covers (a) llama.cpp's internal nonexpert footprint
+    # Safety: 5 GB covers (a) llama.cpp's internal nonexpert footprint
     # which is much bigger than the GGUF tensor list suggests because
     # `-ngl 64` materialises ALL non-expert layer weights on GPU even
     # for layers whose experts are pinned to CPU, and (b) CUDA graphs
@@ -573,14 +573,17 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     # Empirical: versatile loaded with full-CPU experts measured 15 GB
     # GPU (vs my parser's 1.5 GB nonexpert estimate — a 13.5 GB gap).
     # Versatile loaded with 35-of-40 layers on GPU OOM-killed at 98%
-    # VRAM. 8 GB safety knocks GPU layers down by ~10 from the naive
-    # calc, putting us back in fits-without-thrashing territory.
+    # VRAM. The earlier 8 GB safety put GPU util at ~30% and CPU at
+    # 99%. Tightened to 5 GB (May 2026) — observed runtime headroom of
+    # 2 GB on 32K-ctx math means the 8 GB reserve was overcautious;
+    # 5 GB still gives ~3 GB live headroom and shifts ~6 more layers
+    # to GPU per chat tier.
     #
     # Why FREE VRAM matters: a previous version used `total - safety`
     # which assumed nothing else was GPU-resident. Embedding tier
     # (5 GB) wasn't deducted → OOM. nvidia-smi memory.free naturally
     # accounts for everything else.
-    safety_gb = 8.0
+    safety_gb = 5.0
     gpu_total_gb = _gpu_total_gb_default()
     gpu_free_gb = _gpu_free_gb()
     # Budget = current free VRAM minus per-spawn fixed costs (this
@@ -798,6 +801,12 @@ class LlamaServerProcess:
     stderr_tail: deque = field(default_factory=lambda: deque(maxlen=128))
     _reader_task: asyncio.Task | None = None
     _externally_managed: bool = False    # True when adopted (PS1 pre-spawn)
+    # Set when chat_stream observes a ConnectError/ReadError against this
+    # tier's endpoint. Read by VRAMScheduler on the next acquire to force
+    # a respawn even if popen.poll() still claims the proc is alive (the
+    # server may be deadlocked or have torn down its listen socket without
+    # exiting). Cleared by LlamaCppClient.start() on next spawn.
+    unreachable: bool = False
 
     def is_alive(self) -> bool:
         if self._externally_managed:
@@ -1113,6 +1122,7 @@ class LlamaCppClient:
             # was killed mid-spawn, breaking the cell with tok=0
             # cascades. Registering early closes the race; if
             # wait_ready fails we still pop+stop in the except.
+            proc.unreachable = False
             self.processes[tier.name] = proc
             try:
                 await proc.wait_ready(timeout=timeout)
@@ -1184,20 +1194,40 @@ class LlamaCppClient:
         Returns the list of PIDs killed.
         """
         preserve_ports = set(preserve_ports or set())
-        # Always preserve the launcher's pre-spawned support tiers
-        # (vision 8089, embedding 8090, reranker 8091). They're spawned
-        # by LocalAIStack.ps1 before the backend starts and only get
-        # adopted into self.processes lazily on first request, so a
+        # Preserve the launcher's pre-spawned support tiers (vision 8089,
+        # embedding 8090, reranker 8091). They're spawned by
+        # LocalAIStack.ps1 before the backend starts and only get
+        # adopted into self.processes lazily on first request — a
         # pre-spawn reap that runs before adoption would kill them and
-        # silently break embeddings + retrieval.
-        preserve_ports.update({8089, 8090, 8091})
+        # silently break embeddings + retrieval for normal chat.
+        #
+        # EXCEPTION: in bench mode, embedding (Qwen3-Embedding-8B,
+        # 4.7 GB) is NOT used — the runner sends
+        # `disable_web_search=True` and bench cells don't trigger RAG
+        # injection. Keeping it resident steals 4.7 GB from the
+        # chat-tier offload budget, which on a 24 GB card flips
+        # versatile from "all 40 expert layers on GPU" to "0 layers"
+        # (formula budget=0 → --cpu-moe). Drop it from preserve in
+        # bench mode so the reaper frees the VRAM before the chat
+        # tier spawns. Reranker (Qwen3-Reranker-0.6B, 640 MB) stays
+        # preserved — it's small, costs almost nothing, and avoids a
+        # latency hit when normal chat resumes after bench.
+        # Vision (8089) stays preserved either way.
+        preserve_ports.update({8089, 8091})
+        if not _is_bench_active():
+            preserve_ports.add(8090)
         # Tracked PIDs from our own subprocess.Popen handles.
         tracked: set[int] = set()
+        bench_evictable = {8090} if _is_bench_active() else set()
         for proc in self.processes.values():
             if proc.popen is not None and proc.popen.poll() is None:
-                tracked.add(proc.popen.pid)
+                # In bench mode, our own embedding handle is also
+                # evictable so the reaper actually frees it. The
+                # tracked-set check above would otherwise spare it.
+                if not (proc.port in bench_evictable):
+                    tracked.add(proc.popen.pid)
             # Externally-managed (we adopted on startup) — preserve by port.
-            if proc._externally_managed and proc.port:
+            if proc._externally_managed and proc.port and proc.port not in bench_evictable:
                 preserve_ports.add(proc.port)
 
         candidates = await _list_llama_server_pids()
@@ -1280,21 +1310,33 @@ class LlamaCppClient:
         payload = {k: v for k, v in payload.items() if v is not None}
 
         endpoint = tier.resolved_endpoint()
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream(
-                "POST", f"{endpoint}/chat/completions", json=payload
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        yield json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream(
+                    "POST", f"{endpoint}/chat/completions", json=payload
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
+            # Endpoint is gone or the connection was torn down mid-stream.
+            # Mark the proc unreachable so the next scheduler acquire
+            # respawns it instead of routing into the same dead socket.
+            # Without this, a single crash poisons every subsequent cell
+            # in a bench run as the scheduler keeps the RESIDENT entry
+            # but `popen.poll() is None` (deadlocked / socket-only crash).
+            proc = self.processes.get(tier.name)
+            if proc is not None:
+                proc.unreachable = True
+            raise
 
     async def chat_once(
         self,
