@@ -46,3 +46,6 @@ launcher/dist/
 
 # Logs
 *.log
+
+# Claude Code session state (local agent runtime, never commit)
+.claude/
