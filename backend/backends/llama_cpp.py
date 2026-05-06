@@ -146,19 +146,149 @@ def _resolve_for_llama(gguf_path: str) -> str:
 # doesn't shell out N times. 5s TTL aligns with admin._bench_is_running.
 _BENCH_SCAN_TTL_S = 5.0
 _bench_scan_cache: dict = {"checked_at": 0.0, "active": False}
+# Race-free bench-mode signal: run_full_bench.py creates this file on
+# startup with its PID, removes it on exit. Backend reads it in
+# _is_bench_active() before falling back to WMI/proc scans.
+_BENCH_FLAG_PATH = (
+    Path(os.environ.get("LAI_DATA_DIR", "data")) / "bench" / "active.lock"
+)
+
+
+# Per-tier safety_gb bump — set when a tier's spawn died quickly
+# (presumed OOM during model load or first prompt eval). The bump is
+# added to the static safety_gb in `_compute_moe_offload_regex` on the
+# next spawn so we back off automatically without operator intervention.
+# Reset to 0 after a tier survives ≥120s without crashing (set in
+# wait_ready's success path). Bumps stack additively per crash, capped
+# so a misconfigured tier doesn't drift to "all experts CPU" silently.
+_TIER_SAFETY_BUMP: dict[str, float] = {}
+# Bump step + cap tightened from 3.0/9.0 to 1.0/6.0 so the auto-MoE
+# converges in 1 GB increments instead of 3 GB increments — lets the
+# split land closer to the actual VRAM edge before backing off.
+# Cap at 6 GB total (six 1 GB bumps before we plateau) — past that
+# we're almost certainly mis-estimating something other than safety.
+_TIER_SAFETY_BUMP_STEP_GB = 1.0
+_TIER_SAFETY_BUMP_CAP_GB = 6.0
+_OOM_FAST_FAIL_S = 30.0
+
+# Persist bumps to disk so they survive backend restarts. Without this,
+# every restart wipes the in-memory dict and the auto-MoE re-picks the
+# same aggressive split that just crashed (observed 2026-05-05: bench
+# orchestrator restarts backend every 10–30 min, dict resets, --n-cpu-moe
+# 2/3 keeps getting chosen and crashing). File is small (one line per
+# tier), human-readable, and rewritten on every bump/clear.
+_BUMP_STATE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "moe_oom_bump.json"
+)
+
+
+def _persist_tier_bumps() -> None:
+    """Best-effort write of _TIER_SAFETY_BUMP to disk. Silently swallows
+    IO errors — losing a write isn't fatal, just costs another crash."""
+    try:
+        _BUMP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _BUMP_STATE_PATH.write_text(json.dumps(_TIER_SAFETY_BUMP), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_tier_bumps_once() -> None:
+    """Hydrate _TIER_SAFETY_BUMP from disk on first import. Idempotent —
+    later calls are no-ops because the dict is already populated."""
+    if _TIER_SAFETY_BUMP:
+        return
+    try:
+        if _BUMP_STATE_PATH.exists():
+            data = json.loads(_BUMP_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _TIER_SAFETY_BUMP.update(
+                    {k: float(v) for k, v in data.items() if isinstance(v, (int, float))}
+                )
+                if _TIER_SAFETY_BUMP:
+                    logger.info(
+                        "OOM-bump: hydrated %d tier bump(s) from %s",
+                        len(_TIER_SAFETY_BUMP), _BUMP_STATE_PATH,
+                    )
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+_load_tier_bumps_once()
+
+
+def _record_tier_oom(tier_name: str) -> float:
+    """Bump safety_gb for `tier_name` by the standard step. Returns the
+    new total bump (capped). Call this after a fast-fail spawn."""
+    cur = _TIER_SAFETY_BUMP.get(tier_name, 0.0)
+    new = min(cur + _TIER_SAFETY_BUMP_STEP_GB, _TIER_SAFETY_BUMP_CAP_GB)
+    _TIER_SAFETY_BUMP[tier_name] = new
+    _persist_tier_bumps()
+    logger.warning(
+        "OOM-bump: %s safety_gb +%.1f (now +%.1f total) — next spawn "
+        "will pack fewer GPU expert layers. Reset after a 120s+ "
+        "survival run.",
+        tier_name, _TIER_SAFETY_BUMP_STEP_GB, new,
+    )
+    return new
+
+
+def _clear_tier_oom(tier_name: str) -> None:
+    """Reset the bump after a tier has survived long enough to prove
+    the current packing is OOM-safe."""
+    if tier_name in _TIER_SAFETY_BUMP and _TIER_SAFETY_BUMP[tier_name] > 0:
+        logger.info(
+            "OOM-bump cleared for %s after sustained healthy run.", tier_name,
+        )
+    _TIER_SAFETY_BUMP[tier_name] = 0.0
+    _persist_tier_bumps()
 
 
 def _is_bench_active() -> bool:
     """Cheap-ish check for an in-flight scripts/run_full_bench.py.
 
-    Prefers the centralised admin helper when available (one cache for
-    the whole process); falls back to a local WMI / /proc scan when
-    imported in isolation (test fixtures, standalone llama-server
-    spawn during -Setup, etc.)."""
+    First checks for a flag file `data/bench/active.lock` written by
+    `run_full_bench.py` at startup (race-free, cheap stat). Falls back
+    to the centralised admin helper / WMI scan when the flag isn't
+    present — useful for legacy launches that predate the flag, or for
+    outside-the-script launches like an admin-triggered eval.
+    """
     now = time.time()
     if (now - _bench_scan_cache["checked_at"]) < _BENCH_SCAN_TTL_S:
         return _bench_scan_cache["active"]
     found = False
+    # Flag file path: race-free signal written by the bench python on
+    # startup, removed in its atexit. The WMI scan that lived here alone
+    # had a 1-3s gap where freshly-spawned bench processes were invisible
+    # — long enough for the warm probe to spawn the chat tier in
+    # non-bench mode (parallel=3, full ctx). The flag closes that gap:
+    # bench writes it BEFORE the warm probe fires.
+    try:
+        flag = _BENCH_FLAG_PATH
+        if flag.exists():
+            try:
+                pid_txt = flag.read_text(encoding="utf-8").strip()
+                pid = int(pid_txt) if pid_txt else 0
+            except (OSError, ValueError):
+                pid = 0
+            # Verify the PID is still alive — crashes can leave a stale
+            # flag. Cheap: psutil if available, else WaitForSingleObject
+            # via OS APIs would work but we just trust the flag for now
+            # if PID parsing fails. For a stale flag, the post-bench
+            # tier will recover on the next normal acquire.
+            alive = False
+            try:
+                import psutil  # type: ignore
+                alive = pid > 0 and psutil.pid_exists(pid)
+            except Exception:
+                alive = pid > 0  # trust the flag on import failure
+            if alive:
+                found = True
+    except Exception:
+        pass
+    if found:
+        _bench_scan_cache["checked_at"] = now
+        _bench_scan_cache["active"] = True
+        return True
     try:
         from .. import admin as _admin
         found = _admin._scan_for_bench_process()
@@ -564,23 +694,33 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     if getattr(tier, "draft_gguf_path", None):
         draft_gb = _model_total_size_gb(tier.draft_gguf_path) * 0.6  # weights only
 
-    # Safety: 8 GB covers (a) llama.cpp's internal nonexpert footprint
-    # which is much bigger than the GGUF tensor list suggests because
-    # `-ngl 64` materialises ALL non-expert layer weights on GPU even
-    # for layers whose experts are pinned to CPU, and (b) CUDA graphs
-    # + prompt-eval scratch buffers + spec-decode batch overhead.
+    # Safety: 2 GB base reserve for CUDA graphs + prompt-eval scratch
+    # + spec-decode draft batch overhead + the gap between the static
+    # nonexpert estimate and reality. Plus a per-tier dynamic bump set
+    # by `_record_tier_oom` when a previous spawn fast-failed (likely
+    # OOM during model load or first prompt eval). The bump auto-
+    # recovers a too-aggressive pack without operator intervention —
+    # if the tier OOMs at base 2 GB, the next spawn pulls back to 5,
+    # then 8, then 11 (capped). Cleared after a 120s+ healthy run.
     #
-    # Empirical: versatile loaded with full-CPU experts measured 15 GB
-    # GPU (vs my parser's 1.5 GB nonexpert estimate — a 13.5 GB gap).
-    # Versatile loaded with 35-of-40 layers on GPU OOM-killed at 98%
-    # VRAM. 8 GB safety knocks GPU layers down by ~10 from the naive
-    # calc, putting us back in fits-without-thrashing territory.
+    # Why aggressive: earlier 8 GB put versatile at all-CPU experts on
+    # a 24 GB card with embedding resident, which dragged GPU util to
+    # 30% with CPU pegged at 99%. 5 GB recovered to 20/40 GPU. The
+    # 2 GB target packs ~30/40 → GPU stable ~80%; the auto-bump is
+    # the safety net for the "what if I underestimated" case.
     #
     # Why FREE VRAM matters: a previous version used `total - safety`
     # which assumed nothing else was GPU-resident. Embedding tier
     # (5 GB) wasn't deducted → OOM. nvidia-smi memory.free naturally
     # accounts for everything else.
-    safety_gb = 8.0
+    # Aggressive base 1 GB — operator target GPU util ≥95%. Anything
+    # less than 90% is leaving throughput on the table because CPU
+    # experts serialise the layer pipeline. With 1 GB safety + the
+    # 1 GB bump-step, a fast-fail still recovers within seconds and
+    # the next spawn lands ~1 layer further from the edge.
+    base_safety_gb = 1.0
+    safety_bump_gb = _TIER_SAFETY_BUMP.get(tier.name, 0.0)
+    safety_gb = base_safety_gb + safety_bump_gb
     gpu_total_gb = _gpu_total_gb_default()
     gpu_free_gb = _gpu_free_gb()
     # Budget = current free VRAM minus per-spawn fixed costs (this
@@ -597,11 +737,13 @@ def _compute_moe_offload_regex(tier: TierConfig) -> str | None:
     logger.info(
         "moe-offload[%s]: arch=%s layers=%d experts=%d/%d  "
         "file=%.1f GB  nonexpert_est=%.1f GB  KV=%.1f GB  draft=%.1f GB  "
+        "safety=%.1f (base=%.1f bump=%.1f)  "
         "free_vram=%.1f GB  budget=%.1f GB  per_layer=%.2f GB  "
         "→ --n-cpu-moe %d  (GPU layers %d/%d)",
         tier.gguf_path.split("\\")[-1].split("/")[-1], arch,
         block_count, meta.get("expert_used_count") or 0, expert_count,
         file_gb, nonexpert_gb, kv_gb, draft_gb,
+        safety_gb, base_safety_gb, safety_bump_gb,
         gpu_free_gb, gpu_budget_for_experts_gb, per_layer_expert_gb,
         cpu_layers, block_count - cpu_layers, block_count,
     )
@@ -798,6 +940,12 @@ class LlamaServerProcess:
     stderr_tail: deque = field(default_factory=lambda: deque(maxlen=128))
     _reader_task: asyncio.Task | None = None
     _externally_managed: bool = False    # True when adopted (PS1 pre-spawn)
+    # Set when chat_stream observes a ConnectError/ReadError against this
+    # tier's endpoint. Read by VRAMScheduler on the next acquire to force
+    # a respawn even if popen.poll() still claims the proc is alive (the
+    # server may be deadlocked or have torn down its listen socket without
+    # exiting). Cleared by LlamaCppClient.start() on next spawn.
+    unreachable: bool = False
 
     def is_alive(self) -> bool:
         if self._externally_managed:
@@ -1104,6 +1252,7 @@ class LlamaCppClient:
                 endpoint=endpoint,
                 argv=argv,
             )
+            spawn_started_at = time.monotonic()
             await proc.start()
             # Register in self.processes BEFORE wait_ready: the 80B
             # tiers take 25–30s to become HTTP-ready, and the periodic
@@ -1113,13 +1262,30 @@ class LlamaCppClient:
             # was killed mid-spawn, breaking the cell with tok=0
             # cascades. Registering early closes the race; if
             # wait_ready fails we still pop+stop in the except.
+            proc.unreachable = False
+            proc._ready_at = 0.0  # set on success below; used by liveness sweeps
             self.processes[tier.name] = proc
             try:
                 await proc.wait_ready(timeout=timeout)
             except Exception:
                 self.processes.pop(tier.name, None)
+                # OOM auto-bump: a fast-fail spawn (<30s) is almost
+                # always GPU OOM during model load or the first prompt
+                # eval — bump safety_gb so the next spawn pulls back
+                # to a more conservative pack. Slow failures (e.g.
+                # genuine timeouts on a healthy 80B load) skip the
+                # bump so we don't over-correct.
+                elapsed = time.monotonic() - spawn_started_at
+                if elapsed < _OOM_FAST_FAIL_S:
+                    _record_tier_oom(tier.name)
                 await proc.stop(timeout=5.0)
                 raise
+            # Mark the time wait_ready returned. The OOM-bump clear
+            # happens lazily in `_maybe_clear_oom_bump`, called from
+            # the chat path after a successful stream — by then the
+            # tier has survived prompt-eval too, which is the actual
+            # load test for VRAM tightness.
+            proc._ready_at = time.monotonic()
             return time.monotonic() - t0
 
     async def unload(self, tier: TierConfig) -> None:
@@ -1184,20 +1350,37 @@ class LlamaCppClient:
         Returns the list of PIDs killed.
         """
         preserve_ports = set(preserve_ports or set())
-        # Always preserve the launcher's pre-spawned support tiers
-        # (vision 8089, embedding 8090, reranker 8091). They're spawned
-        # by LocalAIStack.ps1 before the backend starts and only get
-        # adopted into self.processes lazily on first request, so a
+        # Preserve the launcher's pre-spawned support tiers (vision 8089,
+        # embedding 8090, reranker 8091). They're spawned by
+        # LocalAIStack.ps1 before the backend starts and only get
+        # adopted into self.processes lazily on first request — a
         # pre-spawn reap that runs before adoption would kill them and
-        # silently break embeddings + retrieval.
-        preserve_ports.update({8089, 8090, 8091})
+        # silently break embeddings + retrieval for normal chat.
+        #
+        # EXCEPTION: in bench mode, embedding (Qwen3-Embedding-8B,
+        # 4.7 GB) AND reranker (Qwen3-Reranker-0.6B, 640 MB) are NOT
+        # used — the runner sends `disable_web_search=True` and bench
+        # cells don't trigger RAG injection. Together they hold ~5.3
+        # GB of GPU memory; freeing both pushes versatile from 20/40
+        # GPU layers up to ~32/40 with safety_gb=2, taking GPU util
+        # from spiky-50-100% to sustained-80-90%. Vision (8089) stays
+        # preserved either way. Both 8090 and 8091 get respawned by
+        # the launcher's health-check loop after bench finishes.
+        preserve_ports.add(8089)
+        if not _is_bench_active():
+            preserve_ports.update({8090, 8091})
         # Tracked PIDs from our own subprocess.Popen handles.
         tracked: set[int] = set()
+        bench_evictable = {8090, 8091} if _is_bench_active() else set()
         for proc in self.processes.values():
             if proc.popen is not None and proc.popen.poll() is None:
-                tracked.add(proc.popen.pid)
+                # In bench mode, our own embedding handle is also
+                # evictable so the reaper actually frees it. The
+                # tracked-set check above would otherwise spare it.
+                if not (proc.port in bench_evictable):
+                    tracked.add(proc.popen.pid)
             # Externally-managed (we adopted on startup) — preserve by port.
-            if proc._externally_managed and proc.port:
+            if proc._externally_managed and proc.port and proc.port not in bench_evictable:
                 preserve_ports.add(proc.port)
 
         candidates = await _list_llama_server_pids()
@@ -1280,21 +1463,60 @@ class LlamaCppClient:
         payload = {k: v for k, v in payload.items() if v is not None}
 
         endpoint = tier.resolved_endpoint()
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream(
-                "POST", f"{endpoint}/chat/completions", json=payload
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        yield json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
+        # Lazy clear of OOM-bump: a tier that survived prompt-eval +
+        # at least one full streamed response has proven the current
+        # pack is OOM-safe. Cleared after a 120s+ healthy run since
+        # spawn so we don't immediately re-aggressivise on a tier
+        # that's only barely surviving (slow OOM during long ctx).
+        proc_for_clear = self.processes.get(tier.name)
+        if (
+            proc_for_clear is not None
+            and getattr(proc_for_clear, "_ready_at", 0.0) > 0
+            and (time.monotonic() - proc_for_clear._ready_at) > 120.0
+            and _TIER_SAFETY_BUMP.get(tier.name, 0.0) > 0
+        ):
+            _clear_tier_oom(tier.name)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream(
+                    "POST", f"{endpoint}/chat/completions", json=payload
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
+            # Endpoint is gone or the connection was torn down mid-stream.
+            # Mark the proc unreachable so the next scheduler acquire
+            # respawns it instead of routing into the same dead socket.
+            # Without this, a single crash poisons every subsequent cell
+            # in a bench run as the scheduler keeps the RESIDENT entry
+            # but `popen.poll() is None` (deadlocked / socket-only crash).
+            proc = self.processes.get(tier.name)
+            if proc is not None:
+                proc.unreachable = True
+                # Mid-run crash feedback for the auto-MoE budget: if the
+                # tier crashed within ~30 min of becoming ready, treat
+                # this like a fast-fail and bump safety_gb so the next
+                # spawn picks a less aggressive --n-cpu-moe split. The
+                # existing bump path only catches wait_ready failures
+                # (<30s). Without this, the auto-MoE re-picks the same
+                # crashing pack on every respawn (observed 2026-05-05:
+                # --n-cpu-moe 4 crashed at 19/200, respawned with
+                # --n-cpu-moe 3, would crash again).
+                ready_at = getattr(proc, "_ready_at", None)
+                if ready_at is not None:
+                    alive_s = time.monotonic() - ready_at
+                    if alive_s < 1800.0:
+                        _record_tier_oom(tier.name)
+            raise
 
     async def chat_once(
         self,

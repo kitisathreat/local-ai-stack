@@ -119,6 +119,50 @@ class AppState:
 state = AppState()
 
 
+# ── Bench live-token buffer ───────────────────────────────────────────────
+# Holds the last N whitespace-split tokens of the most recent streamed
+# completion. Populated only when a bench process is running (otherwise we'd
+# leak ordinary user-chat output into the admin dashboard). Consumed by
+# /admin/bench/live_tokens for the dashboard's live stream pane.
+import collections as _bench_live_collections
+import threading as _bench_live_threading
+_BENCH_LIVE_BUF: _bench_live_collections.deque = _bench_live_collections.deque(maxlen=100)
+_BENCH_LIVE_LOCK = _bench_live_threading.Lock()
+_BENCH_LIVE_SEQ: int = 0
+_BENCH_LIVE_TIER: str = ""
+_BENCH_LIVE_STARTED: float = 0.0
+
+
+def _bench_live_start(tier: str) -> None:
+    global _BENCH_LIVE_SEQ, _BENCH_LIVE_TIER, _BENCH_LIVE_STARTED
+    with _BENCH_LIVE_LOCK:
+        _BENCH_LIVE_BUF.clear()
+        _BENCH_LIVE_SEQ += 1
+        _BENCH_LIVE_TIER = tier
+        _BENCH_LIVE_STARTED = time.time()
+
+
+def _bench_live_append(s: str) -> None:
+    if not s:
+        return
+    parts = s.split()
+    if not parts:
+        return
+    with _BENCH_LIVE_LOCK:
+        for p in parts:
+            _BENCH_LIVE_BUF.append(p)
+
+
+def bench_live_snapshot() -> dict:
+    with _BENCH_LIVE_LOCK:
+        return {
+            "tier": _BENCH_LIVE_TIER,
+            "seq": _BENCH_LIVE_SEQ,
+            "started": _BENCH_LIVE_STARTED,
+            "tokens": list(_BENCH_LIVE_BUF),
+        }
+
+
 async def _init_redis(cfg: AppConfig):
     """Lazy-imported so the `redis` package isn't required when unused."""
     url = cfg.concurrency.redis_url
@@ -355,9 +399,39 @@ async def lifespan(app: FastAPI):
         web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "ddg"),
     )
 
+    # Background 1Hz sys-metrics sampler so the encrypted disk log +
+    # ring buffer fill at a constant cadence regardless of how often
+    # (or whether) the dashboard polls. The frontend's "Poll" dropdown
+    # only controls how often it FETCHES from the ring — it never
+    # changes how often we LOG. Without this task, a slow poll rate
+    # would create gaps in the historical record.
+    async def _sys_metrics_sampler():
+        from . import admin as _admin
+        # 10 Hz sampling — sub-second granularity dropdowns (200ms/500ms)
+        # need the underlying ring to carry multiple samples per second
+        # otherwise binning is a no-op. ~10× the 1 Hz disk writes
+        # (~170 MB/day on the encrypted log) but the underlying
+        # collectors (psutil cpu_percent is instant; nvidia-smi
+        # subprocess takes ~30-80ms; PawnIO ~100µs) keep up.
+        SAMPLE_INTERVAL_S = 0.1
+        try:
+            while True:
+                try:
+                    _admin._sys_metrics()  # appends to ring + encrypted log
+                except Exception:
+                    pass
+                await asyncio.sleep(SAMPLE_INTERVAL_S)
+        except asyncio.CancelledError:
+            pass
+    state.sys_metrics_task = asyncio.create_task(_sys_metrics_sampler())
+
     try:
         yield
     finally:
+        try:
+            state.sys_metrics_task.cancel()
+        except Exception:
+            pass
         await state.scheduler.stop()
         await state.llama_cpp.stop_all()
         if state.redis is not None:
@@ -985,6 +1059,16 @@ async def chat_completions(
 
     started = time.time()
 
+    # When a bench is running, mirror this stream's content into the
+    # bench live-token buffer so the dashboard pane can show the model
+    # generating in real time. Cleared at stream start (so each request
+    # starts fresh — the user's "clearing after each run" UX). Skipped
+    # when no bench is in flight to avoid leaking ordinary chat output.
+    from .backends.llama_cpp import _is_bench_active
+    _live_capture = _is_bench_active()
+    if _live_capture:
+        _bench_live_start(decision.tier_name)
+
     async def _wrap(inner: AsyncIterator[str]) -> AsyncIterator[str]:
         """Wrap an SSE producer to record a usage event on stream completion.
 
@@ -1004,6 +1088,19 @@ async def chat_completions(
                         t = delta.get("content")
                         if isinstance(t, str):
                             out_text.append(t)
+                            if _live_capture:
+                                _bench_live_append(t)
+                            # Incremental session-token recording: bump
+                            # the global counter on every chunk so the
+                            # token-rate readout updates DURING a stream,
+                            # not just at end. Using whitespace-split as
+                            # an approximation (consistent with the
+                            # finally-block tokens_out calculation).
+                            try:
+                                from . import admin as _admin
+                                _admin.record_session_tokens(0, max(0, len(t.split())))
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 yield chunk
@@ -1027,6 +1124,14 @@ async def chat_completions(
                 latency_ms=int((time.time() - started) * 1000),
                 error=err,
             )
+            try:
+                # Output tokens were recorded incrementally during the
+                # stream loop above; here we only add prompt_words (the
+                # input side that's only knowable at the end).
+                from . import admin as _admin
+                _admin.record_session_tokens(prompt_words, 0)
+            except Exception:
+                pass
 
     if decision.multi_agent:
         producer = _wrap(_multi_agent_sse(req, decision, options=req.multi_agent_options))

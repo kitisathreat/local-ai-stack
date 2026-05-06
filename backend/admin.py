@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import tempfile
 import time
 from pathlib import Path
@@ -371,6 +372,12 @@ async def bench_results():
             "started_ts":    c.get("started_ts"),
             "last_ts":       c.get("last_ts"),
             "finished":      finished,
+            # Per-trial timestamps so the frontend's bench-relative
+            # scales (This problem run / Last 5 / Last half of cell)
+            # can pick the actual start time of any in-flight or
+            # recently-completed problem instead of approximating
+            # via mean latency.
+            "problems":      c.get("problems", []),
         }
         if not finished and is_last:
             current = entry
@@ -534,10 +541,17 @@ async def bench_results():
     # on each call so editing reflects without a backend restart.
     repo = Path(__file__).resolve().parent.parent
     def _load_json_silent(name):
+        # Local import — `_json` exists at module level but the enclosing
+        # `bench_results` has a conditional `import json as _json` lower
+        # down, which makes Python treat `_json` as a *local* of
+        # bench_results. If that conditional branch hadn't run yet,
+        # the closure here got an unbound free variable. Use a fresh
+        # local import to dodge the scope conflict entirely.
+        import json as _local_json
         try:
             p = repo / "data" / "eval" / name
             if p.exists():
-                return _json.loads(p.read_text(encoding="utf-8"))
+                return _local_json.loads(p.read_text(encoding="utf-8"))
         except Exception as exc:
             logger.warning("%s load failed: %s", name, exc)
         return {}
@@ -606,6 +620,17 @@ async def bench_progress():
         logger.warning("bench_progress dashboard render failed: %s", exc)
         return {"ts": time.time(), "ascii": f"(error: {exc})", "state": {}}
     return {"ts": time.time(), "ascii": ascii_dash, "state": state}
+
+
+@router.get("/bench/live_tokens")
+async def bench_live_tokens():
+    """Return the last ~100 whitespace-tokens of the in-flight bench
+    completion. Empty when no bench is active. The dashboard polls this
+    to drive a streaming output pane. `seq` increments on each new
+    stream so the client can detect a fresh request and reset its view.
+    """
+    from . import main as _m
+    return _m.bench_live_snapshot()
 
 
 # ── Me ──────────────────────────────────────────────────────────────────
@@ -917,6 +942,348 @@ async def overview(
     _: dict = Depends(require_admin),
 ):
     data = await metrics.overview(window_seconds=window)
+    data["sys"] = _sys_metrics()
+    return data
+
+
+# ── System metrics (CPU + GPU util/temp) ───────────────────────────────
+#
+# Cached for 2 s so the dashboard can poll on its 5–30s heatmap cadence
+# AND the live-tokens 1-Hz cadence without spamming nvidia-smi /
+# PowerShell. Returns None for fields that can't be collected on the
+# current platform (e.g. CPU temp on stock Windows requires
+# LibreHardwareMonitor, which we don't ship).
+
+_SYS_METRICS_CACHE_TTL_S = 1.0
+_sys_metrics_cache: dict = {"checked_at": 0.0, "data": None}
+
+# Ring buffer for the dashboard — extended beyond 2h because the
+# encrypted disk log (below) keeps a permanent record. We still cap
+# the in-memory ring so the timeseries endpoint stays cheap; for
+# windows older than the ring we read from disk on demand.
+from collections import deque as _deque
+_SYS_METRICS_HISTORY_MAX = 86400  # 24 hours at 1 Hz
+_sys_metrics_history: _deque = _deque(maxlen=_SYS_METRICS_HISTORY_MAX)
+_BACKEND_STARTED_TS: float = time.time()
+
+# nvidia-smi (and pynvml) only return integer °C for GPU temp. To get
+# sub-integer precision we keep a 5-sample moving average so a temp
+# trickling between 54 and 55 °C displays as ~54.4, not stair-stepping
+# 54-55-54-55. CPU temp from PawnIO already has 0.125°C resolution
+# so it doesn't need smoothing.
+_GPU_TEMP_HIST: _deque = _deque(maxlen=5)
+
+# Session token counters — accumulate since backend start. Updated by
+# main.py via record_session_tokens() on every chat completion. Tokens/s
+# is derived from a sliding 5-sample (5-second) window of cumulative
+# totals so a quiescent moment doesn't show a stale stale rate.
+_SESSION_TOKENS_IN = 0
+_SESSION_TOKENS_OUT = 0
+_session_tokens_history: _deque = _deque(maxlen=10)
+
+
+def record_session_tokens(t_in: int, t_out: int) -> None:
+    """Called from main.py on every chat completion. Bumps lifetime
+    counters; the per-second rate is recomputed in _sys_metrics()."""
+    global _SESSION_TOKENS_IN, _SESSION_TOKENS_OUT
+    if t_in:  _SESSION_TOKENS_IN  += int(t_in)
+    if t_out: _SESSION_TOKENS_OUT += int(t_out)
+
+
+def _session_token_rate(now: float) -> tuple[float, float]:
+    """Rolling tokens-per-second over the last ~5 samples. Returns
+    (in_per_s, out_per_s). Empty window → (0.0, 0.0)."""
+    _session_tokens_history.append((now, _SESSION_TOKENS_IN, _SESSION_TOKENS_OUT))
+    if len(_session_tokens_history) < 2:
+        return (0.0, 0.0)
+    t0, in0, out0 = _session_tokens_history[0]
+    t1, in1, out1 = _session_tokens_history[-1]
+    dt = max(0.001, t1 - t0)
+    return ((in1 - in0) / dt, (out1 - out0) / dt)
+
+# Encrypted append-only log of every sample so the dashboard can show
+# "Time since [old timestamp]" without losing data on backend restart.
+# Encrypted at rest with Fernet (key derived from AUTH_SECRET_KEY) —
+# anyone with disk access can't read raw temps/util without the key.
+# In-flight delivery to the browser uses the existing /admin/* TLS
+# tunnel + admin auth; the body is decrypted into JSON at the
+# /admin/sys/timeseries handler before serialisation.
+import base64 as _base64
+import hashlib as _hashlib
+import json as _json_log
+_SYS_LOG_PATH = (
+    Path(os.environ.get("LAI_DATA_DIR", "data")) / "sys_metrics.enc"
+)
+_sys_log_fernet = None
+_sys_log_lock = threading.Lock()
+
+
+def _sys_log_get_fernet():
+    """Lazily initialise the Fernet cipher from AUTH_SECRET_KEY. Returns
+    None if cryptography isn't installed or the key isn't set."""
+    global _sys_log_fernet
+    if _sys_log_fernet is not None:
+        return _sys_log_fernet
+    secret = os.environ.get("AUTH_SECRET_KEY")
+    if not secret:
+        return None
+    try:
+        from cryptography.fernet import Fernet  # type: ignore
+        # AUTH_SECRET_KEY is a free-form string; derive a 32-byte key
+        # via SHA-256 and base64-encode for Fernet's keyspec.
+        key = _base64.urlsafe_b64encode(
+            _hashlib.sha256(secret.encode("utf-8")).digest()
+        )
+        _sys_log_fernet = Fernet(key)
+        return _sys_log_fernet
+    except Exception:
+        return None
+
+
+def _sys_log_append(sample: dict) -> None:
+    """Encrypt + append one sample. One Fernet token per line so the
+    file is easy to seek through (no full-file re-encrypt on append)."""
+    f = _sys_log_get_fernet()
+    if f is None:
+        return
+    try:
+        line = f.encrypt(_json_log.dumps(sample).encode("utf-8")) + b"\n"
+        _SYS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _sys_log_lock:
+            with open(_SYS_LOG_PATH, "ab") as fh:
+                fh.write(line)
+    except Exception:
+        pass
+
+
+def _sys_log_load_since(cutoff_ts: float) -> list[dict]:
+    """Read + decrypt samples from disk with ts >= cutoff_ts. Stops at
+    the first sample older than cutoff (the file is append-only so it
+    is monotonically ordered). Returns [] if the log is missing or the
+    cipher isn't available."""
+    f = _sys_log_get_fernet()
+    if f is None or not _SYS_LOG_PATH.exists():
+        return []
+    out: list[dict] = []
+    try:
+        with _sys_log_lock:
+            with open(_SYS_LOG_PATH, "rb") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        d = _json_log.loads(f.decrypt(raw))
+                    except Exception:
+                        continue
+                    if d.get("ts", 0) >= cutoff_ts:
+                        out.append(d)
+    except Exception:
+        pass
+    return out
+
+
+def _sys_metrics() -> dict:
+    now = time.time()
+    if (now - _sys_metrics_cache["checked_at"]) < _SYS_METRICS_CACHE_TTL_S \
+            and _sys_metrics_cache["data"] is not None:
+        return _sys_metrics_cache["data"]
+
+    cpu_pct: float | None = None
+    cpu_temp_c: float | None = None
+    gpu_util_pct: float | None = None
+    gpu_temp_c: float | None = None
+    gpu_mem_used_gb: float | None = None
+    gpu_mem_total_gb: float | None = None
+
+    # GPU via nvidia-smi — single CSV query, no shell pipeline.
+    try:
+        out = _subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2,
+        )
+        line = (out.stdout or "").strip().splitlines()[:1]
+        if line:
+            parts = [p.strip() for p in line[0].split(",")]
+            if len(parts) >= 4:
+                gpu_util_pct = float(parts[0])
+                # Smooth the integer-only nvidia-smi temp via 5-sample
+                # moving average so we get ~0.2 °C visible resolution.
+                raw_t = float(parts[1])
+                _GPU_TEMP_HIST.append(raw_t)
+                gpu_temp_c = sum(_GPU_TEMP_HIST) / len(_GPU_TEMP_HIST)
+                gpu_mem_used_gb = float(parts[2]) / 1024.0
+                gpu_mem_total_gb = float(parts[3]) / 1024.0
+    except Exception:
+        pass
+
+    # CPU util — psutil snapshot (non-blocking; reads kernel jiffies/perf
+    # counters since last call, no shell-out, no 1-second sample window).
+    # First call returns 0.0; subsequent calls return the delta. With a
+    # 1s cache TTL this aligns nicely with the dashboard's 1 Hz poll.
+    # Falls back to /proc/stat / a PowerShell counter if psutil is gone.
+    try:
+        import psutil  # type: ignore
+        cpu_pct = psutil.cpu_percent(interval=None)
+    except Exception:
+        try:
+            if os.name == "nt":
+                cmd = (
+                    "powershell.exe -NoProfile -Command "
+                    "\"(Get-Counter '\\Processor(_Total)\\% Processor Time' "
+                    "-SampleInterval 1 -MaxSamples 1)"
+                    ".CounterSamples[0].CookedValue\""
+                )
+                r = _subprocess.run(cmd, shell=True, capture_output=True,
+                                    text=True, timeout=3)
+                v = (r.stdout or "").strip()
+                if v:
+                    cpu_pct = float(v)
+            else:
+                def _read():
+                    with open("/proc/stat", "r") as fh:
+                        parts = fh.readline().split()
+                    vals = list(map(int, parts[1:8]))
+                    idle = vals[3] + vals[4]
+                    total = sum(vals)
+                    return idle, total
+                i1, t1 = _read()
+                time.sleep(0.2)
+                i2, t2 = _read()
+                di = i2 - i1
+                dt = t2 - t1
+                if dt > 0:
+                    cpu_pct = (1.0 - di / dt) * 100.0
+        except Exception:
+            pass
+
+    # CPU temp — best-effort, several Windows fallbacks because there's
+    # no single API every machine exposes:
+    #   0. PawnIO kernel driver (if installed) — direct MSR/SMN read,
+    #      cheapest path. Reads MSR 0x19C/0x1A2 on Intel, SMN 0x59800
+    #      on AMD. ~100µs per call once the handle is loaded.
+    #   1. psutil.sensors_temperatures (POSIX-only at the moment)
+    #   2. ACPI thermal zone via WMI MSAcpi_ThermalZoneTemperature
+    #      (most consumer boards expose at least one zone; °K × 10)
+    #   3. LibreHardwareMonitor / OpenHardwareMonitor WMI namespaces
+    #      (if the user has either tool running as a service, it
+    #      publishes sensor readings under root/{Libre,Open}HardwareMonitor)
+    #   4. Give up → None (UI shows em-dash with a "needs LHM" hint)
+    # POSIX: /sys/class/thermal/thermal_zone*/temp (millidegrees).
+    try:
+        if os.name == "nt":
+            try:
+                from . import pawnio_temp
+                t = pawnio_temp.read_cpu_temp_c()
+                if t is not None:
+                    cpu_temp_c = t
+            except Exception:
+                pass
+        if cpu_temp_c is None and os.name == "nt":
+            # Single PowerShell invocation tries all three Windows sources
+            # so we eat one ~900 ms PS startup, not three. Returns the
+            # first non-empty source's hottest reading in °C.
+            cmd = (
+                "powershell.exe -NoProfile -Command \""
+                "$out = ''; "
+                # 1) ACPI thermal zone — kelvin*10
+                "$z = (Get-CimInstance -Namespace 'root/wmi' -ClassName "
+                "MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | "
+                "Select-Object -ExpandProperty CurrentTemperature); "
+                "if ($z) { $out = ($z -join ',') + '|acpi' }; "
+                # 2) LibreHardwareMonitor — direct °C
+                "if (-not $out) { "
+                "$lhm = (Get-CimInstance -Namespace 'root/LibreHardwareMonitor' "
+                "-Query \\\"SELECT Value FROM Sensor WHERE SensorType='Temperature' AND Parent LIKE '%cpu%'\\\" "
+                "-ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value); "
+                "if ($lhm) { $out = ($lhm -join ',') + '|lhm' } "
+                "}; "
+                # 3) OpenHardwareMonitor — direct °C
+                "if (-not $out) { "
+                "$ohm = (Get-CimInstance -Namespace 'root/OpenHardwareMonitor' "
+                "-Query \\\"SELECT Value FROM Sensor WHERE SensorType='Temperature' AND Parent LIKE '%cpu%'\\\" "
+                "-ErrorAction SilentlyContinue | Select-Object -ExpandProperty Value); "
+                "if ($ohm) { $out = ($ohm -join ',') + '|ohm' } "
+                "}; "
+                "Write-Output $out\""
+            )
+            r = _subprocess.run(cmd, shell=True, capture_output=True,
+                                text=True, timeout=4)
+            raw = (r.stdout or "").strip()
+            if raw and "|" in raw:
+                vals_s, source = raw.rsplit("|", 1)
+                vals: list[float] = []
+                for tok in vals_s.split(","):
+                    tok = tok.strip()
+                    if not tok:
+                        continue
+                    try:
+                        f = float(tok)
+                    except ValueError:
+                        continue
+                    if source == "acpi":
+                        c = (f / 10.0) - 273.15
+                    else:
+                        c = f
+                    # Drop sentinel zeros (acpi returns 2732 = 0 °C) and
+                    # garbage from buggy firmware (0x80000000 etc).
+                    if -50.0 < c < 150.0 and not (source == "acpi" and abs(c) < 0.5):
+                        vals.append(c)
+                if vals:
+                    cpu_temp_c = max(vals)
+        elif os.name != "nt":
+            zones = sorted(Path("/sys/class/thermal").glob("thermal_zone*/temp"))
+            if zones:
+                vals = []
+                for z in zones:
+                    try:
+                        vals.append(int(z.read_text().strip()) / 1000.0)
+                    except (OSError, ValueError):
+                        pass
+                if vals:
+                    cpu_temp_c = max(vals)  # hottest core
+    except Exception:
+        pass
+
+    in_per_s, out_per_s = _session_token_rate(now)
+    data = {
+        "cpu_pct": cpu_pct,
+        "cpu_temp_c": cpu_temp_c,
+        "gpu_util_pct": gpu_util_pct,
+        "gpu_temp_c": gpu_temp_c,
+        "gpu_mem_used_gb": gpu_mem_used_gb,
+        "gpu_mem_total_gb": gpu_mem_total_gb,
+        "session_tokens_in":  _SESSION_TOKENS_IN,
+        "session_tokens_out": _SESSION_TOKENS_OUT,
+        "session_tokens_total": _SESSION_TOKENS_IN + _SESSION_TOKENS_OUT,
+        "tokens_in_per_s":  round(in_per_s, 2),
+        "tokens_out_per_s": round(out_per_s, 2),
+        "ts": now,
+    }
+    _sys_metrics_cache["data"] = data
+    _sys_metrics_cache["checked_at"] = now
+    # Append to history ring for graph rendering. We keep all four
+    # fields (cpu_pct, cpu_temp_c, gpu_util_pct, gpu_temp_c) per sample
+    # so the frontend can pick which one to plot without the backend
+    # caring about UI choices.
+    sample = {
+        "ts": now,
+        "cpu_pct": cpu_pct,
+        "cpu_temp_c": cpu_temp_c,
+        "gpu_util_pct": gpu_util_pct,
+        "gpu_temp_c": gpu_temp_c,
+        # Cumulative session token totals are stored on every sample so
+        # the frontend can derive token-rate over any rolling window
+        # without a separate API. Resets on backend restart.
+        "session_tokens_in":  _SESSION_TOKENS_IN,
+        "session_tokens_out": _SESSION_TOKENS_OUT,
+    }
+    _sys_metrics_history.append(sample)
+    # Persistent encrypted log so windows older than the in-memory
+    # ring (or beyond the most recent backend restart) still resolve.
+    _sys_log_append(sample)
     return data
 
 
@@ -1148,6 +1515,77 @@ async def delete_user(user_id: int, actor: dict = Depends(require_admin)):
     if not ok:
         raise HTTPException(404, "User not found")
     return {"ok": True}
+
+
+# ── System metrics history (for graphs) ─────────────────────────────────
+
+@router.get("/me/sys")
+async def me_sys(user: dict = Depends(auth.current_user)):
+    """User-facing snapshot of system metrics + activity counters.
+    Same data as /admin/overview but accessible to any signed-in user
+    (used by the Performance tab in Settings). Re-uses the same
+    metrics.overview helper — its output has no per-user breakdowns
+    that would be problematic to share."""
+    data = await metrics.overview(window_seconds=86400)
+    data["sys"] = _sys_metrics()
+    return data
+
+
+@router.get("/me/sys/timeseries")
+async def me_sys_timeseries(since: float | None = None,
+                            user: dict = Depends(auth.current_user)):
+    """User-facing timeseries of CPU/GPU util + temp. Same shape as the
+    admin /sys/timeseries route — exposed under /me/* so non-admin
+    users can watch live metrics in the Performance settings tab."""
+    cutoff = float(since) if since is not None else 0.0
+    samples = [s for s in _sys_metrics_history if s["ts"] >= cutoff]
+    if samples:
+        ring_oldest = samples[0]["ts"]
+        if cutoff > 0 and cutoff < ring_oldest:
+            disk = _sys_log_load_since(cutoff)
+            ring_keys = {s["ts"] for s in samples}
+            samples = [d for d in disk if d.get("ts") not in ring_keys] + samples
+    elif cutoff > 0:
+        samples = _sys_log_load_since(cutoff)
+    return {
+        "backend_started_ts": _BACKEND_STARTED_TS,
+        "now_ts": time.time(),
+        "samples": samples,
+    }
+
+
+@router.get("/sys/timeseries")
+async def sys_timeseries(
+    since: float | None = None,
+    _: dict = Depends(require_admin),
+):
+    """Return the slice of the 1 Hz sys-metrics ring buffer with ts >= since.
+    `since` is a unix timestamp; omit it to get the full ring (~2h max).
+
+    Also returns `backend_started_ts` so the frontend can compute the
+    "since backend restart" window without an extra request. Bench-relative
+    windows ("since cell started" etc.) are computed by the frontend
+    from the existing /admin/bench/results payload.
+    """
+    cutoff = float(since) if since is not None else 0.0
+    samples = [s for s in _sys_metrics_history if s["ts"] >= cutoff]
+    # If the user is asking for a window that predates the in-memory
+    # ring (e.g. "Time since [yesterday]"), fall back to the encrypted
+    # disk log and merge. The ring covers the most-recent 24h hot
+    # path; older windows pay a one-time decrypt cost.
+    if samples:
+        ring_oldest = samples[0]["ts"]
+        if cutoff > 0 and cutoff < ring_oldest:
+            disk = _sys_log_load_since(cutoff)
+            ring_keys = {s["ts"] for s in samples}
+            samples = [d for d in disk if d.get("ts") not in ring_keys] + samples
+    elif cutoff > 0:
+        samples = _sys_log_load_since(cutoff)
+    return {
+        "backend_started_ts": _BACKEND_STARTED_TS,
+        "now_ts": time.time(),
+        "samples": samples,
+    }
 
 
 # ── VRAM + tools passthrough (admin view) ───────────────────────────────

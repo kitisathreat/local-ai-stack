@@ -39,8 +39,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Auto-load CF_API_TOKEN from project .env if not provided.
 if (-not $Token) {
-    throw "No API token. Set `$env:CF_API_TOKEN or pass -Token. Create one at https://dash.cloudflare.com/profile/api-tokens with 'Account -> Access: Apps and Policies -> Edit'."
+    $envFile = Join-Path $PSScriptRoot '..\.env'
+    if (Test-Path $envFile) {
+        $line = Select-String -Path $envFile -Pattern '^CF_API_TOKEN=' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($line) { $Token = ($line.Line -replace '^CF_API_TOKEN=', '').Trim() }
+    }
+}
+
+if (-not $Token) {
+    throw "No API token. Set `$env:CF_API_TOKEN, pass -Token, or add CF_API_TOKEN=... to .env. Create one at https://dash.cloudflare.com/profile/api-tokens with 'Account -> Access: Apps and Policies -> Edit'."
 }
 
 # Hard-coded account: Kitisathreat@gmail.com's Account (only account on the user).

@@ -1,0 +1,393 @@
+{
+  "schema_version": 1,
+  "description": "Published / paper-reported capability scores for the models we deploy as tiers, used as a 'literature' comparison column in the bench dashboard. Sources are model cards on HuggingFace, original technical reports, and the Open LLM Leaderboard. Values are best-effort and may be updated as new evals appear; gaps are filled with reasoned estimates marked '(est)'. Pass-rate scale is 0-100. Updated 2026-05-06 with verified model-card numbers for Granite-4.0-H-Tiny, Qwen3.5-9B, Qwen3.6-35B-A3B, Qwen3-Coder-30B-A3B, Qwen3-Next-80B-A3B-Thinking, gpt-oss-120b, Qwen3.5-397B-A17B.",
+  "tiers": {
+    "swarm": {
+      "model": "ibm-granite/granite-4.0-h-tiny",
+      "model_label": "Granite-4.0 H-Tiny (7B / 1B-active)",
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.0-h-tiny",
+        "https://www.ibm.com/new/announcements/ibm-granite-4-0-hyper-efficient-high-performance-hybrid-models",
+        "IBM Granite-4.0 technical brief"
+      ],
+      "metrics": {
+        "knowledge": {
+          "value": 67.43,
+          "dataset": "MMLU"
+        },
+        "knowledge_specialized": {
+          "value": 43.48,
+          "dataset": "MMLU-Pro"
+        },
+        "math": {
+          "value": 81.35,
+          "dataset": "GSM8K"
+        },
+        "math_competition": {
+          "value": 30.0,
+          "dataset": "MATH-500 (est, not in card)"
+        },
+        "math_hard": {
+          "value": 12.0,
+          "dataset": "MATH-Hard L5 (est, not in card)"
+        },
+        "reasoning": {
+          "value": 4.0,
+          "dataset": "AIME 2024 (est, not in card)"
+        },
+        "coding": {
+          "value": 81.0,
+          "dataset": "HumanEval"
+        },
+        "coding_basic": {
+          "value": 73.0,
+          "dataset": "MBPP"
+        },
+        "intent": {
+          "value": 86.94,
+          "dataset": "IFEval (Strict)"
+        },
+        "clarity": {
+          "value": null,
+          "dataset": "no public Arena/MT-Bench score"
+        },
+        "long_context": {
+          "value": null,
+          "dataset": "no published RULER score in model card"
+        }
+      }
+    },
+    "fast": {
+      "model": "Qwen/Qwen3.5-9B-Instruct",
+      "model_label": "Qwen3.5 9B Instruct",
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-9B",
+        "https://qwen.ai/blog?id=qwen3.5",
+        "Qwen3.5 technical report (2026)"
+      ],
+      "metrics": {
+        "knowledge": {
+          "value": 76.0,
+          "dataset": "MMLU (est from MMLU-Redux 91.1)"
+        },
+        "knowledge_specialized": {
+          "value": 82.5,
+          "dataset": "MMLU-Pro"
+        },
+        "math": {
+          "value": 92.5,
+          "dataset": "GSM8K (est, not in card)"
+        },
+        "math_competition": {
+          "value": 80.0,
+          "dataset": "MATH-500 (est from HMMT Feb25 83.2)"
+        },
+        "math_hard": {
+          "value": 60.0,
+          "dataset": "MATH-Hard L5 (est)"
+        },
+        "reasoning": {
+          "value": 70.0,
+          "dataset": "AIME 2024 (est from HMMT 83.2; saturated tier)"
+        },
+        "coding": {
+          "value": 88.0,
+          "dataset": "HumanEval (est, not in card)"
+        },
+        "coding_basic": {
+          "value": 80.0,
+          "dataset": "MBPP (est)"
+        },
+        "intent": {
+          "value": 91.5,
+          "dataset": "IFEval"
+        },
+        "clarity": {
+          "value": null,
+          "dataset": "no public Arena/MT-Bench score"
+        },
+        "long_context": {
+          "value": 55.2,
+          "dataset": "LongBench v2 (proxy for RULER)"
+        }
+      }
+    },
+    "versatile": {
+      "model": "Qwen/Qwen3.6-35B-A3B",
+      "model_label": "Qwen3.6 35B-A3B (MoE, 3B active)",
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+        "https://benchlm.ai/models/qwen3-6-35b-a3b",
+        "Qwen3.6 technical report (2026)"
+      ],
+      "metrics": {
+        "knowledge": {
+          "value": 79.0,
+          "dataset": "MMLU (est from MMLU-Redux 93.3)"
+        },
+        "knowledge_specialized": {
+          "value": 85.2,
+          "dataset": "MMLU-Pro"
+        },
+        "math": {
+          "value": 95.0,
+          "dataset": "GSM8K (est, saturated)"
+        },
+        "math_competition": {
+          "value": 88.0,
+          "dataset": "MATH-500 (est from AIME26 92.7)"
+        },
+        "math_hard": {
+          "value": 75.0,
+          "dataset": "MATH-Hard L5 (est)"
+        },
+        "reasoning": {
+          "value": 80.0,
+          "dataset": "AIME 2024 (est from AIME26 92.7)"
+        },
+        "coding": {
+          "value": 90.0,
+          "dataset": "HumanEval (est from LiveCodeBench v6 80.4)"
+        },
+        "coding_basic": {
+          "value": 85.0,
+          "dataset": "MBPP (est)"
+        },
+        "intent": {
+          "value": 86.0,
+          "dataset": "IFEval (est, not in card)"
+        },
+        "clarity": {
+          "value": null,
+          "dataset": "no public Arena/MT-Bench score"
+        },
+        "long_context": {
+          "value": null,
+          "dataset": "no published RULER score in model card"
+        }
+      }
+    },
+    "coding": {
+      "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "model_label": "Qwen3-Coder 30B-A3B (MoE, 3B active, code-specialised)",
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "Qwen3-Coder blog (qwenlm.github.io/blog/qwen3-coder)",
+        "Qwen3-Coder SWE-bench discussion"
+      ],
+      "metrics": {
+        "knowledge": {
+          "value": 76.0,
+          "dataset": "MMLU (est from MMLU-Redux 89.3 sibling)"
+        },
+        "knowledge_specialized": {
+          "value": 78.4,
+          "dataset": "MMLU-Pro (sibling Qwen3-30B-A3B-Instruct-2507)"
+        },
+        "math": {
+          "value": 92.0,
+          "dataset": "GSM8K (est)"
+        },
+        "math_competition": {
+          "value": 78.0,
+          "dataset": "MATH-500 (est from AIME25 85.0)"
+        },
+        "math_hard": {
+          "value": 60.0,
+          "dataset": "MATH-Hard L5 (est)"
+        },
+        "reasoning": {
+          "value": 80.4,
+          "dataset": "AIME 2024 (Qwen3-30B-A3B family)"
+        },
+        "coding": {
+          "value": 92.7,
+          "dataset": "HumanEval (est, code-tier)"
+        },
+        "coding_basic": {
+          "value": 86.5,
+          "dataset": "MBPP (est)"
+        },
+        "intent": {
+          "value": 84.7,
+          "dataset": "IFEval (sibling 2507)"
+        },
+        "clarity": {
+          "value": null,
+          "dataset": "no public Arena/MT-Bench score"
+        },
+        "long_context": {
+          "value": 72.8,
+          "dataset": "RULER avg 1M (sibling 2507)"
+        }
+      }
+    },
+    "highest_quality": {
+      "model": "Qwen/Qwen3-Next-80B-A3B-Thinking",
+      "model_label": "Qwen3-Next 80B-A3B Thinking (MoE, 3B active)",
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Thinking",
+        "Qwen3-Next technical report (2025)"
+      ],
+      "metrics": {
+        "knowledge": {
+          "value": 80.0,
+          "dataset": "MMLU (est from MMLU-Redux 92.5)"
+        },
+        "knowledge_specialized": {
+          "value": 82.7,
+          "dataset": "MMLU-Pro"
+        },
+        "math": {
+          "value": 95.0,
+          "dataset": "GSM8K (est, saturated)"
+        },
+        "math_competition": {
+          "value": 90.0,
+          "dataset": "MATH-500 (est from AIME25 87.8)"
+        },
+        "math_hard": {
+          "value": 78.0,
+          "dataset": "MATH-Hard L5 (est)"
+        },
+        "reasoning": {
+          "value": 87.8,
+          "dataset": "AIME 2025 (proxy for AIME 2024)"
+        },
+        "coding": {
+          "value": 87.0,
+          "dataset": "HumanEval (est from LiveCodeBench v6 68.7)"
+        },
+        "coding_basic": {
+          "value": 81.0,
+          "dataset": "MBPP (est)"
+        },
+        "intent": {
+          "value": 88.9,
+          "dataset": "IFEval"
+        },
+        "clarity": {
+          "value": 62.3,
+          "dataset": "Arena-Hard v2"
+        },
+        "long_context": {
+          "value": null,
+          "dataset": "no published RULER score in card"
+        }
+      }
+    },
+    "reasoning_max": {
+      "model": "openai/gpt-oss-120b",
+      "model_label": "GPT-OSS 120B (MoE, 5.1B active)",
+      "sources": [
+        "https://cdn.openai.com/pdf/419b6906-9da6-406c-a19d-1bb078ac7637/oai_gpt-oss_model_card.pdf",
+        "https://arxiv.org/html/2508.10925v1",
+        "https://huggingface.co/openai/gpt-oss-120b",
+        "https://artificialanalysis.ai/models/gpt-oss-120b"
+      ],
+      "metrics": {
+        "knowledge": {
+          "value": 90.0,
+          "dataset": "MMLU"
+        },
+        "knowledge_specialized": {
+          "value": 80.0,
+          "dataset": "MMLU-Pro (est, not in OpenAI card; commonly cited 90 includes tools)"
+        },
+        "math": {
+          "value": 96.0,
+          "dataset": "GSM8K (est, saturated)"
+        },
+        "math_competition": {
+          "value": 92.0,
+          "dataset": "MATH-500 (est from AIME24 95.8)"
+        },
+        "math_hard": {
+          "value": 85.0,
+          "dataset": "MATH-Hard L5 (est)"
+        },
+        "reasoning": {
+          "value": 95.8,
+          "dataset": "AIME 2024 (no tools)"
+        },
+        "coding": {
+          "value": 88.3,
+          "dataset": "HumanEval"
+        },
+        "coding_basic": {
+          "value": 80.0,
+          "dataset": "MBPP (est, not in card)"
+        },
+        "intent": {
+          "value": 84.0,
+          "dataset": "IFEval (est, not in card)"
+        },
+        "clarity": {
+          "value": null,
+          "dataset": "no public Arena/MT-Bench score"
+        },
+        "long_context": {
+          "value": null,
+          "dataset": "no published RULER score in card"
+        }
+      }
+    },
+    "reasoning_xl": {
+      "model": "Qwen/Qwen3.5-397B-A17B (IQ2_M)",
+      "model_label": "Qwen3.5-397B-A17B Reasoning (IQ2_M quant)",
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-397B-A17B",
+        "https://automatio.ai/models/qwen3-5-397b-a17b",
+        "https://benchlm.ai/blog/posts/best-open-source-llm",
+        "Estimates derived from full-precision Qwen3.5-397B-A17B; IQ2_M quant typically loses 2-4pp"
+      ],
+      "metrics": {
+        "knowledge": {
+          "value": 86.0,
+          "dataset": "MMLU (full-precision 88.6, -2.6pp IQ2_M)"
+        },
+        "knowledge_specialized": {
+          "value": 85.0,
+          "dataset": "MMLU-Pro (full 87.8, -2.8pp IQ2_M)"
+        },
+        "math": {
+          "value": 90.0,
+          "dataset": "GSM8K (est from MGSM 92.1, -2pp)"
+        },
+        "math_competition": {
+          "value": 88.0,
+          "dataset": "MATH-500 (est, IQ2_M)"
+        },
+        "math_hard": {
+          "value": 78.0,
+          "dataset": "MATH-Hard L5 (est)"
+        },
+        "reasoning": {
+          "value": 89.0,
+          "dataset": "AIME 2024 (full 91.3 AIME26, -2pp IQ2_M)"
+        },
+        "coding": {
+          "value": 84.0,
+          "dataset": "HumanEval (full 86.7, -2.7pp IQ2_M)"
+        },
+        "coding_basic": {
+          "value": 82.0,
+          "dataset": "MBPP (est)"
+        },
+        "intent": {
+          "value": 85.0,
+          "dataset": "IFEval (est)"
+        },
+        "clarity": {
+          "value": null,
+          "dataset": "no public Arena/MT-Bench score"
+        },
+        "long_context": {
+          "value": null,
+          "dataset": "no published RULER score for IQ2_M quant"
+        }
+      }
+    }
+  }
+}
