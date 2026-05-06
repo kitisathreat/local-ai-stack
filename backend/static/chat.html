@@ -4751,34 +4751,56 @@
       const sys2 = Object.assign({}, sys || {});
       try {
         const samples = (_sysTsCache && _sysTsCache.samples) || [];
-        // Only override token fields when the ring buffer actually
-        // carries session_tokens_* data. Older backend builds don't
-        // emit these fields — in that case leave whatever the cards
-        // renderer would do (which yields "—" via fmtInt(undefined)).
         const hasTokenFields = samples.some(s =>
           s.session_tokens_in != null || s.session_tokens_out != null);
         if (samples.length >= 2 && hasTokenFields) {
           const now = (_sysTsCache && _sysTsCache.now_ts) || (Date.now() / 1000);
           const cutoff = now - winSec;
-          let first = null;
+          // Collect samples in the window with token data
+          const winSamples = [];
           for (const s of samples) {
             if (s.session_tokens_in == null && s.session_tokens_out == null) continue;
-            if (s.ts >= cutoff) { first = s; break; }
+            if (s.ts >= cutoff) winSamples.push(s);
           }
-          if (!first) {
-            for (const s of samples) {
+          if (winSamples.length === 0) {
+            // Window had no active samples — pull the most recent
+            // available so cur/sess totals still update.
+            for (let i = samples.length - 1; i >= 0; i--) {
+              const s = samples[i];
               if (s.session_tokens_in != null || s.session_tokens_out != null) {
-                first = s; break;
+                winSamples.push(s); break;
               }
             }
           }
-          const last = samples[samples.length - 1];
-          if (first && last) {
-            const dt = Math.max(0.001, last.ts - first.ts);
-            const inDelta  = (last.session_tokens_in  || 0) - (first.session_tokens_in  || 0);
-            const outDelta = (last.session_tokens_out || 0) - (first.session_tokens_out || 0);
-            sys2.tokens_in_per_s  = Math.max(0, inDelta  / dt);
-            sys2.tokens_out_per_s = Math.max(0, outDelta / dt);
+          // Active-time-only rate: walk consecutive sample pairs and
+          // count (dt, dTokens) ONLY for intervals where tokens grew.
+          // Idle gaps between problems (counter flat for 30+ s) get
+          // excluded from the denominator, so the rate reflects true
+          // generation throughput, not 24/7 average. This matches what
+          // operators expect from a "tok/s" reading on a benchmark
+          // that pulses tokens once per problem.
+          let activeIn = 0, activeOut = 0, activeDt = 0;
+          for (let i = 1; i < winSamples.length; i++) {
+            const a = winSamples[i - 1], b = winSamples[i];
+            const dIn  = (b.session_tokens_in  || 0) - (a.session_tokens_in  || 0);
+            const dOut = (b.session_tokens_out || 0) - (a.session_tokens_out || 0);
+            if (dIn > 0 || dOut > 0) {
+              activeIn  += Math.max(0, dIn);
+              activeOut += Math.max(0, dOut);
+              activeDt  += Math.max(0.001, b.ts - a.ts);
+            }
+          }
+          if (activeDt > 0) {
+            sys2.tokens_in_per_s  = activeIn  / activeDt;
+            sys2.tokens_out_per_s = activeOut / activeDt;
+          } else {
+            sys2.tokens_in_per_s  = 0;
+            sys2.tokens_out_per_s = 0;
+          }
+          // Use the latest in-window sample (or fallback) for the
+          // running session totals.
+          const last = winSamples[winSamples.length - 1] || samples[samples.length - 1];
+          if (last) {
             if (last.session_tokens_in  != null) sys2.session_tokens_in  = last.session_tokens_in;
             if (last.session_tokens_out != null) sys2.session_tokens_out = last.session_tokens_out;
             if (last.session_tokens_in != null && last.session_tokens_out != null) {
@@ -5288,7 +5310,11 @@
 
     function _sysGraphControls(tab) {
       const st = _sysGraphState[tab];
-      const opts = (tab === 'bench')
+      // Performance tab mirrors the admin Bench tab's dropdown set so
+      // the operator can use the same time scales in either view —
+      // bench-relative scales no-op when no bench is in flight.
+      const wantsBenchOpts = (tab === 'bench' || tab === 'performance');
+      const opts = wantsBenchOpts
         ? [
             { value: 'run',       label: 'Since test run started' },
             { value: 'tier',      label: 'Since tier started' },
@@ -6952,13 +6978,25 @@
             if (ctrlRoot) ctrlRoot.innerHTML = _sysGraphControls('performance');
             const cardsCtrlRoot = document.getElementById('perfCardsControlsHost');
             if (cardsCtrlRoot) cardsCtrlRoot.innerHTML = _sysCardsControls('performance');
+            const refreshPerf = async () => {
+              // Performance tab needs bench results too so its bench-
+              // relative scale options (since cell/problem/etc) can
+              // resolve cutoffs. Fire both fetches in parallel; the
+              // bench fetch is the cheap parse_log path so this is
+              // negligible overhead.
+              try {
+                const r = await api('/admin/bench/results');
+                if (r.ok) _benchLastData = await r.json();
+              } catch (_) {}
+              _refreshSysTab('performance', _benchLastData);
+            };
             const restart = () => {
               if (window._perfSysPoll) clearInterval(window._perfSysPoll);
-              _refreshSysTab('performance', null);
+              refreshPerf();
               window._perfSysPoll = setInterval(() => {
                 if (!modal.classList.contains('hidden')
                     && body.getAttribute('data-active-tab') === 'performance') {
-                  _refreshSysTab('performance', null);
+                  refreshPerf();
                 }
               }, _sysGraphState.performance.pollMs);
             };
