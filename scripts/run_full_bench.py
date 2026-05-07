@@ -200,6 +200,38 @@ def _timeout_for(cap: str, override: int | None) -> int:
         return override
     return CAP_TIMEOUT_S.get(cap, 300)
 
+
+# Per-cap sampling overlay for lit-format matching. Published baselines
+# for MCQ benchmarks (MMLU, MMLU-Pro) and chain-of-thought arithmetic
+# (GSM8K) use greedy decoding (T=0). For reasoning/long-context caps we
+# leave the tier YAML defaults — those benchmarks (AIME / MATH / coding
+# pass@k) typically use sampled cons@k in the lit, and forcing T=0 on a
+# `<think>` model collapses the reasoning trace.
+_LIT_SAMPLING_FOR_CAP = {
+    "knowledge":             {"temperature": 0.0, "top_p": 1.0},  # MMLU
+    "knowledge_specialized": {"temperature": 0.0, "top_p": 1.0},  # MMLU-Pro
+    "math":                  {"temperature": 0.0, "top_p": 1.0},  # GSM8K
+    "intent":                {"temperature": 0.0, "top_p": 1.0},  # IFEval
+    # Coding (HumanEval/MBPP) lit pass@1 is greedy; pass@10 is sampled.
+    # We report pass@1, so greedy.
+    "coding":       {"temperature": 0.0, "top_p": 1.0},
+    "coding_basic": {"temperature": 0.0, "top_p": 1.0},
+    # math_competition / math_hard / reasoning: lit uses sampled cons@k for
+    # reasoning models — leave YAML defaults so think-mode reasoning works.
+}
+
+
+def _sampling_for_cap(cap: str, think: bool) -> dict | None:
+    """Return the lit-matching sampling overlay for a (cap, think) cell.
+
+    For think=on cells we leave reasoning-cap defaults alone — forcing T=0
+    on a `<think>` model truncates the reasoning trace. For think=off
+    cells, MCQ caps get greedy decoding to match published evals.
+    """
+    if think:
+        return None
+    return _LIT_SAMPLING_FOR_CAP.get(cap)
+
 # Mirror of `context_window` per tier in config/models.yaml. Used by
 # run_cell to skip needle problems whose ctx_target exceeds the tier's
 # capacity (otherwise llama-server returns empty content for over-budget
@@ -238,18 +270,60 @@ DEFAULT_CAPABILITIES = [
 ]
 
 
+# ── Named bench regimes ──────────────────────────────────────────────────────
+# A "regime" is a preset bundle of tiers + capabilities + multi-agent
+# settings. Operators pass `--regime <name>` instead of remembering the
+# right combination of flags. The values below are spread back into the
+# usual --tiers / --capabilities / --multi-agent-* flags during argparse,
+# and any explicit flag override on the command line wins.
+#
+#   quality_comprehensive — full-quality sweep across every single-model
+#     tier in descending quality order plus the two multi-agent worker
+#     tiers. Skips both coding-axis caps to keep wall time bounded; the
+#     reasoning + math axes are the ones we care about for lit comparison.
+BENCH_REGIMES: dict[str, dict] = {
+    "quality_comprehensive": {
+        "tiers": "versatile,highest_quality,reasoning_max,reasoning_xl,fast,coding,swarm",
+        "capabilities": ",".join([
+            "knowledge",
+            "knowledge_specialized",
+            "math",
+            "math_competition",
+            "math_hard",
+            "reasoning",
+            "intent",
+            "clarity",
+            "long_context",
+        ]),
+        "multi_agent_orchestrator": "versatile",
+        "multi_agent_tiers": "swarm,fast",
+        "think": "off,on",
+        "tools": "off,auto",
+    },
+}
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--api", default="http://127.0.0.1:18000")
-    p.add_argument("--tiers", default="swarm,fast,versatile,coding,highest_quality,reasoning_max",
-                   help="Comma-separated tier list. Excludes thinking-default-empty tiers by default.")
-    p.add_argument("--capabilities", default=",".join(DEFAULT_CAPABILITIES))
-    p.add_argument("--think", default="off,on",
-                   help="Comma-separated: 'off' / 'on' / 'off,on' for both.")
-    p.add_argument("--tools", default="off,auto",
+    p.add_argument("--regime", default=None, choices=tuple(BENCH_REGIMES.keys()),
+                   help="Named bench preset. Sets --tiers / --capabilities / "
+                        "--think / --tools / --multi-agent-* in one go. "
+                        "Explicit flags after --regime override the preset.")
+    p.add_argument("--tiers", default=None,
+                   help="Comma-separated tier list. Default depends on --regime "
+                        "(or 'swarm,fast,versatile,coding,highest_quality,reasoning_max' "
+                        "if no regime).")
+    p.add_argument("--capabilities", default=None,
+                   help="Comma-separated capability list. Default is all 11 caps "
+                        "or the regime's preset.")
+    p.add_argument("--think", default=None,
+                   help="Comma-separated: 'off' / 'on' / 'off,on' for both. "
+                        "Default 'off,on'.")
+    p.add_argument("--tools", default=None,
                    help="Comma-separated: 'off' / 'auto' / 'force'. 'auto' = "
                         "two-pass: try without tools, retry with tools when "
-                        "the model's first response looks inadequate.")
+                        "the model's first response looks inadequate. Default 'off,auto'.")
     p.add_argument("--judge-tier", default="highest_quality",
                    help="Tier used as LLM judge for clarity scoring.")
     p.add_argument("--max-tokens", type=int, default=0,
@@ -266,13 +340,15 @@ def main() -> int:
                         "complete (full N, no abort_reason) are skipped. "
                         "Aborted or missing cells are re-run. Useful when a "
                         "tier crashes mid-suite.")
-    p.add_argument("--multi-agent-tiers", default="swarm,fast",
+    p.add_argument("--multi-agent-tiers", default=None,
                    help="Comma-separated worker tiers to bench in multi-agent "
                         "mode after the single-agent suite finishes. Each tier "
                         "becomes a virtual cell with multi_agent=true and the "
-                        "default orchestrator (versatile). Empty string disables.")
-    p.add_argument("--multi-agent-orchestrator", default="versatile",
-                   help="Orchestrator tier for the multi-agent post-suite.")
+                        "default orchestrator (versatile). Empty string disables. "
+                        "Default 'swarm,fast' or regime preset.")
+    p.add_argument("--multi-agent-orchestrator", default=None,
+                   help="Orchestrator tier for the multi-agent post-suite. "
+                        "Default 'versatile' or regime preset.")
     p.add_argument("--target", default="count",
                    choices=("count", "time", "significance", "significance_strict"),
                    help="Bench length target. 'count' uses TIER_DEPTH (small=fast, "
@@ -288,6 +364,44 @@ def main() -> int:
     p.add_argument("--confidence", type=float, default=0.95,
                    help="CI confidence level (0.90/0.95/0.99 supported, default 0.95).")
     args = p.parse_args()
+
+    # Regime preset resolution. Each None-valued arg falls back to the
+    # regime's preset, then to a hard default if no regime was selected.
+    # This lets `--regime quality_comprehensive` set 5+ flags in one go
+    # while still allowing `--regime quality_comprehensive --tools off`
+    # to override just one knob.
+    _regime = BENCH_REGIMES.get(args.regime, {}) if args.regime else {}
+    _hard_defaults = {
+        "tiers": "swarm,fast,versatile,coding,highest_quality,reasoning_max",
+        "capabilities": ",".join(DEFAULT_CAPABILITIES),
+        "think": "off,on",
+        "tools": "off,auto",
+        "multi_agent_orchestrator": "versatile",
+        "multi_agent_tiers": "swarm,fast",
+    }
+    for _arg_name, _key in (
+        ("tiers", "tiers"),
+        ("capabilities", "capabilities"),
+        ("think", "think"),
+        ("tools", "tools"),
+        ("multi_agent_orchestrator", "multi_agent_orchestrator"),
+        ("multi_agent_tiers", "multi_agent_tiers"),
+    ):
+        if getattr(args, _arg_name) is None:
+            setattr(args, _arg_name, _regime.get(_key, _hard_defaults[_key]))
+    # Always emit a regime banner — even when --regime wasn't passed,
+    # bench_progress.parse_log uses this line to compute regime-aware
+    # ETAs ("remaining cells in tier", "remaining cells in run") without
+    # hardcoding tier/cap lists. The line is also printed to stdout so
+    # the operator can sanity-check the launch, but the logger write is
+    # what hits data/logs/eval-*.log (which bench_progress reads).
+    _regime_banner = (
+        f"[regime] {args.regime or 'custom'}: "
+        f"tiers={args.tiers} caps={args.capabilities} "
+        f"think={args.think} tools={args.tools} "
+        f"ma_orch={args.multi_agent_orchestrator} ma_tiers={args.multi_agent_tiers}"
+    )
+    print(_regime_banner, flush=True)
 
     # Bench-mode flag file: write our PID before anything else so the
     # backend's _is_bench_active() sees us BEFORE the first warm probe
@@ -312,6 +426,12 @@ def main() -> int:
     from backend.eval.runner import CAPABILITIES, run_cell, write_json, write_markdown
     from backend import observability as obs
     obs.install("eval")
+
+    # Re-emit the regime banner via the eval logger so bench_progress
+    # (which reads data/logs/eval-*.log, not stdout) can pick up the
+    # planned tier/cap/condition set and compute regime-aware totals.
+    import logging as _logging
+    _logging.getLogger("backend.eval").info(_regime_banner)
 
     tiers = [t.strip() for t in args.tiers.split(",") if t.strip()]
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
@@ -499,6 +619,7 @@ def main() -> int:
                         early_stop_margin=early_stop_margin,
                         early_stop_confidence=args.confidence,
                         tier_context_window=TIER_CONTEXT_WINDOW.get(tier),
+                        sampling_overlay=_sampling_for_cap(cap, think),
                     )
                     wall = time.time() - t0
                     cells_done += 1
@@ -578,6 +699,7 @@ def main() -> int:
                             early_stop_margin=early_stop_margin,
                             early_stop_confidence=args.confidence,
                             tier_context_window=TIER_CONTEXT_WINDOW.get(tier),
+                            sampling_overlay=_sampling_for_cap(cap, think),
                         )
                         wall = time.time() - t0
                         cells_done += 1
@@ -674,6 +796,7 @@ def main() -> int:
                             tier_context_window=orch_window,
                             multi_agent=True,
                             multi_agent_options=ma_options,
+                            sampling_overlay=_sampling_for_cap(cap, think),
                         )
                         # Re-tag the cell so the dashboard shows it as a
                         # distinct multi-agent tier rather than overwriting

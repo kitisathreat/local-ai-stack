@@ -562,20 +562,63 @@ function Invoke-Start {
             Write-Warn2 'cloudflared binary not found — chat hostname will be unreachable until -Setup runs.'
         } else {
             Write-Step 'Starting cloudflared tunnel'
+            # Try the registered service first; if it's missing OR fails
+            # to start (Start-Service may fail when the service is stuck
+            # in STOP_PENDING from a prior crash), we fall through to
+            # the manual `cloudflared tunnel run` spawn instead of
+            # falsely marking the tunnel started. Previously the bug
+            # was: any service-start failure printed a warning but still
+            # set $tunnelStarted=$true, leaving the chat hostname
+            # silently unreachable until someone reaped the stuck
+            # service by hand.
             $svc = Get-Service -Name 'cloudflared' -ErrorAction SilentlyContinue
-            if ($svc) {
-                if ($svc.Status -ne 'Running') {
-                    try {
-                        Start-Service -Name 'cloudflared' -ErrorAction Stop
-                        Write-Ok 'cloudflared service started'
-                    } catch {
-                        Write-Warn2 "could not start cloudflared service: $($_.Exception.Message)"
-                    }
-                } else {
-                    Write-Ok 'cloudflared service already running'
-                }
+            if ($svc -and $svc.Status -eq 'Running') {
+                Write-Ok 'cloudflared service already running'
                 $tunnelStarted = $true
-            } else {
+            } elseif ($svc) {
+                # Service registered but not running. Try to start; on
+                # failure (e.g. STOP_PENDING from a stale prior session)
+                # fall through to the manual spawn below.
+                $svcStarted = $false
+                try {
+                    Start-Service -Name 'cloudflared' -ErrorAction Stop
+                    # Confirm the SCM actually flipped state — Start-Service
+                    # returns synchronously even when the service stays
+                    # STOPPED. Wait up to 5s for Running.
+                    $svcCheck = Get-Service -Name 'cloudflared' -ErrorAction SilentlyContinue
+                    $deadline = (Get-Date).AddSeconds(5)
+                    while ($svcCheck -and $svcCheck.Status -ne 'Running' -and (Get-Date) -lt $deadline) {
+                        Start-Sleep -Milliseconds 200
+                        $svcCheck = Get-Service -Name 'cloudflared' -ErrorAction SilentlyContinue
+                    }
+                    if ($svcCheck -and $svcCheck.Status -eq 'Running') {
+                        Write-Ok 'cloudflared service started'
+                        $svcStarted = $true
+                        $tunnelStarted = $true
+                    } else {
+                        Write-Warn2 "cloudflared service did not reach Running (state=$($svcCheck.Status)) — will spawn manually"
+                    }
+                } catch {
+                    Write-Warn2 "could not start cloudflared service: $($_.Exception.Message) — will spawn manually"
+                }
+                if (-not $svcStarted) {
+                    # Reap any stale cloudflared.exe processes the dead
+                    # service may have left around. They'd grab the
+                    # tunnel ID we're about to run with and conflict.
+                    Get-Process -Name 'cloudflared' -ErrorAction SilentlyContinue |
+                        ForEach-Object {
+                            try {
+                                Stop-Process -Id $_.Id -Force -ErrorAction Stop
+                                Write-Step "  reaped stale cloudflared.exe pid=$($_.Id)"
+                            } catch { }
+                        }
+                }
+            }
+            # Manual-spawn fallback. Reached when:
+            #   - no service is registered, OR
+            #   - the service exists but couldn't start (stuck STOP_PENDING,
+            #     missing dependencies, permission denied, etc.)
+            if (-not $tunnelStarted) {
                 $cfgPath = Join-Path $env:USERPROFILE '.cloudflared\config.yml'
                 if (Test-Path $cfgPath) {
                     $tunnelId = $null
@@ -588,7 +631,7 @@ function Invoke-Start {
                         $pids_cf = Start-TrackedProcess -Name 'cloudflared' -FilePath $cfBin `
                             -Args @('tunnel','--config',$cfgPath,'run',$tunnelId) -LogDir $LogsDir
                         $Script:_PendingTunnelPid = Record-PidEntry $pids_cf
-                        Write-Ok "cloudflared tunnel run $tunnelId"
+                        Write-Ok "cloudflared tunnel run $tunnelId (manual spawn)"
                         $tunnelStarted = $true
                     } else {
                         Write-Warn2 "cloudflared config.yml has no tunnel id at $cfgPath — re-run setup wizard."

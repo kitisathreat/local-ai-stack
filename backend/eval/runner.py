@@ -363,7 +363,39 @@ def run_cell(
     consecutive_zero_tok = 0
     ZERO_TOK_ABORT_THRESHOLD = 5
     _ABORTED_FLAG: str | None = None
+    # Pause flag: when present, block at the next problem boundary. The
+    # operator's pause/resume from the dashboard writes/removes this
+    # flag — by living on disk it survives backend restarts AND
+    # bench-process restarts, so a paused bench stays paused until the
+    # operator explicitly resumes (matches the persistent-pause
+    # contract). Granularity is per-PROBLEM (we only check between
+    # problems), so an in-flight chat completion finishes before the
+    # bench actually stops issuing new requests.
+    import os as _os_loc
+    _pause_flag_path = Path(
+        _os_loc.environ.get("LAI_DATA_DIR", "data")) / "bench" / "pause.flag"
+    def _wait_if_paused(prob_idx: int) -> None:
+        if not _pause_flag_path.exists():
+            return
+        logger.warning(
+            "eval-cell tier=%s capability=%s PAUSED at problem %d/%d "
+            "(remove %s to resume)",
+            tier, capability, prob_idx, len(problems), _pause_flag_path,
+        )
+        # Poll the flag with a short interval — quick to resume but
+        # cheap when paused indefinitely. No log spam in the loop.
+        while _pause_flag_path.exists():
+            time.sleep(0.5)
+        logger.warning(
+            "eval-cell tier=%s capability=%s RESUMED at problem %d/%d",
+            tier, capability, prob_idx, len(problems),
+        )
+
     for i, problem in enumerate(problems):
+        # Problem-boundary pause check. Sits BEFORE the deadline check
+        # so a paused bench doesn't time out from sitting at the
+        # boundary; resume re-enters the loop fresh.
+        _wait_if_paused(i)
         if deadline is not None and time.time() > deadline:
             logger.warning(
                 "eval-cell tier=%s capability=%s deadline hit at problem %d/%d",

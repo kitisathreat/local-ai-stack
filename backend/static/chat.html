@@ -919,7 +919,30 @@
       height: 100%;
       min-height: 0;
       max-height: 100vh; max-height: 100dvh;
+      transition: width 0.18s ease;
     }
+    /* Collapsed sidebar — narrow rail with only the toggle visible.
+       Conv list, button labels, and footer rows are hidden via the
+       descendant rules below; the toggle button itself stays clickable
+       so the user can re-expand. The rail stays the same width as the
+       toggle button so it doesn't reflow when toggling. */
+    #sidebar.collapsed { width: 44px; }
+    #sidebar.collapsed > #new-conv-btn,
+    #sidebar.collapsed > #conv-list,
+    #sidebar.collapsed > #archived-toggle,
+    #sidebar.collapsed > #settings-btn { display: none; }
+    /* Collapse toggle pinned at the top edge. When expanded it sits
+       flush right (chevron points left = "collapse"); when collapsed
+       it centers (chevron points right = "expand"). */
+    #sidebar-collapse {
+      flex-shrink: 0; align-self: flex-end;
+      width: 28px; height: 28px; margin: 6px;
+      background: transparent; color: var(--muted); border: none;
+      cursor: pointer; font-size: 16px; line-height: 1;
+      border-radius: 4px;
+    }
+    #sidebar-collapse:hover { color: var(--fg); background: var(--panel-2); }
+    #sidebar.collapsed #sidebar-collapse { align-self: center; }
     #sidebar header {
       border-right: 0; border-bottom: 1px solid var(--border);
       justify-content: space-between;
@@ -1335,6 +1358,8 @@
   <div id="chatapp" class="hidden" style="display:flex; flex-direction:row; flex:1; width:100%;">
     <div id="drawer-backdrop"></div>
     <aside id="sidebar">
+      <button id="sidebar-collapse" type="button" aria-label="Collapse sidebar"
+              title="Collapse sidebar (also: Ctrl+B)">‹</button>
       <button id="new-conv-btn">+ New chat</button>
       <div id="conv-list"></div>
       <button id="archived-toggle" type="button" title="Show archived chats">Show archived</button>
@@ -2094,6 +2119,44 @@
 
     $('new-conv-btn').addEventListener('click', newConversation);
 
+    // Sidebar collapse — narrow rail with only the toggle visible.
+    // State persists per-user in localStorage so the choice survives
+    // reloads. Ctrl+B toggles too (matches the same shortcut in most
+    // editors / chat apps). The chevron flips direction on each
+    // toggle so the affordance reads correctly in both states.
+    (function () {
+      const KEY = 'ui.sidebarCollapsed';
+      const sidebar = document.getElementById('sidebar');
+      const btn = document.getElementById('sidebar-collapse');
+      if (!sidebar || !btn) return;
+      const apply = (collapsed) => {
+        sidebar.classList.toggle('collapsed', collapsed);
+        btn.textContent = collapsed ? '›' : '‹';
+        btn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+        btn.title = collapsed ? 'Expand sidebar (also: Ctrl+B)' : 'Collapse sidebar (also: Ctrl+B)';
+      };
+      const initial = (() => {
+        try { return localStorage.getItem(KEY) === '1'; } catch (_) { return false; }
+      })();
+      apply(initial);
+      btn.addEventListener('click', () => {
+        const next = !sidebar.classList.contains('collapsed');
+        apply(next);
+        try { localStorage.setItem(KEY, next ? '1' : '0'); } catch (_) {}
+      });
+      window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey
+            && e.key && e.key.toLowerCase() === 'b'
+            // Don't intercept while the user is typing in a text field —
+            // Ctrl+B is also "bold" in contenteditable composers.
+            && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)
+            && !document.activeElement?.isContentEditable) {
+          e.preventDefault();
+          btn.click();
+        }
+      });
+    })();
+
     // Pretty-name a tier id: "highest_quality" → "Highest quality"
     function tierLabel(id) {
       const stripped = id.replace(/^tier[._-]/i, '');
@@ -2187,39 +2250,36 @@
 
     // Per-tier variant info from /v1/models, keyed by tier_id like "tier.coding".
     // Each value: {variants: [{id, name, available, vram_estimate_gb}], default: "30b"}.
-    // Used by the variant selector beside the model dropdown.
+    // Variants used to be a separate sub-selector beside the model
+    // dropdown. They're now first-class options in the main dropdown
+    // (see buildOptions above) — each variant gets its own <option>
+    // with composite value "tier.X|VID". The legacy `<select id=
+    // "model-variant">` is kept hidden in the DOM for layout-stability
+    // but never populated.
     const tierVariants = new Map();
     const variantEl = $('model-variant');
-    // User's chosen variant per tier (sticky across tier switches).
-    // tier_id → variant_id. Undefined means "use the tier's default".
-    const variantPick = new Map();
-
-    function applyVariantSelector(tierId) {
-      const meta = tierVariants.get(tierId);
-      if (!meta || !meta.variants || meta.variants.length === 0) {
-        variantEl.style.display = 'none';
-        variantEl.innerHTML = '';
-        return;
-      }
-      const previous = variantPick.get(tierId) || meta.default || meta.variants[0].id;
+    if (variantEl) {
+      variantEl.style.display = 'none';
       variantEl.innerHTML = '';
-      meta.variants.forEach(v => {
-        const o = document.createElement('option');
-        o.value = v.id;
-        const label = v.name || v.id;
-        if (v.available === false) {
-          o.textContent = `${label} (downloading…)`;
-          o.disabled = true;
-        } else {
-          o.textContent = label;
-        }
-        if (v.id === previous && !o.disabled) {
-          o.selected = true;
-        }
-        variantEl.appendChild(o);
-      });
-      variantEl.style.display = '';
-      variantPick.set(tierId, variantEl.value);
+    }
+    // Helpers to split the dropdown's composite value back into its
+    // tier id + optional variant id. For tiers without variants, the
+    // value is just "tier.X" and the variant helper returns null.
+    const _selectedTier = (val) => {
+      const v = (val == null) ? (modelEl.value || '') : val;
+      const i = v.indexOf('|');
+      return i < 0 ? v : v.substring(0, i);
+    };
+    const _selectedVariant = (val) => {
+      const v = (val == null) ? (modelEl.value || '') : val;
+      const i = v.indexOf('|');
+      return i < 0 ? null : v.substring(i + 1);
+    };
+
+    function applyVariantSelector() {
+      // No-op — variants are now rendered inline in the main dropdown.
+      // Kept as a function so existing call sites don't have to be
+      // hunted down; can be removed in a later cleanup pass.
     }
 
     variantEl.addEventListener('change', () => {
@@ -2294,7 +2354,7 @@
     }
 
     function applyTeamPanelVisibility() {
-      const isTeamTier = (modelEl.value === 'tier.multi_agent');
+      const isTeamTier = (_selectedTier() === 'tier.multi_agent');
       teamConfigEl.style.display = isTeamTier ? 'inline-flex' : 'none';
     }
 
@@ -2402,10 +2462,18 @@
           }
         });
 
-        const buildOption = (m) => {
-          const o = document.createElement('option');
-          o.value = m.id;
+        // Build dropdown option(s) for one tier. Tiers with variants
+        // (currently only `coding`: 30B + 80B) used to show as ONE
+        // option with a separate sub-selector — confusing and easy to
+        // miss. Now each variant is rendered as its own first-class
+        // option in the parent's category. The selected option's
+        // dataset.variant is later read by the chat-send code to
+        // forward `model_variant` to the backend.
+        const buildOptions = (m) => {
           if (m.context_window) tierContext.set(m.id, m.context_window);
+          // Track variants for backwards compat (anything checking
+          // tierVariants will still find them) but the UI no longer
+          // renders the sub-selector — see applyVariantSelector below.
           if (Array.isArray(m.variants) && m.variants.length > 0) {
             tierVariants.set(m.id, {
               variants: m.variants,
@@ -2417,22 +2485,51 @@
           const cat = tierLabel(key);
           const model = specificModel(info);
           const base = model ? `${cat}: ${model}` : cat;
-          if (info.available === false) {
-            o.textContent = `${base}  (downloading…)`;
-            o.disabled = true;
+          const opts = [];
+          if (Array.isArray(m.variants) && m.variants.length > 0) {
+            // One <option> per variant. Composite value
+            // "tier.coding|30b" lets the change handler split the
+            // selected tier id from the variant id; the legacy code
+            // path that selects on m.id alone keeps working since the
+            // first variant's option also stores tier.id on dataset.
+            for (const v of m.variants) {
+              const o = document.createElement('option');
+              o.value = `${m.id}|${v.id}`;
+              o.dataset.tier = m.id;
+              o.dataset.variant = v.id;
+              const label = v.name || v.id;
+              if (v.available === false || info.available === false) {
+                o.textContent = `${base} · ${label}  (downloading…)`;
+                o.disabled = true;
+              } else {
+                o.textContent = `${base} · ${label}`;
+                if (firstAvailableValue === null) firstAvailableValue = o.value;
+                if (o.value === previousValue) previousIsAvailable = true;
+              }
+              opts.push(o);
+            }
           } else {
-            o.textContent = base;
-            if (firstAvailableValue === null) firstAvailableValue = m.id;
-            if (m.id === previousValue) previousIsAvailable = true;
+            const o = document.createElement('option');
+            o.value = m.id;
+            o.dataset.tier = m.id;
+            if (info.available === false) {
+              o.textContent = `${base}  (downloading…)`;
+              o.disabled = true;
+            } else {
+              o.textContent = base;
+              if (firstAvailableValue === null) firstAvailableValue = m.id;
+              if (m.id === previousValue) previousIsAvailable = true;
+            }
+            opts.push(o);
           }
-          return o;
+          return opts;
         };
 
-        topLevel.forEach(m => modelEl.appendChild(buildOption(m)));
+        topLevel.forEach(m => buildOptions(m).forEach(o => modelEl.appendChild(o)));
         for (const [catName, tiers] of grouped.entries()) {
           const og = document.createElement('optgroup');
           og.label = catName;
-          tiers.forEach(m => og.appendChild(buildOption(m)));
+          tiers.forEach(m => buildOptions(m).forEach(o => og.appendChild(o)));
           modelEl.appendChild(og);
         }
         if (previousValue && previousIsAvailable) {
@@ -3239,7 +3336,7 @@
               method: 'POST',
               body: JSON.stringify({
                 title: text.slice(0, 60) || 'New chat',
-                tier: modelEl.value.replace(/^tier\./, ''),
+                tier: _selectedTier().replace(/^tier\./, ''),
               }),
             });
             if (cr.ok) {
@@ -3250,7 +3347,9 @@
           } catch (_) {}
         }
         const body = {
-          model: modelEl.value,
+          // Strip the "|VID" suffix — backend expects tier id only
+          // ("tier.coding"), not the composite "tier.coding|30b".
+          model: _selectedTier(),
           stream: true,
           messages: history,
           think: thinkEl.checked || undefined,
@@ -3261,14 +3360,14 @@
         // about it yet.
         if (toolState.size > 0) body.enabled_tools = toolNames;
         if (attachmentIds.length) body.attachment_ids = attachmentIds;
-        // Variant sub-selector: only forward when a non-default value
-        // is picked AND the variant select is visible for the current
-        // tier (otherwise the field is meaningless and would be a no-op
-        // on the backend anyway).
-        const variantsForTier = tierVariants.get(modelEl.value);
-        if (variantsForTier && variantEl.value && variantEl.style.display !== 'none') {
-          const def = variantsForTier.default;
-          if (variantEl.value !== def) body.variant = variantEl.value;
+        // Variant: read from the composite option value "tier.X|VID".
+        // Only forward when the picked variant differs from the tier's
+        // default (sending the default is a no-op but bloats the
+        // request). Tiers without variants emit no `variant` field.
+        const _variantPicked = _selectedVariant();
+        if (_variantPicked) {
+          const meta = tierVariants.get(_selectedTier());
+          if (!meta || _variantPicked !== meta.default) body.variant = _variantPicked;
         }
 
         // Multi-Agent Team: when the user picked the team tier, attach
@@ -3278,7 +3377,7 @@
         // signal is explicit on the wire (and so the request still
         // routes correctly if a downstream handler short-circuits the
         // role check).
-        if (modelEl.value === 'tier.multi_agent') {
+        if (_selectedTier() === 'tier.multi_agent') {
           const n = Math.max(1, Math.min(8, parseInt(teamNEl.value, 10) || 3));
           const opts = {
             enabled: true,
@@ -3525,7 +3624,12 @@
 
     function renderDashboardShell() {
       dashboardEl.innerHTML = `
-        <h2>Backend dashboard</h2>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <h2 style="margin:0">Backend dashboard</h2>
+          <button id="dashFreeVramBtn" type="button"
+            title="Sweep + reap orphan llama-servers AND force-evict every loaded tier (incl. embedding 8090 + reranker 8091). If a bench is running, it gets stopped first. Use as a panic switch when the GPU is wedged or before launching a fresh bench."
+            style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:3px 10px;font-size:0.82em;cursor:pointer">↺ free VRAM</button>
+        </div>
         <div class="dash-tabs">
           <button class="dash-tab" data-tab="overview">Overview</button>
           <button class="dash-tab" data-tab="users">Users</button>
@@ -3544,6 +3648,30 @@
       dashboardEl.querySelectorAll('.dash-tab').forEach(btn => {
         btn.addEventListener('click', () => switchDashboardTab(btn.dataset.tab));
       });
+      // Wire the dashboard-level Free VRAM button. POSTs to
+      // /admin/bench/stop, which already does the full sweep + reap +
+      // evict (and stops the bench if one is running).
+      const fv = dashboardEl.querySelector('#dashFreeVramBtn');
+      if (fv) {
+        fv.addEventListener('click', async () => {
+          if (!confirm('Free all VRAM? This stops any running bench, kills orphan llama-servers (incl. embedding + reranker), and evicts every loaded tier. Use as a panic switch.')) return;
+          const orig = fv.textContent;
+          fv.textContent = 'freeing…';
+          fv.disabled = true;
+          try {
+            const r = await api('/admin/bench/stop', {
+              method: 'POST', body: JSON.stringify({}),
+            });
+            if (!r.ok) {
+              const txt = await r.text().catch(() => '');
+              alert(`Free VRAM failed (${r.status}): ${txt.slice(0, 300)}`);
+            }
+          } catch (e) { console.warn('free-vram exc', e); }
+          fv.textContent = orig;
+          fv.disabled = false;
+          if (typeof _benchTickFn === 'function') _benchTickFn();
+        });
+      }
     }
 
     function switchDashboardTab(tab) {
@@ -3804,16 +3932,18 @@
         if (typeof m === 'number') return m;
         return (typeof m.value === 'number') ? m.value : null;
       };
+      // Tier-level lit stats — think=on only, since lit baselines are
+      // think=on. Caps with no think=on cell yet are excluded entirely.
       const tierLitStats = {};
       for (const tier of BENCH_TIERS) {
         let best = null, worst = null, sumDelta = 0, nDeltas = 0;
         for (const cap of BENCH_CAPS) {
-          const samples = grouped[tier + '|' + cap];
-          if (!samples || samples.length === 0) continue;
           const litVal = _litVal(tier, cap);
           if (litVal == null) continue;
-          const avg = samples.reduce((a,b)=>a+b,0) / samples.length;
-          const delta = avg - litVal;
+          const cellsForCap = (groupedCells[tier + '|' + cap] || []).filter(c => c.think === 'on');
+          if (cellsForCap.length === 0) continue;
+          const avgOn = cellsForCap.reduce((a, c) => a + c.pass_rate * 100, 0) / cellsForCap.length;
+          const delta = avgOn - litVal;
           sumDelta += delta;
           nDeltas++;
           if (best === null || delta > best.delta)  best  = { cap, delta };
@@ -3854,10 +3984,16 @@
               rate: c.pass_rate, wall: c.wall_seconds || 0,
             }));
             const litVal = _litVal(tier, cap);  // already in 0-100 scale
+            const thinkOnPayload = cellPayload.filter(p => p.think === 'on');
+            const avgThinkOn = thinkOnPayload.length
+              ? (thinkOnPayload.reduce((a, p) => a + p.rate * 100, 0) / thinkOnPayload.length)
+              : null;
             const tipData = {
               tier, cap,
               avg,
+              avgThinkOn,
               n_cells: samples.length,
+              n_think_on_cells: thinkOnPayload.length,
               conditions: cellPayload,
               lit: litVal,
               tier_stats: tierLitStats[tier] || null,
@@ -3929,32 +4065,48 @@
           const samples = grouped[tier + '|' + cap];
           if (!samples) continue;
           const cur = samples.reduce((a,b)=>a+b,0) / samples.length;
+          // think=on-only average for the lit-comparison column. Published
+          // baselines are think=on; mixing think=off cells into `cur` would
+          // make the Δ-vs-pub number meaningless.
+          const thinkOnCellsRaw = (groupedCells[tier + '|' + cap] || []).filter(c => c.think === 'on');
+          const curThinkOn = thinkOnCellsRaw.length
+            ? thinkOnCellsRaw.reduce((a,c)=>a + (c.pass_rate * 100), 0) / thinkOnCellsRaw.length
+            : null;
           const litVal = (litMetrics[cap] && litMetrics[cap].value);
           const histVal = (histMetrics[cap] && histMetrics[cap].value);
           // Pool trial counts across all cells of this (tier,cap) for the
-          // significance test. groupedCells already carries the raw rows.
+          // significance test — but ONLY think=on cells. Published baselines
+          // (`lit_baselines.json`) are reported with reasoning enabled, so
+          // pooling think=off cells against them is apples-to-oranges and
+          // produces fake "regressions" of 15–20pp that just measure the
+          // think-mode delta.
           const cells = groupedCells[tier + '|' + cap] || [];
-          let pooledN = 0, pooledPass = 0;
+          let pooledN = 0, pooledPass = 0, thinkOnCells = 0;
           for (const c of cells) {
+            if (c.think !== 'on') continue;
+            thinkOnCells++;
             const n = (c.passed || 0) + (c.failed || 0) + (c.errors || 0);
             pooledN += n;
             pooledPass += (c.passed || 0);
           }
           const sigVsLit = _litZTest(pooledPass, pooledN, litVal);
-          subRows.push({cap, cur, litVal, histVal, pooledN, pooledPass, sigVsLit});
+          subRows.push({cap, cur, curThinkOn, litVal, histVal, pooledN, pooledPass, sigVsLit, thinkOnCells});
         }
         if (subRows.length === 0) continue;
-        // Compute averages across caps that have a value in each baseline
+        // Compute averages across caps that have a value in each baseline.
+        // Δ-vs-pub uses think=on-only `curThinkOn` so it's apples-to-apples
+        // with the published model-card numbers. Δ-vs-prev keeps the all-
+        // condition `cur` since "prev" is also a mixed-condition snapshot.
         const nCur = subRows.length;
         const avgCur = subRows.reduce((a,b)=>a+b.cur,0) / nCur;
         const histVals = subRows.filter(r => r.histVal != null).map(r => ({cur:r.cur, base:r.histVal}));
-        const litVals = subRows.filter(r => r.litVal != null).map(r => ({cur:r.cur, base:r.litVal}));
+        const litVals = subRows.filter(r => r.litVal != null && r.curThinkOn != null).map(r => ({cur:r.curThinkOn, base:r.litVal}));
         const avgHistBase = histVals.length ? histVals.reduce((a,b)=>a+b.base,0)/histVals.length : null;
         const avgLitBase  = litVals.length  ? litVals.reduce((a,b)=>a+b.base,0)/litVals.length   : null;
-        // Average of per-cap deltas (so each cap weighted equally)
         const avgDHist = histVals.length ? histVals.reduce((a,b)=>a+(b.cur-b.base),0)/histVals.length : null;
         const avgDLit  = litVals.length  ? litVals.reduce((a,b)=>a+(b.cur-b.base),0)/litVals.length  : null;
-        tierRows.push({tier, nCur, avgCur, avgHistBase, avgLitBase, avgDHist, avgDLit, subRows});
+        const avgCurThinkOn = litVals.length ? litVals.reduce((a,b)=>a+b.cur,0)/litVals.length : null;
+        tierRows.push({tier, nCur, avgCur, avgCurThinkOn, avgHistBase, avgLitBase, avgDHist, avgDLit, subRows});
       }
       if (tierRows.length === 0) {
         baselineHtml = '<div class="dash-empty">Baseline deltas appear once at least one cell finishes.</div>';
@@ -3969,36 +4121,51 @@
           <th>model</th><th class="num">cells</th>
           <th class="num">avg current</th>
           <th class="num">avg prev</th><th class="num">avg Δ vs prev</th>
-          <th class="num">avg pub</th><th class="num">avg Δ vs pub</th>
-          <th class="num" title="Per-capability significance vs published baseline. ↑↑↑/↓↓↓ counts of caps above/below at p<0.05, normalized by caps with a published number. Hover the per-cap table for individual z-scores.">sig profile</th>
+          <th class="num">avg pub</th>
+          <th class="num" title="think=on-only avg current — apples-to-apples vs pub">avg cur (think=on)</th>
+          <th class="num" title="avg(cur think=on) − avg(pub). Empty if no think=on cells yet for caps that have a published baseline.">avg Δ vs pub</th>
+          <th class="num" title="Per-capability significance vs published baseline. ↑↑↑/↓↓↓ counts of caps above/below at p<0.05, normalized by caps with a published number AND a think=on cell. Hover the per-cap table for individual z-scores.">sig profile</th>
           <th></th>
         </tr></thead><tbody>`;
         for (const r of tierRows) {
           const colH = r.avgDHist == null ? 'var(--muted)' : (r.avgDHist >= 0 ? 'var(--success)' : 'var(--danger)');
           const colL = r.avgDLit  == null ? 'var(--muted)' : (r.avgDLit  >= 0 ? 'var(--success)' : 'var(--danger)');
           // Build the expandable per-capability sub-table
-          let sub = `<tr><td colspan="9" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
+          let sub = `<tr><td colspan="10" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
             <summary style="cursor:pointer;color:var(--muted);font-size:0.85em">per-capability breakdown</summary>
             <table class="dash-table" style="margin-top:6px"><thead><tr>
               <th>capability</th>
-              <th class="num">n</th>
-              <th class="num">current</th>
+              <th class="num" title="Pooled trial count from think=on cells only">n</th>
+              <th class="num" title="Average across all conditions">current</th>
               <th class="num">prev</th><th class="num">Δ</th>
-              <th class="num">pub</th><th class="num">Δ</th>
-              <th class="num" title="One-sample z-test vs published baseline. arrows = direction (↑ over, ↓ under), repeats = strength (1× p<0.05, 2× p<0.01, 3× p<0.001), ns = not significant">sig vs pub</th>
+              <th class="num">pub</th>
+              <th class="num" title="think=on-only average — apples-to-apples vs pub">cur (think=on)</th>
+              <th class="num" title="cur(think=on) − pub. blank if no think=on cell yet">Δ vs pub</th>
+              <th class="num" title="One-sample z-test of think=on cells vs pub. arrows = direction (↑ over, ↓ under), repeats = strength (1× p<0.05, 2× p<0.01, 3× p<0.001), ns = not significant">sig vs pub</th>
             </tr></thead><tbody>`;
           for (const sr of r.subRows) {
             const dH = sr.histVal != null ? sr.cur - sr.histVal : null;
-            const dL = sr.litVal  != null ? sr.cur - sr.litVal  : null;
+            // Δ-vs-pub uses think=on-only current. If no think=on data
+            // yet for this (tier,cap), show "(need think=on)" — refusing
+            // to render a bogus delta is the whole point of the fix.
+            const dL = (sr.litVal != null && sr.curThinkOn != null)
+              ? sr.curThinkOn - sr.litVal
+              : null;
             const cH = dH == null ? 'var(--muted)' : (dH >= 0 ? 'var(--success)' : 'var(--danger)');
             const cL = dL == null ? 'var(--muted)' : (dL >= 0 ? 'var(--success)' : 'var(--danger)');
+            const curPubCell = sr.curThinkOn != null
+              ? sr.curThinkOn.toFixed(1) + '%'
+              : (sr.litVal != null
+                  ? '<span style="color:var(--muted);font-size:0.85em" title="No think=on cell yet for this (tier,cap). Δ-vs-pub requires think=on since published numbers assume reasoning enabled.">need think=on</span>'
+                  : '—');
             sub += `<tr>
               <td>${sr.cap}</td>
-              <td class="num" style="color:var(--muted)">${sr.pooledN || '—'}</td>
-              <td class="num">${sr.cur.toFixed(1)}%</td>
+              <td class="num" style="color:var(--muted)" title="Pooled trial count from think=on cells only (lit baselines assume think=on)">${sr.pooledN || '—'}</td>
+              <td class="num" title="Average across ALL conditions for this (tier,cap)">${sr.cur.toFixed(1)}%</td>
               <td class="num" style="color:var(--accent)">${sr.histVal != null ? sr.histVal.toFixed(1) : '—'}</td>
               <td class="num" style="color:${cH}">${dH != null ? (dH >= 0 ? '+' : '') + dH.toFixed(1) : '—'}</td>
               <td class="num" style="color:var(--warn)">${sr.litVal != null ? sr.litVal.toFixed(1) : '—'}</td>
+              <td class="num" title="think=on-only current (apples-to-apples vs pub)">${curPubCell}</td>
               <td class="num" style="color:${cL}">${dL != null ? (dL >= 0 ? '+' : '') + dL.toFixed(1) : '—'}</td>
               <td class="num">${_sigBadge(sr.sigVsLit, dL)}</td>
             </tr>`;
@@ -4037,6 +4204,7 @@
             <td class="num" style="color:var(--accent)">${r.avgHistBase != null ? r.avgHistBase.toFixed(1) + '%' : '—'}</td>
             <td class="num" style="color:${colH};font-weight:500">${r.avgDHist != null ? (r.avgDHist >= 0 ? '+' : '') + r.avgDHist.toFixed(1) + 'pp' : '—'}</td>
             <td class="num" style="color:var(--warn)">${r.avgLitBase != null ? r.avgLitBase.toFixed(1) + '%' : '—'}</td>
+            <td class="num">${r.avgCurThinkOn != null ? r.avgCurThinkOn.toFixed(1) + '%' : '<span style="color:var(--muted);font-size:0.85em">need think=on</span>'}</td>
             <td class="num" style="color:${colL};font-weight:500">${r.avgDLit != null ? (r.avgDLit >= 0 ? '+' : '') + r.avgDLit.toFixed(1) + 'pp' : '—'}</td>
             <td>${sigCell}</td>
             <td></td>
@@ -4048,6 +4216,13 @@
             <span style="color:var(--accent)">prev</span> = our prior best run.
             <span style="color:var(--warn)">pub</span> = published model-card baseline.
             Models sorted by largest |Δ| so regressions surface first.
+            <br>
+            <strong>vs pub</strong>: published baselines in <code>lit_baselines.json</code>
+            are reported with <em>reasoning enabled</em>. Δ-vs-pub and the z-test
+            therefore pool <strong>think=on cells only</strong> — mixing in
+            think=off would inject a 10–20pp think-mode delta and produce
+            fake regressions. Cells with no think=on data yet show
+            "need think=on" instead of a bogus number.
             <br>
             <strong>sig profile</strong>: stacked-bar showing per-cap one-sample
             z-test results vs pub at α=0.05. <span style="color:var(--success)">green</span>=cap above pub significantly,
@@ -4123,7 +4298,7 @@
             return `<td class="num" style="color:${c}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</td>`;
           };
           // Build the expandable per-capability sub-table
-          let sub = `<tr><td colspan="9" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
+          let sub = `<tr><td colspan="10" style="padding:0"><details style="padding:6px 12px;background:rgba(0,0,0,0.15)">
             <summary style="cursor:pointer;color:var(--muted);font-size:0.85em">per-capability breakdown</summary>
             <table class="dash-table" style="margin-top:6px"><thead><tr>
               <th>capability</th>
@@ -4322,50 +4497,109 @@
         latHtml += `</tbody></table></div>`;
       }
 
-      // ETA to phase-1 completion. The user split the bench into
-      // phases — phase 1 is the priority capability set (8 of 11)
-      // across all 7 main tiers; phase 2 (knowledge, math,
-      // coding_basic) runs after phase 1 wraps. ETA reflects phase 1
-      // only so the rolling estimate doesn't smear over the deferred
-      // phase. The pill stays visible in 3 states: running with
-      // rolling avg, running but <2 samples ("computing"), or
-      // complete. Hidden only when nothing has finished.
-      const MAIN_TIERS = ["swarm", "fast", "versatile", "coding",
-                          "highest_quality", "reasoning_max", "reasoning_xl"];
-      const PHASE_1_CAPS = new Set([
-        "knowledge_specialized", "math_competition", "math_hard",
-        "reasoning", "coding", "intent", "clarity", "long_context",
-      ]);
-      const _etaCellsTotal = MAIN_TIERS.length * PHASE_1_CAPS.size * 4;
-      const _etaFinished = data.cells.filter(c =>
-        c.finished && MAIN_TIERS.includes(c.tier)
-        && PHASE_1_CAPS.has(c.capability)).length;
+      // Three-part ETA: cell, tier, whole-bench. Sourced from the
+      // regime banner that run_full_bench writes to the eval log on
+      // launch; admin.py exposes those as data.tiers / data.capabilities
+      // / data.think_modes / data.tools_modes / data.multi_agent_tiers.
+      // Falls back to the response's hardcoded defaults if no banner
+      // was emitted (older runs).
+      const _etaPlannedTiers   = (data.tiers || []).slice();
+      const _etaPlannedCaps    = (data.capabilities || []).slice();
+      const _etaPlannedThink   = (data.think_modes || ['off', 'on']).slice();
+      const _etaPlannedTools   = (data.tools_modes || ['off', 'auto']).slice();
+      const _etaPlannedMaTiers = (data.multi_agent_tiers || []).slice();
+      const _etaConditions = _etaPlannedThink.length * _etaPlannedTools.length;
+      const _etaCellsPerTierBlock = _etaPlannedCaps.length * _etaConditions;
+      // Total cells = single-tier blocks + multi-agent post-suite blocks
+      // (multi-agent runs the same caps × conditions per worker tier).
+      const _etaTierBlocks = _etaPlannedTiers.length + _etaPlannedMaTiers.length;
+      const _etaCellsTotal = _etaTierBlocks * _etaCellsPerTierBlock;
+
+      const _isPlanned = (c) => _etaPlannedTiers.includes(c.tier)
+        && _etaPlannedCaps.includes(c.capability);
+      const _etaFinished = data.cells.filter(c => c.finished && _isPlanned(c)).length;
       const _etaRemaining = Math.max(0, _etaCellsTotal - _etaFinished);
-      // The /admin/bench/results endpoint exposes wall time as
-      // `wall_seconds` (already computed by the runner). Earlier code
-      // here filtered on `started_at`/`finished_at` which are NOT in
-      // the response — those were Python-side fields, not JSON. Result:
-      // every cell got dropped from _recentCells and the rolling-mean
-      // branch never fired, leaving the ETA stuck on "computing" even
-      // after dozens of finished cells.
+
       const _recentCells = data.cells.filter(c =>
-        c.finished && typeof c.wall_seconds === 'number' &&
-        c.wall_seconds > 0 && MAIN_TIERS.includes(c.tier)
+        c.finished && typeof c.wall_seconds === 'number' && c.wall_seconds > 0
       ).slice(-12);
+      let _meanWallS = _recentCells.length
+        ? _recentCells.reduce((s, c) => s + c.wall_seconds, 0) / _recentCells.length
+        : null;
+      // Pre-first-cell fallback: estimate per-cell wall as
+      // (current cell's mean_latency_s × cell n_total). Means tier and
+      // run ETAs surface immediately instead of staying blank for the
+      // entire first cell (which can be 30+ min on the larger tiers).
+      // The estimate is rough — early-stop on significance can finish
+      // a cell at 30/200, halving wall — but a rough number is much
+      // more useful than no number for the operator's planning.
+      if (_meanWallS == null && data.current
+          && data.current.mean_latency_s > 0 && data.current.n_total > 0) {
+        _meanWallS = data.current.mean_latency_s * data.current.n_total;
+      }
+
       const _etaFmt = (s) => {
         if (s < 90) return Math.round(s) + 's';
         if (s < 3600) return Math.round(s / 60) + 'm';
         if (s < 86400) return (s / 3600).toFixed(1) + 'h';
         return (s / 86400).toFixed(1) + 'd';
       };
+
+      // Part 1: ETA for the current cell. Use this cell's per-problem
+      // mean latency × problems remaining in n_total. If significance
+      // early-stop is on, the cell may finish well before n_total — so
+      // this is an UPPER bound. For pre-1-problem cells we fall back to
+      // the bench-wide rolling mean wall.
+      let _etaCellS = null;
+      if (data.current && data.running) {
+        const cur = data.current;
+        const nDone = (cur.passed || 0) + (cur.failed || 0) + (cur.errors || 0);
+        const nLeft = Math.max(0, (cur.n_total || 0) - nDone);
+        if (cur.mean_latency_s && cur.mean_latency_s > 0 && nLeft > 0) {
+          _etaCellS = cur.mean_latency_s * nLeft;
+        } else if (_meanWallS && nLeft > 0 && cur.n_total > 0) {
+          _etaCellS = _meanWallS * (nLeft / cur.n_total);
+        }
+      }
+
+      // Part 2: ETA to finish the current TIER (all 4 conditions of all
+      // caps for cur.tier). Counts the cells already done in this tier
+      // + the in-flight cell's own remainder.
+      let _etaTierS = null, _etaTierDone = 0, _etaTierTotal = 0;
+      if (data.current && data.running) {
+        const tierName = data.current.tier;
+        _etaTierTotal = _etaCellsPerTierBlock;
+        _etaTierDone = data.cells.filter(c =>
+          c.finished && c.tier === tierName && _etaPlannedCaps.includes(c.capability)
+        ).length;
+        const tierCellsLeft = Math.max(0, _etaTierTotal - _etaTierDone - 1);  // -1 for the in-flight cell
+        if (_meanWallS != null) {
+          _etaTierS = (_etaCellS || 0) + _meanWallS * tierCellsLeft;
+        }
+      }
+
+      // Part 3: ETA to finish the whole bench (regime-wide). Same rolling
+      // mean × remaining cells, plus the in-flight cell's own remainder.
+      let _etaRunS = null;
+      if (data.running && _meanWallS != null && _etaRemaining > 0) {
+        const runCellsLeft = Math.max(0, _etaRemaining - 1);  // -1 for in-flight
+        _etaRunS = (_etaCellS || 0) + _meanWallS * runCellsLeft;
+      }
+
+      const _etaParts = [];
+      if (_etaCellS != null) _etaParts.push(`cell ${_etaFmt(_etaCellS)}`);
+      if (_etaTierS != null) _etaParts.push(`tier ${_etaFmt(_etaTierS)}`);
+      if (_etaRunS  != null) _etaParts.push(`run ${_etaFmt(_etaRunS)}`);
       let _etaText = '';
-      let _etaTooltip = `${_etaFinished}/${_etaCellsTotal} cells (main 7 tiers × ${BENCH_CAPS.length} caps × 4 conditions)`;
-      if (data.running && _recentCells.length >= 2 && _etaRemaining > 0) {
-        const meanWallS = _recentCells.reduce((s, c) =>
-          s + c.wall_seconds, 0) / _recentCells.length;
-        const etaS = meanWallS * _etaRemaining;
-        _etaText = `ETA ${_etaFmt(etaS)} · ${_etaFinished}/${_etaCellsTotal}`;
-        _etaTooltip = `Rolling mean wall over last ${_recentCells.length} cells = ${_etaFmt(meanWallS)}/cell. ${_etaRemaining} cells remaining.`;
+      let _etaTooltip = `Regime: ${data.regime || 'custom'} — ${_etaPlannedTiers.length} tiers + ${_etaPlannedMaTiers.length} multi-agent × ${_etaPlannedCaps.length} caps × ${_etaConditions} conditions = ${_etaCellsTotal} cells. ${_etaFinished} finished.`;
+      if (_etaParts.length > 0) {
+        _etaText = `${_etaParts.join(' · ')} · ${_etaFinished}/${_etaCellsTotal}`;
+        if (_meanWallS != null) {
+          _etaTooltip += ` Rolling mean wall over last ${_recentCells.length} cells = ${_etaFmt(_meanWallS)}/cell.`;
+        }
+        if (data.current) {
+          _etaTooltip += ` Current cell: ${data.current.tier} × ${data.current.capability} × think=${data.current.think} × tools=${data.current.tools}, ${(data.current.passed || 0) + (data.current.failed || 0) + (data.current.errors || 0)}/${data.current.n_total} done.`;
+        }
       } else if (_etaRemaining === 0 && _etaCellsTotal > 0) {
         _etaText = `complete · ${_etaFinished}/${_etaCellsTotal}`;
       } else if (_etaFinished > 0) {
@@ -4373,15 +4607,156 @@
       } else if (data.running) {
         _etaText = `${_etaCellsTotal} cells queued (ETA computing)`;
       }
+      // Bench-control row — model picker + cap picker + 3 toggles +
+      // preset buttons + start/pause/stop. Only rendered on the admin
+      // bench pane; the settings tab passes hideControls:true so the
+      // viewer there can't accidentally launch / kill a bench.
+      const _benchPaused = !!data.paused;
+      const _showControls = (paneId === 'dash-pane-bench') && !opts.hideControls;
+      // Sources of truth for the multi-selects: regime banner from the
+      // running bench (so the dropdowns reflect what's actually queued)
+      // when present, else the full sets so the operator can pick from
+      // everything available.
+      const _ALL_TIERS = ["versatile", "highest_quality", "reasoning_max",
+                          "reasoning_xl", "fast", "coding", "swarm"];
+      const _ALL_CAPS  = ["knowledge", "knowledge_specialized", "math",
+                          "math_competition", "math_hard", "reasoning",
+                          "coding", "coding_basic", "intent", "clarity",
+                          "long_context"];
+      // Persisted picks. Default = quality_comprehensive scope.
+      const _readSet = (key, fallback) => {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr) && arr.length > 0) return new Set(arr);
+          }
+        } catch (_) {}
+        return new Set(fallback);
+      };
+      const _selectedTiers = _readSet('lai.benchTiers', _ALL_TIERS);
+      const _selectedCaps  = _readSet('lai.benchCaps',
+        ["knowledge", "knowledge_specialized", "math", "math_competition",
+         "math_hard", "reasoning", "intent", "clarity", "long_context"]);
+      const _toggleThink = (() => {
+        try { return localStorage.getItem('lai.benchThink') !== '0'; } catch (_) { return true; }
+      })();
+      const _toggleTools = (() => {
+        try { return localStorage.getItem('lai.benchTools') === '1'; } catch (_) { return false; }
+      })();
+      const _toggleAB = (() => {
+        try { return localStorage.getItem('lai.benchAB') === '1'; } catch (_) { return false; }
+      })();
+
+      // Bench settings (the multi-selects, toggles, order, presets)
+      // are LOCKED while a bench is running OR paused — changing the
+      // queue mid-run would cause the dashboard to render a different
+      // shape than the bench is actually executing. The lock is a
+      // visual + functional disable; pause/stop buttons stay live.
+      const _settingsLocked = !!data.running;
+      const _lockTitle = _settingsLocked
+        ? 'Locked while a bench is running. Stop the bench to edit.'
+        : '';
+      const _lockStyle = _settingsLocked
+        ? 'pointer-events:none;opacity:0.5'
+        : '';
+
+      // Compact multi-select via <details><summary>(N selected)</summary>
+      // <checkbox list/></details>. Cheaper than a third-party picker
+      // and lets us style with the existing palette CSS variables.
+      const _ddPicker = (id, items, selected, label) => {
+        const sel = items.filter(x => selected.has(x));
+        const summary = sel.length === items.length ? `all ${items.length}` :
+                        sel.length === 0 ? 'none' :
+                        sel.length <= 2 ? sel.join(', ') :
+                        `${sel.length} of ${items.length}`;
+        return `
+          <details id="${id}Details" class="bench-multi-details" title="${_lockTitle}" style="display:inline-block;position:relative;${_lockStyle}">
+            <summary style="cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};list-style:none;padding:4px 10px;background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:4px;font-size:0.85em;user-select:none">
+              ${label}: <span class="bench-multi-summary">${summary}</span> ▾
+            </summary>
+            <div style="position:absolute;top:100%;left:0;z-index:30;background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:6px;margin-top:2px;min-width:180px;max-height:280px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.4)">
+              <div style="display:flex;gap:6px;margin-bottom:4px;border-bottom:1px solid var(--border);padding-bottom:4px">
+                <button type="button" data-bench-multi="all" data-id="${id}" ${_settingsLocked ? 'disabled' : ''} style="flex:1;background:transparent;color:var(--muted);border:none;cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};font-size:0.78em;text-align:left">all</button>
+                <button type="button" data-bench-multi="none" data-id="${id}" ${_settingsLocked ? 'disabled' : ''} style="flex:1;background:transparent;color:var(--muted);border:none;cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};font-size:0.78em;text-align:right">none</button>
+              </div>
+              ${items.map(it => `
+                <label style="display:flex;align-items:center;gap:6px;padding:3px 4px;cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};font-size:0.85em">
+                  <input type="checkbox" data-bench-${id}="${it}" ${selected.has(it) ? 'checked' : ''} ${_settingsLocked ? 'disabled' : ''}>
+                  <span style="color:var(--fg)">${it}</span>
+                </label>
+              `).join('')}
+            </div>
+          </details>`;
+      };
+
+      const _toggleHtml = (id, label, on, title) => `
+        <label title="${_settingsLocked ? _lockTitle : title}" style="display:inline-flex;align-items:center;gap:5px;font-size:0.85em;color:var(--fg);cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:${on ? 'var(--accent-soft, #1f2a44)' : 'var(--panel)'};${_settingsLocked ? 'opacity:0.5' : ''}">
+          <input type="checkbox" id="${id}" ${on ? 'checked' : ''} ${_settingsLocked ? 'disabled' : ''} style="margin:0">
+          <span>${label}</span>
+        </label>`;
+
+      const _selectedOrder = (() => {
+        try { return localStorage.getItem('lai.benchOrder') || 'quality'; }
+        catch (_) { return 'quality'; }
+      })();
+      const _orderOptions = [
+        { value: 'quality',     label: 'Order: quality (versatile→swarm)' },
+        { value: 'biggest',     label: 'Order: biggest → smallest' },
+        { value: 'smallest',    label: 'Order: smallest → biggest' },
+      ];
+      const _orderHtml = _orderOptions.map(o =>
+        `<option value="${o.value}"${o.value === _selectedOrder ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const _benchCtrl = !_showControls ? '' : `
+        <div id="benchControlBar" style="display:flex;gap:6px;align-items:center;margin-left:auto;flex-wrap:wrap">
+          ${_ddPicker('benchTiersPick', _ALL_TIERS, _selectedTiers, 'Models')}
+          <select id="benchOrderSel" title="${_settingsLocked ? _lockTitle : 'Tier execution order. Larger tiers first means the user gets the headline numbers earlier; smaller-first means the bench warms up on cheap cells before hitting the slow ones.'}"
+                  ${_settingsLocked ? 'disabled' : ''}
+                  style="background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:0.85em;${_settingsLocked ? 'opacity:0.5;cursor:not-allowed' : ''}">
+            ${_orderHtml}
+          </select>
+          ${_ddPicker('benchCapsPick',  _ALL_CAPS,  _selectedCaps,  'Caps')}
+          ${_toggleHtml('benchTglThink', 'think', _toggleThink, 'Reasoning ON for the cells (off when unchecked)')}
+          ${_toggleHtml('benchTglTools', 'tools', _toggleTools, 'Web-search tools ON (auto retry) for the cells')}
+          ${_toggleHtml('benchTglAB',    'A/B',   _toggleAB,    'A/B test the think + tools toggles — runs all 4 (off,on)×(off,auto) combinations per (tier,cap), 4× the cells')}
+          <span style="color:var(--muted);font-size:0.78em;margin-left:4px">presets:</span>
+          <button type="button" data-bench-preset="fast" ${_settingsLocked ? 'disabled' : ''} title="${_settingsLocked ? _lockTitle : 'Pre-fill: 2 tiers × 4 caps, think=both, tools=off'}"
+                  style="background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:0.78em;cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};${_settingsLocked ? 'opacity:0.5' : ''}">fast</button>
+          <button type="button" data-bench-preset="quality_comprehensive" ${_settingsLocked ? 'disabled' : ''} title="${_settingsLocked ? _lockTitle : 'Pre-fill: 7 tiers × 9 caps, A/B all conditions'}"
+                  style="background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:0.78em;cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};${_settingsLocked ? 'opacity:0.5' : ''}">quality</button>
+          <button type="button" data-bench-preset="full" ${_settingsLocked ? 'disabled' : ''} title="${_settingsLocked ? _lockTitle : 'Pre-fill: 7 tiers × 11 caps, A/B all conditions'}"
+                  style="background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:0.78em;cursor:${_settingsLocked ? 'not-allowed' : 'pointer'};${_settingsLocked ? 'opacity:0.5' : ''}">full</button>
+          <button id="benchStartBtn" type="button"
+                  ${data.running ? 'disabled' : ''}
+                  title="Start a new bench with the selected models / caps / toggles. Sweeps + reaps before launch."
+                  style="background:${data.running ? '#4a4a4a' : '#2ea043'};color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:0.85em;cursor:${data.running ? 'not-allowed' : 'pointer'};opacity:${data.running ? '0.5' : '1'};margin-left:6px">start</button>
+          <button id="benchResetCellBtn" type="button"
+                  ${data.running ? '' : 'disabled'}
+                  title="${data.running ? 'Discard the in-flight cell partial progress. The bench keeps running; the dashboard just hides this cell per-problem accumulation. NEXT cell continues unaffected.' : 'No in-flight cell.'}"
+                  style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:4px 8px;font-size:0.78em;cursor:${data.running ? 'pointer' : 'not-allowed'};opacity:${data.running ? '1' : '0.5'}">reset cell</button>
+          <button id="benchResetCondBtn" type="button"
+                  ${data.running ? '' : 'disabled'}
+                  title="${data.running ? 'Discard the in-flight cell AND every completed cell in THIS run with the same (think, tools) condition. Use when the whole condition is bad (e.g. think=on returning empty content). Prior-run cumulative results are preserved.' : 'No in-flight cell.'}"
+                  style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:4px 8px;font-size:0.78em;cursor:${data.running ? 'pointer' : 'not-allowed'};opacity:${data.running ? '1' : '0.5'}">reset condition</button>
+          <button id="benchPauseBtn" type="button"
+                  ${data.running ? '' : 'disabled'}
+                  title="${_benchPaused ? 'Resume — removes the pause flag at data/bench/pause.flag. Bench picks up at the next problem.' : 'Pause — writes data/bench/pause.flag. Bench finishes the current problem then blocks at the next boundary. Persistent across backend restarts.'}"
+                  style="background:${_benchPaused ? '#d29922' : '#4a4a4a'};color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:0.85em;cursor:${data.running ? 'pointer' : 'not-allowed'};opacity:${data.running ? '1' : '0.5'}">${_benchPaused ? 'resume' : 'pause'}</button>
+          <button id="benchStopBtn" type="button"
+                  ${data.running ? '' : 'disabled'}
+                  title="${data.running ? 'Stop the running bench AND evict all loaded tiers (frees VRAM).' : 'No bench running.'}"
+                  style="background:${data.running ? '#cf222e' : '#4a4a4a'};color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:0.85em;cursor:${data.running ? 'pointer' : 'not-allowed'};opacity:${data.running ? '1' : '0.5'}">stop</button>
+        </div>`;
       pane.innerHTML = `
         ${ctrlBar}
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
           <strong>Bench Dashboard</strong>
-          <span class="pill" style="background:${data.running ? '#2ea043' : '#4a4a4a'};color:#fff">${data.running ? 'live' : 'idle'}</span>
+          <span class="pill" style="background:${_benchPaused ? '#d29922' : (data.running ? '#2ea043' : '#4a4a4a')};color:#fff">${_benchPaused ? 'paused' : (data.running ? 'live' : 'idle')}</span>
           ${_etaText ? `<span class="pill" style="background:transparent;border:1px solid var(--accent);color:var(--accent);font-size:0.85em" title="${_etaTooltip}">${_etaText}</span>` : ''}
           <span style="color:var(--muted);font-size:0.85em">${new Date().toLocaleTimeString()}</span>
-          <span style="flex:1"></span>
-          <a href="/bench" target="_blank" style="color:var(--accent);font-size:0.85em">open in new tab</a>
+          ${_benchCtrl}
+          <a href="/bench" target="_blank" style="color:var(--accent);font-size:0.85em;margin-left:8px">open in new tab</a>
         </div>
         ${live}
         ${hideSysMon ? '' : `<details id="benchSysSection" ${_loadDetailsState('lai_bench_sys_section', true) ? 'open' : ''} style="margin-bottom:14px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--panel-2)">
@@ -4505,6 +4880,7 @@
         refreshBtn.addEventListener('click', () => _benchTickFn());
       }
       _wireBenchHeatTooltip(pane);
+      _wireBenchControlBar(pane);
       // Re-attach sys-graph dropdown listeners after each render — the
       // pane.innerHTML rebuild above wipes them out. Skip the initial
       // bootstrap (loadDashBench owns the first attach) so we don't
@@ -4519,6 +4895,257 @@
         // Async refresh in the background to update the cache.
         _refreshBenchSysCards();
       }
+    }
+    // Pre-defined preset configs for the [fast | quality | full] preset
+    // buttons. `tiers` and `caps` populate the multi-selects; `think`,
+    // `tools`, `ab` flip the toggles. `ab=true` overrides the think/
+    // tools toggles at submission time (sends `off,on` and `off,auto`
+    // to the backend regardless of toggle state).
+    const _BENCH_PRESETS = {
+      fast: {
+        tiers: ["fast", "versatile"],
+        caps:  ["knowledge_specialized", "math_competition", "reasoning", "coding"],
+        think: true, tools: false, ab: false,
+      },
+      quality_comprehensive: {
+        tiers: ["versatile", "highest_quality", "reasoning_max", "reasoning_xl",
+                "fast", "coding", "swarm"],
+        caps:  ["knowledge", "knowledge_specialized", "math", "math_competition",
+                "math_hard", "reasoning", "intent", "clarity", "long_context"],
+        // tools=true (= 'auto'): web-search retry on inadequate first
+        // pass — published quality numbers usually allow tool use, so
+        // the comprehensive preset matches lit.
+        think: true, tools: true, ab: true,
+      },
+      full: {
+        tiers: ["versatile", "highest_quality", "reasoning_max", "reasoning_xl",
+                "fast", "coding", "swarm"],
+        caps:  ["knowledge", "knowledge_specialized", "math", "math_competition",
+                "math_hard", "reasoning", "coding", "coding_basic",
+                "intent", "clarity", "long_context"],
+        think: true, tools: false, ab: true,
+      },
+    };
+
+    function _wireBenchControlBar(root) {
+      const startBtn = root.querySelector('#benchStartBtn');
+      const pauseBtn = root.querySelector('#benchPauseBtn');
+      const stopBtn  = root.querySelector('#benchStopBtn');
+      const tglThink = root.querySelector('#benchTglThink');
+      const tglTools = root.querySelector('#benchTglTools');
+      const tglAB    = root.querySelector('#benchTglAB');
+      if (!startBtn) return;  // hideControls path — nothing to wire
+
+      const _readChecks = (idAttr) => {
+        const out = [];
+        root.querySelectorAll(`[data-bench-${idAttr}]`).forEach(cb => {
+          if (cb.checked) out.push(cb.dataset[`bench${idAttr.charAt(0).toUpperCase()}${idAttr.slice(1)}`]);
+        });
+        return out;
+      };
+      const _persistChecks = (idAttr, storageKey) => {
+        try { localStorage.setItem(storageKey, JSON.stringify(_readChecks(idAttr))); } catch (_) {}
+      };
+      const _refreshSummary = (detailsId) => {
+        const d = root.querySelector(`#${detailsId}Details`);
+        if (!d) return;
+        const span = d.querySelector('.bench-multi-summary');
+        if (!span) return;
+        const allCbs = d.querySelectorAll('input[type="checkbox"]');
+        const sel = Array.from(allCbs).filter(cb => cb.checked);
+        const total = allCbs.length;
+        const items = sel.map(cb => cb.parentElement.querySelector('span').textContent);
+        span.textContent = sel.length === total ? `all ${total}` :
+                           sel.length === 0 ? 'none' :
+                           sel.length <= 2 ? items.join(', ') :
+                           `${sel.length} of ${total}`;
+      };
+      const _toggleVisualState = (label) => {
+        // Repaint the soft-bg state when the underlying checkbox flips.
+        if (!label) return;
+        const cb = label.querySelector('input[type="checkbox"]');
+        if (cb) {
+          label.style.background = cb.checked ? 'var(--accent-soft, #1f2a44)' : 'var(--panel)';
+        }
+      };
+
+      // Wire the multi-select checkbox lists. Listen on the details
+      // container (event delegation) since the checkboxes are dynamic.
+      ['benchTiersPick', 'benchCapsPick'].forEach(detailsId => {
+        const det = root.querySelector(`#${detailsId}Details`);
+        if (!det) return;
+        const dataAttr = detailsId === 'benchTiersPick' ? 'benchTiersPick' : 'benchCapsPick';
+        const dataKey  = detailsId === 'benchTiersPick' ? 'lai.benchTiers' : 'lai.benchCaps';
+        det.addEventListener('change', () => {
+          _persistChecks(dataAttr, dataKey);
+          _refreshSummary(detailsId);
+        });
+        det.addEventListener('click', (e) => {
+          // all / none shortcut buttons.
+          const btn = e.target.closest('button[data-bench-multi]');
+          if (!btn) return;
+          e.preventDefault();
+          const wantAll = btn.dataset.benchMulti === 'all';
+          det.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            cb.checked = wantAll;
+          });
+          _persistChecks(dataAttr, dataKey);
+          _refreshSummary(detailsId);
+        });
+      });
+
+      // Toggle persistence + visual repaint.
+      [[tglThink, 'lai.benchThink'],
+       [tglTools, 'lai.benchTools'],
+       [tglAB,    'lai.benchAB']].forEach(([cb, key]) => {
+        if (!cb) return;
+        cb.addEventListener('change', () => {
+          try { localStorage.setItem(key, cb.checked ? '1' : '0'); } catch (_) {}
+          _toggleVisualState(cb.parentElement);
+        });
+      });
+
+      // Preset buttons — pre-fill the multi-selects + toggles to match.
+      root.querySelectorAll('button[data-bench-preset]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const preset = _BENCH_PRESETS[btn.dataset.benchPreset];
+          if (!preset) return;
+          // Tier checks
+          root.querySelectorAll('[data-bench-benchTiersPick]').forEach(cb => {
+            cb.checked = preset.tiers.includes(cb.dataset.benchBenchTiersPick);
+          });
+          // Cap checks
+          root.querySelectorAll('[data-bench-benchCapsPick]').forEach(cb => {
+            cb.checked = preset.caps.includes(cb.dataset.benchBenchCapsPick);
+          });
+          if (tglThink) tglThink.checked = preset.think;
+          if (tglTools) tglTools.checked = preset.tools;
+          if (tglAB)    tglAB.checked    = preset.ab;
+          // Persist + repaint everything.
+          try {
+            localStorage.setItem('lai.benchTiers', JSON.stringify(preset.tiers));
+            localStorage.setItem('lai.benchCaps',  JSON.stringify(preset.caps));
+            localStorage.setItem('lai.benchThink', preset.think ? '1' : '0');
+            localStorage.setItem('lai.benchTools', preset.tools ? '1' : '0');
+            localStorage.setItem('lai.benchAB',    preset.ab    ? '1' : '0');
+          } catch (_) {}
+          _refreshSummary('benchTiersPick');
+          _refreshSummary('benchCapsPick');
+          [tglThink, tglTools, tglAB].forEach(cb => cb && _toggleVisualState(cb.parentElement));
+        });
+      });
+
+      const flashBtn = (btn, text, ms = 2500) => {
+        if (!btn) return;
+        const orig = btn.textContent;
+        btn.textContent = text;
+        btn.disabled = true;
+        setTimeout(() => { btn.textContent = orig; }, ms);
+      };
+      const callApi = async (path, btn, label) => {
+        flashBtn(btn, label);
+        try {
+          const r = await api(path, { method: 'POST', body: JSON.stringify({}) });
+          if (!r.ok) {
+            const txt = await r.text().catch(() => '');
+            console.warn('bench ctl', path, r.status, txt);
+            alert(`Bench control ${path} failed (${r.status}): ${txt.slice(0, 200)}`);
+          }
+        } catch (e) { console.warn('bench ctl exc', path, e); }
+        if (_benchTickFn) _benchTickFn();
+      };
+
+      const orderSel = root.querySelector('#benchOrderSel');
+      if (orderSel) {
+        orderSel.addEventListener('change', () => {
+          try { localStorage.setItem('lai.benchOrder', orderSel.value); } catch (_) {}
+        });
+      }
+      // VRAM ranking — used for biggest/smallest sorts. Keep in sync
+      // with config/models.yaml's vram_estimate_gb. The exact numbers
+      // matter less than the relative ordering; rough is fine.
+      const _TIER_VRAM_GB = {
+        reasoning_max: 28, highest_quality: 24, reasoning_xl: 24,
+        versatile: 22, coding: 13, fast: 12, swarm: 11,
+      };
+      const _QUALITY_ORDER = ['versatile', 'highest_quality', 'reasoning_max',
+                              'reasoning_xl', 'fast', 'coding', 'swarm'];
+      const _orderTiers = (tiers, mode) => {
+        const set = new Set(tiers);
+        if (mode === 'biggest') {
+          return [...tiers].sort((a, b) =>
+            (_TIER_VRAM_GB[b] || 0) - (_TIER_VRAM_GB[a] || 0));
+        }
+        if (mode === 'smallest') {
+          return [...tiers].sort((a, b) =>
+            (_TIER_VRAM_GB[a] || 0) - (_TIER_VRAM_GB[b] || 0));
+        }
+        // 'quality': follow the canonical order, then append any tiers
+        // not in that list (preserves their checkbox-list order).
+        const out = _QUALITY_ORDER.filter(t => set.has(t));
+        for (const t of tiers) if (!_QUALITY_ORDER.includes(t)) out.push(t);
+        return out;
+      };
+
+      startBtn.addEventListener('click', () => {
+        const tiers = _readChecks('benchTiersPick');
+        const caps  = _readChecks('benchCapsPick');
+        if (tiers.length === 0) { alert('Pick at least one model.'); return; }
+        if (caps.length === 0)  { alert('Pick at least one capability.'); return; }
+        const orderMode = orderSel ? orderSel.value : 'quality';
+        const orderedTiers = _orderTiers(tiers, orderMode);
+        // A/B mode runs all 4 (off,on)×(off,auto) cells per (tier,cap)
+        // regardless of the think + tools toggles. Without A/B, the
+        // toggle states pick a single condition.
+        const ab = tglAB && tglAB.checked;
+        const think = ab ? 'off,on' : (tglThink && tglThink.checked ? 'on' : 'off');
+        const tools = ab ? 'off,auto' : (tglTools && tglTools.checked ? 'auto' : 'off');
+        const body = {
+          tiers: orderedTiers.join(','),
+          capabilities: caps.join(','),
+          think, tools,
+          target: 'significance',
+        };
+        flashBtn(startBtn, 'starting…');
+        api('/admin/bench/start', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }).then(async r => {
+          if (!r.ok) {
+            const txt = await r.text().catch(() => '');
+            alert(`Bench start failed (${r.status}): ${txt.slice(0, 300)}`);
+          }
+          if (_benchTickFn) _benchTickFn();
+        }).catch(e => console.warn('bench start exc', e));
+      });
+
+      pauseBtn.addEventListener('click', () => {
+        const isResume = pauseBtn.textContent.trim().toLowerCase() === 'resume';
+        callApi(isResume ? '/admin/bench/resume' : '/admin/bench/pause',
+                pauseBtn, isResume ? 'resuming…' : 'pausing…');
+      });
+      const resetCellBtn = root.querySelector('#benchResetCellBtn');
+      if (resetCellBtn) {
+        resetCellBtn.addEventListener('click', () => {
+          if (!confirm('Discard the in-flight cell\'s partial progress? The bench keeps running; only this cell\'s per-problem accumulation is hidden from the dashboard.')) return;
+          callApi('/admin/bench/reset-cell', resetCellBtn, 'resetting…');
+        });
+      }
+      const resetCondBtn = root.querySelector('#benchResetCondBtn');
+      if (resetCondBtn) {
+        resetCondBtn.addEventListener('click', () => {
+          if (!confirm('Discard the in-flight cell AND every completed cell in THIS run with the same (think, tools) condition? Prior-run cumulative results are preserved.')) return;
+          callApi('/admin/bench/reset-condition', resetCondBtn, 'resetting…');
+        });
+      }
+      stopBtn.addEventListener('click', () => {
+        if (!confirm('Stop bench AND evict all loaded tiers? This frees VRAM but discards the current cell\'s in-progress problems.')) return;
+        callApi('/admin/bench/stop', stopBtn, 'stopping…');
+      });
+
+      // (The "↺ free VRAM" button moved up to the Backend Dashboard
+      // title row — see renderDashboardShell. It's a dashboard-level
+      // panic switch, not a bench-tab-only control.)
     }
     function _wireBenchHeatTooltip(root) {
       // Pointer/touch tooltip for the pass-rate heatmap. Each cell
@@ -4552,14 +5179,19 @@
               <td style="color:var(--muted);text-align:right">${fmtWall(c.wall)}</td>
             </tr>`;
           }).join('');
-        const litRow = d.lit != null
-          ? `<div style="margin-top:6px;color:var(--muted)">vs lit (${d.lit.toFixed(1)}%): ${fmtDelta(d.avg - d.lit)}</div>`
-          : `<div style="margin-top:6px;color:var(--muted)">no lit baseline</div>`;
+        let litRow;
+        if (d.lit == null) {
+          litRow = `<div style="margin-top:6px;color:var(--muted)">no lit baseline</div>`;
+        } else if (d.avgThinkOn == null) {
+          litRow = `<div style="margin-top:6px;color:var(--muted)">vs lit (${d.lit.toFixed(1)}%): <span style="color:var(--muted)" title="Lit baselines assume think=on. Run a think=on cell here to compare.">need think=on cell</span></div>`;
+        } else {
+          litRow = `<div style="margin-top:6px;color:var(--muted)">vs lit (${d.lit.toFixed(1)}%, think=on only): cur ${d.avgThinkOn.toFixed(1)}% ${fmtDelta(d.avgThinkOn - d.lit)}</div>`;
+        }
         const ts = d.tier_stats || {};
         let tierStatsHtml = '';
         if (ts.n) {
           tierStatsHtml = `<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border);color:var(--muted);line-height:1.5">
-            <div>${d.tier} avg Δ vs lit (${ts.n} caps): ${fmtDelta(ts.avgDelta)}</div>
+            <div>${d.tier} avg Δ vs lit (${ts.n} caps, think=on): ${fmtDelta(ts.avgDelta)}</div>
             <div>best cap: <span style="color:var(--fg)">${ts.best ? ts.best.cap : '—'}</span> ${ts.best ? fmtDelta(ts.best.delta) : ''}</div>
             <div>worst cap: <span style="color:var(--fg)">${ts.worst ? ts.worst.cap : '—'}</span> ${ts.worst ? fmtDelta(ts.worst.delta) : ''}</div>
           </div>`;
@@ -4772,27 +5404,23 @@
               }
             }
           }
-          // Active-time-only rate: walk consecutive sample pairs and
-          // count (dt, dTokens) ONLY for intervals where tokens grew.
-          // Idle gaps between problems (counter flat for 30+ s) get
-          // excluded from the denominator, so the rate reflects true
-          // generation throughput, not 24/7 average. This matches what
-          // operators expect from a "tok/s" reading on a benchmark
-          // that pulses tokens once per problem.
-          let activeIn = 0, activeOut = 0, activeDt = 0;
-          for (let i = 1; i < winSamples.length; i++) {
-            const a = winSamples[i - 1], b = winSamples[i];
-            const dIn  = (b.session_tokens_in  || 0) - (a.session_tokens_in  || 0);
-            const dOut = (b.session_tokens_out || 0) - (a.session_tokens_out || 0);
-            if (dIn > 0 || dOut > 0) {
-              activeIn  += Math.max(0, dIn);
-              activeOut += Math.max(0, dOut);
-              activeDt  += Math.max(0.001, b.ts - a.ts);
-            }
-          }
-          if (activeDt > 0) {
-            sys2.tokens_in_per_s  = activeIn  / activeDt;
-            sys2.tokens_out_per_s = activeOut / activeDt;
+          // Comprehensive rolling rate: total tokens emitted over the
+          // window divided by the wall-clock duration of the window.
+          // i.e. rate = (last - first) / (last.ts - first.ts). Idle
+          // gaps stay in the denominator, so a tier that produces a
+          // burst then sits silent reads as "tokens-per-elapsed-second"
+          // — the throughput the user actually waited for. Previous
+          // active-time-only calc hid the idle gaps, which made bursty
+          // bench traffic read as raw decode speed and didn't reflect
+          // wall-clock progress.
+          if (winSamples.length >= 2) {
+            const first = winSamples[0];
+            const last  = winSamples[winSamples.length - 1];
+            const dt    = Math.max(0.001, last.ts - first.ts);
+            const dIn   = Math.max(0, (last.session_tokens_in  || 0) - (first.session_tokens_in  || 0));
+            const dOut  = Math.max(0, (last.session_tokens_out || 0) - (first.session_tokens_out || 0));
+            sys2.tokens_in_per_s  = dIn  / dt;
+            sys2.tokens_out_per_s = dOut / dt;
           } else {
             sys2.tokens_in_per_s  = 0;
             sys2.tokens_out_per_s = 0;
@@ -5363,80 +5991,167 @@
         <label title="How often the dashboard fetches new samples from the backend">Poll:
           <select id="${tab}SysPoll" style="${sel()}">${pollHtml}</select>
         </label>
-        <label title="Bin width for the displayed line — coarser bins smooth the trace but lose per-second detail. Independent of poll rate.">Granularity:
+        <label title="Bin width for the displayed line — coarser bins SMOOTH the trace by averaging values within each interval. Independent of poll rate.">Granularity:
           <select id="${tab}SysGran" style="${sel()}">${granHtml}</select>
-        </label>
-        <label title="Rolling window for the tokens/s readout. Computed from cumulative session totals over this many seconds.">Rate window:
-          <select id="${tab}SysRate" style="${sel()}">${rateHtml}</select>
         </label>
         <button type="button" id="${tab}SysXMode" style="${sel()};cursor:pointer" title="Toggle X-axis between absolute timestamps and elapsed time">${xModeBtnLabel}</button>
       </div>`;
     }
 
     function _binSamples(samples, binWidthSec) {
-      // Group samples into fixed-width time bins, taking the mean of
-      // each numeric field per bin. Empty bins are dropped (no
-      // interpolation). Pure-client side; backend ring buffer stores
-      // raw at the backend sampler rate (5 Hz) — granularity is
-      // purely a display choice. Skip binning only when smaller than
-      // the sampler interval (0.2s) where there's nothing to merge.
-      if (binWidthSec < 0.2 || samples.length === 0) return samples;
+      // Sliding-window moving average. For each input sample we emit
+      // ONE output point at the same timestamp, with the value being
+      // the mean of all samples within ±(binWidthSec/2) of that ts.
+      // Wider granularity => longer averaging window => visibly
+      // SMOOTHER curve, while keeping the original number of points
+      // plotted (so the trace stays continuous instead of becoming a
+      // sparse staircase as it did with discrete bins).
+      //
+      // O(N · K) where K is the typical window-sample count. For the
+      // worst case (10 Hz sampler × 5 min window = 3000 samples per
+      // window), the work per render is ~few-million ops — fast
+      // enough to do every poll tick on a modern browser. A running-
+      // sum deque would be O(N), worth doing if profiles show this.
+      if (samples.length === 0) return samples;
       const FIELDS = ['cpu_pct', 'cpu_temp_c', 'gpu_util_pct', 'gpu_temp_c'];
-      const bins = new Map();
-      for (const s of samples) {
-        const k = Math.floor(s.ts / binWidthSec);
-        if (!bins.has(k)) bins.set(k, []);
-        bins.get(k).push(s);
-      }
-      const sortedKeys = [...bins.keys()].sort((a, b) => a - b);
-      return sortedKeys.map(k => {
-        const arr = bins.get(k);
-        const out = { ts: arr[arr.length - 1].ts };
+      const half = Math.max(0, binWidthSec / 2);
+      // Sub-sampler short-circuit: at granularity ≤ sampler interval
+      // (so half ≈ 50 ms) the window contains exactly one sample, and
+      // the sliding mean degenerates to identity. Avoid the inner-
+      // loop overhead by passing through.
+      if (half < 0.05) return samples;
+      const out = [];
+      let lo = 0, hi = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const ti = samples[i].ts;
+        const tLo = ti - half, tHi = ti + half;
+        while (lo < samples.length && samples[lo].ts < tLo) lo++;
+        while (hi < samples.length && samples[hi].ts <= tHi) hi++;
+        const o = { ts: ti };
         for (const f of FIELDS) {
-          const vs = [];
-          for (const r of arr) {
-            const v = r[f];
-            if (v != null && Number.isFinite(v)) vs.push(v);
+          let sum = 0, n = 0;
+          for (let j = lo; j < hi; j++) {
+            const v = samples[j][f];
+            if (v != null && Number.isFinite(v)) { sum += v; n++; }
           }
-          out[f] = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
+          o[f] = n > 0 ? sum / n : null;
         }
-        return out;
-      });
+        out.push(o);
+      }
+      return out;
     }
 
     function _sysCardsControls(tab) {
-      // Compact poll-frequency picker for the cards row, always
+      // Compact poll + rate-window picker for the cards row, always
       // visible inside the System monitoring section so the user can
       // tune card refresh without expanding the Graphs sub-section.
-      // Shares state with the Graphs Poll dropdown — changing either
-      // one re-arms the same interval.
+      // Shares state with the Graphs Poll/Rate dropdowns — changing
+      // either copy re-arms the same interval / repaints the cards.
       const st = _sysGraphState[tab];
       const pollHtml = _sysPollOptions.map(o =>
         `<option value="${o.value}"${st.pollMs === o.value ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const rateHtml = _sysRateOptions.map(o =>
+        `<option value="${o.value}"${st.rateWinSec === o.value ? ' selected' : ''}>${o.label}</option>`
       ).join('');
       const sel = `background:transparent;color:var(--fg);border:1px solid var(--muted);border-radius:3px;padding:1px 4px;font-size:1em`;
       return `<div style="display:flex;gap:8px;align-items:center;font-size:0.8em;color:var(--muted);margin-bottom:6px;flex-wrap:wrap">
         <label title="How often the cards (and graphs) refresh from /admin/sys/timeseries.">Poll:
           <select id="${tab}CardsPoll" style="${sel}">${pollHtml}</select>
         </label>
+        <label title="Rolling window for tokens/s computation. Longer windows = smoother but more lag; 60s is a good default for bench-style bursty traffic.">Rate window:
+          <select id="${tab}CardsRate" style="${sel}">${rateHtml}</select>
+        </label>
       </div>`;
     }
 
-    function _sysCardsAttachHandler(tab, restartFn) {
-      // Mirror handler for the cards-row Poll dropdown. On change we
-      // update the shared state, sync the Graphs Poll dropdown if it's
-      // mounted, and re-arm via restartFn.
+    // Map a poll interval (ms) to the smallest granularity bin (s) that
+    // is >= it. Granularity finer than the poll interval is meaningless
+    // — bins would be empty most of the time — so we always round UP
+    // to the nearest gran option. This is the dependent direction of
+    // the one-way sync: poll changes -> gran follows.
+    function _granForPoll(pollMs) {
+      const target = pollMs / 1000;
+      const opts = _sysGranOptions.map(o => o.value).sort((a, b) => a - b);
+      for (const g of opts) if (g + 1e-9 >= target) return g;
+      return opts[opts.length - 1];
+    }
+    // When the user changes granularity, only adjust polling if poll is
+    // currently coarser than the new granularity (which would leave
+    // empty bins). Otherwise leave poll alone — finer polling than the
+    // bin is fine, just oversampled. Returns the new pollMs (possibly
+    // unchanged).
+    function _pollForGran(currentPollMs, granSec) {
+      const granMs = granSec * 1000;
+      if (currentPollMs <= granMs) return currentPollMs;  // no violation
+      // Pick the largest poll option that is <= granMs. That keeps
+      // poll bumps as gentle as possible; the operator's coarsening of
+      // granularity shouldn't drop their poll cadence to the floor.
+      const opts = _sysPollOptions.map(o => o.value).sort((a, b) => a - b);
+      let best = opts[0];
+      for (const p of opts) if (p <= granMs) best = p;
+      return best;
+    }
+    // Apply a new pollMs to state + every visible dropdown for this tab.
+    // Implements the dependent-side of the sync: granSec is auto-set
+    // to match. Returns true if granSec changed (so caller can re-paint
+    // the graph using the new bin width).
+    function _applyPoll(tab, pollMs) {
+      const st = _sysGraphState[tab];
+      st.pollMs = pollMs;
+      const newGran = _granForPoll(pollMs);
+      const granChanged = (st.granSec !== newGran);
+      st.granSec = newGran;
+      // Sync every visible dropdown for this tab.
       const cp = document.getElementById(tab + 'CardsPoll');
-      if (!cp) return;
-      cp.addEventListener('change', () => {
-        const v = parseInt(cp.value, 10);
-        _sysGraphState[tab].pollMs = v;
-        // Sync the Graphs-controls Poll dropdown if it exists, so
-        // the two stay in lockstep visually.
-        const gp = document.getElementById(tab + 'SysPoll');
-        if (gp) gp.value = String(v);
-        if (restartFn) restartFn();
-      });
+      const gp = document.getElementById(tab + 'SysPoll');
+      const gn = document.getElementById(tab + 'SysGran');
+      if (cp) cp.value = String(pollMs);
+      if (gp) gp.value = String(pollMs);
+      if (gn) gn.value = String(newGran);
+      return granChanged;
+    }
+    // Apply a new granSec. Only bumps pollMs if the current poll cadence
+    // is COARSER than the new granularity (would leave empty bins).
+    function _applyGran(tab, granSec) {
+      const st = _sysGraphState[tab];
+      st.granSec = granSec;
+      const newPoll = _pollForGran(st.pollMs, granSec);
+      const pollChanged = (st.pollMs !== newPoll);
+      st.pollMs = newPoll;
+      const cp = document.getElementById(tab + 'CardsPoll');
+      const gp = document.getElementById(tab + 'SysPoll');
+      const gn = document.getElementById(tab + 'SysGran');
+      if (gn) gn.value = String(granSec);
+      if (cp) cp.value = String(newPoll);
+      if (gp) gp.value = String(newPoll);
+      return pollChanged;
+    }
+
+    function _sysCardsAttachHandler(tab, restartFn) {
+      // Mirror handler for the cards-row Poll + Rate dropdowns. On
+      // change we update the shared state via _applyPoll (which
+      // auto-syncs the granularity dropdown), and re-arm via restartFn.
+      const cp = document.getElementById(tab + 'CardsPoll');
+      if (cp) {
+        cp.addEventListener('change', () => {
+          const v = parseInt(cp.value, 10);
+          _applyPoll(tab, v);
+          if (restartFn) restartFn();
+        });
+      }
+      const cr = document.getElementById(tab + 'CardsRate');
+      if (cr) {
+        cr.addEventListener('change', () => {
+          // rateWinSec is a card-paint-only setting — no need to
+          // re-arm the poll loop. Sync the Graphs Rate dropdown if
+          // it's mounted, and repaint the cards from cache.
+          _sysGraphState[tab].rateWinSec = parseInt(cr.value, 10);
+          const gr = document.getElementById(tab + 'SysRate');
+          if (gr) gr.value = cr.value;
+          _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
+        });
+      }
     }
 
     function _sysGraphAttachHandlers(tab, restartFn) {
@@ -5473,15 +6188,21 @@
         _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
       });
       if (pl) pl.addEventListener('change', () => {
-        _sysGraphState[tab].pollMs = parseInt(pl.value, 10);
+        // Poll change = source-of-truth for sync: granularity follows.
+        _applyPoll(tab, parseInt(pl.value, 10));
         if (restartFn) restartFn();
       });
       if (gn) gn.addEventListener('change', () => {
-        // Granularity is a render-only setting — re-paint from cache
-        // immediately, no need to re-poll the backend. parseFloat to
-        // preserve sub-second values (200ms / 500ms options).
-        _sysGraphState[tab].granSec = parseFloat(gn.value);
-        _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
+        // Gran change is normally render-only (no need to re-poll).
+        // _applyGran only bumps pollMs if it would otherwise leave
+        // empty bins (poll interval > gran). When that happens we DO
+        // need to re-arm the backend poll loop at the new cadence.
+        const pollChanged = _applyGran(tab, parseFloat(gn.value));
+        if (pollChanged && restartFn) {
+          restartFn();
+        } else {
+          _sysPaintFromCache(tab, tab === 'bench' ? _benchLastData : null);
+        }
       });
       const rt = document.getElementById(tab + 'SysRate');
       if (rt) rt.addEventListener('change', () => {
@@ -7041,7 +7762,7 @@
                 // here. Heatmap, baseline z-tests, latency, live
                 // tokens, current cell progress all stay.
                 _benchRenderInline(d, 'settings-bench-pane',
-                  { hideSysMonitoring: true });
+                  { hideSysMonitoring: true, hideControls: true });
                 _wireBenchHeatTooltip(document.getElementById('settings-bench-pane'));
               } catch (_) {}
             };

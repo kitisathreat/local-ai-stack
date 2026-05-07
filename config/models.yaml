@@ -523,6 +523,7 @@ tiers:
 
   # ── Fast — Qwen3.5 9B dense, parallel workers ───────────────────────────────
   fast:
+    category: "Fast"
     name: "Fast (Qwen3.5 9B)"
     description: "Small, fully GPU-offloaded. Multiple instances share VRAM via --parallel — used as multi-agent workers."
     backend: llama_cpp

@@ -101,6 +101,30 @@ def parse_log(path: Path) -> dict:
     cells: list[dict] = []
     current = None
     run_start_ts = None
+    # Parse the regime banner line that run_full_bench prints at startup so
+    # the dashboard can compute regime-aware totals (ETA, "remaining cells").
+    # Format:
+    #   [regime] <name>: tiers=a,b,c caps=x,y,z think=off,on tools=off,auto ma_orch=... ma_tiers=...
+    planned_tiers: list[str] = []
+    planned_caps: list[str] = []
+    planned_think: list[str] = []
+    planned_tools: list[str] = []
+    planned_ma_tiers: list[str] = []
+    regime_name: str | None = None
+    regime_re = re.compile(
+        r"\[regime\]\s+(\S+):\s+tiers=(\S+)\s+caps=(\S+)\s+think=(\S+)\s+tools=(\S+)"
+        r"(?:\s+ma_orch=\S+)?(?:\s+ma_tiers=(\S+))?"
+    )
+    for ln in lines[start_idx:]:
+        rm = regime_re.search(ln)
+        if rm:
+            regime_name = rm.group(1)
+            planned_tiers = [s for s in rm.group(2).split(",") if s]
+            planned_caps  = [s for s in rm.group(3).split(",") if s]
+            planned_think = [s for s in rm.group(4).split(",") if s]
+            planned_tools = [s for s in rm.group(5).split(",") if s]
+            planned_ma_tiers = [s for s in (rm.group(6) or "").split(",") if s]
+            break  # one banner per run; first hit wins
     cell_re = re.compile(
         r"eval-cell start tier=(\S+) capability=(\S+) depth=(\S+) n=(\d+) think=(\S+)(?: tools=(\S+))?"
     )
@@ -176,7 +200,58 @@ def parse_log(path: Path) -> dict:
             current["last_problem"] = n
             if ts:
                 current["last_ts"] = ts
-    return {"cells": cells, "current": current, "run_start": run_start_ts}
+    # Filter out cells the operator explicitly discarded via the
+    # /admin/bench/stop endpoint — those are partial cells whose
+    # in-flight problems should NOT show up in the heatmap. Completed
+    # cells (full N, no abort) stay regardless. The discard list is
+    # an append-only JSON file at data/bench/discarded_cells.json,
+    # one entry per (tier, capability, think_str, tools_str, started_ts).
+    # Matching on started_ts (rounded to seconds) survives clock skew
+    # while still uniquely identifying the cell run.
+    discarded: list[tuple] = []
+    try:
+        import json as _json_d, os as _os_d
+        disc_path = (Path(_os_d.environ.get("LAI_DATA_DIR", "data"))
+                     / "bench" / "discarded_cells.json")
+        if disc_path.exists():
+            doc = _json_d.loads(disc_path.read_text(encoding="utf-8"))
+            for entry in doc.get("discarded", []):
+                if isinstance(entry, list) and len(entry) >= 5:
+                    discarded.append(tuple(entry[:5]))
+    except Exception:
+        pass
+
+    def _is_discarded(c: dict) -> bool:
+        if not discarded:
+            return False
+        think_s = "on" if c["think"] else "off"
+        started = c.get("started_ts")
+        if started is None:
+            return False
+        for d in discarded:
+            d_tier, d_cap, d_think, d_tools, d_started = d
+            if (d_tier == c["tier"] and d_cap == c["capability"]
+                    and d_think == think_s and d_tools == c["tools"]
+                    and abs((d_started or 0) - started) < 2.0):
+                return True
+        return False
+
+    cells_filtered = [c for c in cells if not _is_discarded(c)]
+    if current and _is_discarded(current):
+        current = None
+
+    return {
+        "cells": cells_filtered,
+        "current": current,
+        "run_start": run_start_ts,
+        "regime": regime_name,
+        "planned_tiers": planned_tiers,
+        "planned_capabilities": planned_caps,
+        "planned_think_modes": planned_think,
+        "planned_tools_modes": planned_tools,
+        "planned_multi_agent_tiers": planned_ma_tiers,
+        "n_discarded": len(cells) - len(cells_filtered) + (1 if current is None and any(c for c in cells if c.get("started_ts") and not c.get("finished")) else 0),
+    }
 
 
 def _shade(pct: float) -> str:

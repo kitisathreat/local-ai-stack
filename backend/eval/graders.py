@@ -24,6 +24,9 @@ from .datasets import Problem
 _ANSWER_PATTERNS = [
     re.compile(r"####\s*([\-A-Za-z0-9.,/]+)\s*$", re.MULTILINE),
     re.compile(r"\*?\*?Answer\*?\*?:\s*([\-A-Za-z0-9.,/]+)\s*$", re.MULTILINE | re.IGNORECASE),
+    # MMLU / MMLU-Pro lit format: "The answer is (X)" — emitted by the
+    # 5-shot CoT prefix we vendor in datasets.py.
+    re.compile(r"[Tt]he\s+answer\s+is\s*\(?\s*([A-Za-z0-9.,/\-]+)\s*\)?\s*\.?\s*$", re.MULTILINE),
     re.compile(r"\\boxed\{([^}]+)\}"),  # LaTeX-boxed answers from reasoning models
 ]
 

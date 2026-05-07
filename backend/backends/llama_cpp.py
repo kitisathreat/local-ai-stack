@@ -1331,7 +1331,8 @@ class LlamaCppClient:
                 with contextlib.suppress(Exception):
                     await proc.stop()
 
-    async def kill_orphans(self, preserve_ports: set[int] | None = None) -> list[int]:
+    async def kill_orphans(self, preserve_ports: set[int] | None = None,
+                           force: bool = False) -> list[int]:
         """Kill llama-server processes not tracked by this client.
 
         Backend bounces (refresh-backend.ps1, dev autoreload, crashes)
@@ -1347,41 +1348,63 @@ class LlamaCppClient:
         :8089–8091). PIDs whose listening port is in that set are
         skipped even if not in ``self.processes``.
 
+        ``force=True`` is the panic-switch path: kill EVERY untracked
+        llama-server regardless of port, including vision (8089),
+        embedding (8090), and reranker (8091). Used by the bench
+        start/stop sweep so a stuck embedding holding 22 GB doesn't
+        block chat-tier loads. Caller's `preserve_ports` argument is
+        still honored — pass an empty set to mean "no exemptions".
+
         Returns the list of PIDs killed.
         """
         preserve_ports = set(preserve_ports or set())
-        # Preserve the launcher's pre-spawned support tiers (vision 8089,
-        # embedding 8090, reranker 8091). They're spawned by
-        # LocalAIStack.ps1 before the backend starts and only get
-        # adopted into self.processes lazily on first request — a
-        # pre-spawn reap that runs before adoption would kill them and
-        # silently break embeddings + retrieval for normal chat.
-        #
-        # EXCEPTION: in bench mode, embedding (Qwen3-Embedding-8B,
-        # 4.7 GB) AND reranker (Qwen3-Reranker-0.6B, 640 MB) are NOT
-        # used — the runner sends `disable_web_search=True` and bench
-        # cells don't trigger RAG injection. Together they hold ~5.3
-        # GB of GPU memory; freeing both pushes versatile from 20/40
-        # GPU layers up to ~32/40 with safety_gb=2, taking GPU util
-        # from spiky-50-100% to sustained-80-90%. Vision (8089) stays
-        # preserved either way. Both 8090 and 8091 get respawned by
-        # the launcher's health-check loop after bench finishes.
-        preserve_ports.add(8089)
-        if not _is_bench_active():
-            preserve_ports.update({8090, 8091})
+        if not force:
+            # Preserve the launcher's pre-spawned support tiers (vision
+            # 8089, embedding 8090, reranker 8091). They're spawned by
+            # LocalAIStack.ps1 before the backend starts and only get
+            # adopted into self.processes lazily on first request — a
+            # pre-spawn reap that runs before adoption would kill them
+            # and silently break embeddings + retrieval for normal chat.
+            #
+            # EXCEPTION: in bench mode, embedding (Qwen3-Embedding-8B,
+            # 4.7 GB) AND reranker (Qwen3-Reranker-0.6B, 640 MB) are NOT
+            # used — the runner sends `disable_web_search=True` and
+            # bench cells don't trigger RAG injection. Together they
+            # hold ~5.3 GB of GPU memory; freeing both pushes versatile
+            # from 20/40 GPU layers up to ~32/40 with safety_gb=2,
+            # taking GPU util from spiky-50-100% to sustained-80-90%.
+            # Vision (8089) stays preserved either way unless force=True.
+            preserve_ports.add(8089)
+            if not _is_bench_active():
+                preserve_ports.update({8090, 8091})
         # Tracked PIDs from our own subprocess.Popen handles.
         tracked: set[int] = set()
-        bench_evictable = {8090, 8091} if _is_bench_active() else set()
-        for proc in self.processes.values():
-            if proc.popen is not None and proc.popen.poll() is None:
-                # In bench mode, our own embedding handle is also
-                # evictable so the reaper actually frees it. The
-                # tracked-set check above would otherwise spare it.
-                if not (proc.port in bench_evictable):
-                    tracked.add(proc.popen.pid)
-            # Externally-managed (we adopted on startup) — preserve by port.
-            if proc._externally_managed and proc.port and proc.port not in bench_evictable:
-                preserve_ports.add(proc.port)
+        if force:
+            # Panic-switch path: nothing is "tracked-and-protected".
+            # Every untracked-by-port llama-server gets killed. We DO
+            # still skip our own active chat-tier popens since the
+            # caller (bench stop) already handles tier evict separately
+            # via the scheduler — racing with `_evict_tier` produces
+            # ConnectError spam in the chat path.
+            for proc in self.processes.values():
+                if proc.popen is not None and proc.popen.poll() is None:
+                    # Skip our own chat-tier handles only (NOT embedding/
+                    # reranker which are externally_managed). Externally-
+                    # managed support tiers are explicitly the targets.
+                    if not proc._externally_managed:
+                        tracked.add(proc.popen.pid)
+        else:
+            bench_evictable = {8090, 8091} if _is_bench_active() else set()
+            for proc in self.processes.values():
+                if proc.popen is not None and proc.popen.poll() is None:
+                    # In bench mode, our own embedding handle is also
+                    # evictable so the reaper actually frees it. The
+                    # tracked-set check above would otherwise spare it.
+                    if not (proc.port in bench_evictable):
+                        tracked.add(proc.popen.pid)
+                # Externally-managed (we adopted on startup) — preserve by port.
+                if proc._externally_managed and proc.port and proc.port not in bench_evictable:
+                    preserve_ports.add(proc.port)
 
         candidates = await _list_llama_server_pids()
         killed: list[int] = []
