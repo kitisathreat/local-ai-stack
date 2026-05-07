@@ -190,8 +190,12 @@ async def bench_status():
         except Exception:
             pass
     running = _bench_is_running()
+    # Always read the flag — it's the persistent source of truth.
+    # The in-memory mirror is just a fast cache.
+    paused_flag = _bench_is_paused()
     return {
         "running": running,
+        "paused": paused_flag,
         "pid": (_bench_proc.pid if running and _bench_proc is not None else None),
         "started_at": _bench_started_at,
         "config": _bench_config,
@@ -200,11 +204,106 @@ async def bench_status():
     }
 
 
+# Named regimes mirror scripts/run_full_bench.BENCH_REGIMES — kept here
+# in lockstep so the admin endpoint can validate `regime` without
+# importing the bench script (which pulls heavy deps). Sync changes to
+# both. The "fast" regime is a quick-validation 2-tier sweep that
+# finishes in ~30 min; "full" is the 11-cap 7-tier 4-condition sweep.
+_BENCH_REGIME_PRESETS: dict[str, dict] = {
+    "fast": {
+        "tiers": "fast,versatile",
+        "capabilities": "knowledge_specialized,math_competition,reasoning,coding",
+        "think": "off,on",
+        "tools": "off",
+        "multi_agent_orchestrator": "versatile",
+        "multi_agent_tiers": "",
+    },
+    "quality_comprehensive": {
+        "tiers": "versatile,highest_quality,reasoning_max,reasoning_xl,fast,coding,swarm",
+        "capabilities": "knowledge,knowledge_specialized,math,math_competition,math_hard,reasoning,intent,clarity,long_context",
+        "think": "off,on",
+        "tools": "off,auto",
+        "multi_agent_orchestrator": "versatile",
+        "multi_agent_tiers": "swarm,fast",
+    },
+    "full": {
+        "tiers": "versatile,highest_quality,reasoning_max,reasoning_xl,fast,coding,swarm",
+        "capabilities": "knowledge,knowledge_specialized,math,math_competition,math_hard,reasoning,coding,coding_basic,intent,clarity,long_context",
+        "think": "off,on",
+        "tools": "off,auto",
+        "multi_agent_orchestrator": "versatile",
+        "multi_agent_tiers": "swarm,fast",
+    },
+}
+
+
+async def _bench_sweep_and_reap(reason: str) -> dict:
+    """Run an orphan-llama-server sweep AND a force-evict of all loaded
+    tiers. Called on bench start (so a stale tier from a crashed prior
+    run doesn't poison the warm-probe) AND on bench stop (so the next
+    bench / chat session starts with all VRAM free). Returns a small
+    summary dict for the operator log."""
+    summary: dict = {"reason": reason, "killed_orphans": [], "evicted_tiers": []}
+    try:
+        from . import main as _backend_main
+        sched = _backend_main.state.scheduler
+        # 1. Orphan reap — bench start/stop is the one moment we want
+        # the embedding (8090) and reranker (8091) tiers reaped too.
+        # The default reaper preserves them as "launcher-managed", which
+        # in bench mode means a stuck or oversized embedding holds
+        # ~22 GB and the chat-tier warm-probe loops on VRAM pressure.
+        # We bypass `set_orphan_reaper` and call `kill_orphans` directly
+        # with an EMPTY preserve_ports set.
+        try:
+            # force=True: panic-switch reap that includes vision (8089),
+            # embedding (8090), and reranker (8091). Bench cells don't
+            # use any of them; they hold ~22 GB on a 24 GB GPU; without
+            # force=True the chat-tier warm-probe loops on VRAM pressure.
+            killed = await _backend_main.state.llama_cpp.kill_orphans(
+                preserve_ports=set(), force=True,
+            )
+            summary["killed_orphans"] = list(killed) if killed else []
+        except Exception as exc:
+            logger.warning("bench sweep orphan reap failed: %s", exc)
+        # 2. Evict every loaded tier with refcount==0. The scheduler's
+        # idle-evict only fires after 30 min of idleness; on a manual
+        # bench stop we want to drop tiers immediately so the desktop
+        # gets its VRAM back.
+        async with sched._lock:
+            evictable = [m for m in list(sched.loaded.values())
+                         if m.refcount == 0 and m.state.value not in ("evicting",)]
+        for m in evictable:
+            try:
+                if hasattr(sched, "_evict_tier"):
+                    await sched._evict_tier(m, reason=f"bench-{reason}")
+                summary["evicted_tiers"].append(m.tier_id)
+            except Exception as exc:
+                logger.warning("bench sweep evict %s failed: %s", m.tier_id, exc)
+    except Exception as exc:
+        logger.warning("bench sweep+reap failed: %s", exc)
+        summary["error"] = str(exc)
+    logger.warning("bench sweep+reap (%s): killed_orphans=%s evicted_tiers=%s",
+                   reason, summary["killed_orphans"], summary["evicted_tiers"])
+    return summary
+
+
+@router.get("/bench/regimes")
+async def bench_regimes(_: dict = Depends(require_admin)):
+    """List the named bench regime presets the admin UI can launch."""
+    return {
+        "regimes": [
+            {"name": name, **preset}
+            for name, preset in _BENCH_REGIME_PRESETS.items()
+        ],
+    }
+
+
 @router.post("/bench/start")
 async def bench_start(request: Request, _: dict = Depends(require_admin)):
     """Spawn `scripts/run_full_bench.py` with the given configuration.
     Body schema (all optional except where defaulted):
       {
+        "regime": "fast" | "quality_comprehensive" | "full",
         "tiers": "swarm,fast,...",
         "capabilities": "knowledge,math,...",
         "think": "off,on" | "off" | "on",
@@ -215,24 +314,44 @@ async def bench_start(request: Request, _: dict = Depends(require_admin)):
         "per_problem_timeout": int,
         "judge_tier": "highest_quality"
       }
+
+    When `regime` is set, it provides the defaults for tiers / capabilities
+    / think / tools / multi-agent settings. Explicit fields in the body
+    override the regime preset.
     """
     global _bench_proc, _bench_started_at, _bench_config, _bench_log_path
     if _bench_is_running():
         raise HTTPException(409, "A bench is already running. POST /admin/bench/stop first.")
     body = await request.json()
+    regime = body.get("regime") or None
+    if regime and regime not in _BENCH_REGIME_PRESETS:
+        raise HTTPException(400, f"Unknown regime '{regime}'. "
+                            f"Valid: {list(_BENCH_REGIME_PRESETS)}")
+    preset = _BENCH_REGIME_PRESETS.get(regime, {}) if regime else {}
     cfg = {
-        "tiers":      str(body.get("tiers")
+        "regime":     regime,
+        "tiers":      str(body.get("tiers") or preset.get("tiers")
                           or "swarm,fast,versatile,coding,highest_quality,reasoning_max"),
-        "capabilities": str(body.get("capabilities")
+        "capabilities": str(body.get("capabilities") or preset.get("capabilities")
                             or "knowledge,knowledge_specialized,math,math_competition,math_hard,reasoning,coding,coding_basic,intent,clarity,long_context"),
-        "think":      str(body.get("think") or "off,on"),
-        "tools":      str(body.get("tools") or "off,auto"),
-        "target":     str(body.get("target") or "count"),
+        "think":      str(body.get("think") or preset.get("think") or "off,on"),
+        "tools":      str(body.get("tools") or preset.get("tools") or "off,auto"),
+        "target":     str(body.get("target") or "significance"),
         "target_minutes": int(body.get("target_minutes") or 0),
         "max_tokens": int(body.get("max_tokens") or 16384),
         "per_problem_timeout": int(body.get("per_problem_timeout") or 900),
-        "judge_tier": str(body.get("judge_tier") or "highest_quality"),
+        "judge_tier": str(body.get("judge_tier") or preset.get("multi_agent_orchestrator")
+                          or "versatile"),
+        "multi_agent_orchestrator": str(body.get("multi_agent_orchestrator")
+                                        or preset.get("multi_agent_orchestrator")
+                                        or "versatile"),
+        "multi_agent_tiers": str(body.get("multi_agent_tiers")
+                                 if body.get("multi_agent_tiers") is not None
+                                 else preset.get("multi_agent_tiers", "")),
     }
+    # Sweep + reap BEFORE spawn so a stale tier from a crashed prior run
+    # doesn't make the warm-probe loop on VRAM pressure.
+    sweep_pre = await _bench_sweep_and_reap("start")
     repo = Path(__file__).resolve().parent.parent
     py = repo / "vendor" / "venv-backend" / "Scripts" / "python.exe"
     if not py.exists():
@@ -251,7 +370,11 @@ async def bench_start(request: Request, _: dict = Depends(require_admin)):
         "--max-tokens", str(cfg["max_tokens"]),
         "--per-problem-timeout", str(cfg["per_problem_timeout"]),
         "--judge-tier", cfg["judge_tier"],
+        "--multi-agent-orchestrator", cfg["multi_agent_orchestrator"],
+        "--multi-agent-tiers", cfg["multi_agent_tiers"],
     ]
+    if regime:
+        argv += ["--regime", regime]
     if cfg["target_minutes"] > 0:
         argv += ["--target-minutes", str(cfg["target_minutes"])]
     log_fp = log_path.open("w", encoding="utf-8")
@@ -264,31 +387,332 @@ async def bench_start(request: Request, _: dict = Depends(require_admin)):
     _bench_started_at = time.time()
     _bench_config = cfg
     _bench_log_path = log_path
-    logger.warning("Bench started via /admin/bench/start: pid=%s config=%s",
-                   _bench_proc.pid, cfg)
-    return {"ok": True, "pid": _bench_proc.pid, "config": cfg, "log_path": str(log_path)}
+    logger.warning("Bench started via /admin/bench/start: pid=%s regime=%s config=%s "
+                   "sweep_pre=%s", _bench_proc.pid, regime, cfg, sweep_pre)
+    return {"ok": True, "pid": _bench_proc.pid, "config": cfg,
+            "log_path": str(log_path), "sweep_pre": sweep_pre}
+
+
+def _discard_current_cell() -> dict | None:
+    """Append the currently-in-flight cell to discarded_cells.json so its
+    partial per-problem results get filtered out of the dashboard. Lets
+    /admin/bench/stop satisfy the user's contract: stopping discards the
+    current cell's progress; completed cells stay (they're saved to the
+    cumulative JSON anyway).
+
+    Returns the discarded entry (for logging) or None when no cell is
+    in-flight. Idempotent — appending the same entry twice is harmless
+    since parse_log dedupes by tuple equality.
+    """
+    import sys as _sys, json as _json_d
+    repo = Path(__file__).resolve().parent.parent
+    scripts_dir = repo / "scripts"
+    if str(scripts_dir) not in _sys.path:
+        _sys.path.insert(0, str(scripts_dir))
+    try:
+        import importlib
+        if "bench_progress" in _sys.modules:
+            mod = importlib.reload(_sys.modules["bench_progress"])
+        else:
+            import bench_progress as mod
+        state = mod.parse_log(mod.LOG)
+    except Exception as exc:
+        logger.warning("discard_current_cell parse_log failed: %s", exc)
+        return None
+    cur = state.get("current")
+    if not cur:
+        return None
+    entry = [
+        cur["tier"], cur["capability"],
+        "on" if cur["think"] else "off",
+        cur["tools"],
+        cur.get("started_ts") or 0.0,
+    ]
+    disc_path = (Path(os.environ.get("LAI_DATA_DIR", "data"))
+                 / "bench" / "discarded_cells.json")
+    try:
+        disc_path.parent.mkdir(parents=True, exist_ok=True)
+        if disc_path.exists():
+            doc = _json_d.loads(disc_path.read_text(encoding="utf-8"))
+            arr = doc.get("discarded", []) if isinstance(doc, dict) else []
+        else:
+            arr = []
+        # Dedup — append only if the (tier,cap,think,tools,started) tuple
+        # isn't already there (parse_log compares with 2s tolerance, but
+        # exact-match here is cheaper and good enough for the writer side).
+        if entry not in arr:
+            arr.append(entry)
+        disc_path.write_text(
+            _json_d.dumps({"discarded": arr}, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("discard_current_cell write failed: %s", exc)
+        return None
+    return entry
+
+
+def _append_discarded(entries: list[list]) -> int:
+    """Append `entries` to `data/bench/discarded_cells.json`, deduping
+    against existing tuples. Returns the number of NEW entries written."""
+    import json as _json_d
+    if not entries:
+        return 0
+    disc_path = (Path(os.environ.get("LAI_DATA_DIR", "data"))
+                 / "bench" / "discarded_cells.json")
+    try:
+        disc_path.parent.mkdir(parents=True, exist_ok=True)
+        if disc_path.exists():
+            doc = _json_d.loads(disc_path.read_text(encoding="utf-8"))
+            arr = doc.get("discarded", []) if isinstance(doc, dict) else []
+        else:
+            arr = []
+        existing = {tuple(e[:5]) for e in arr if isinstance(e, list) and len(e) >= 5}
+        added = 0
+        for e in entries:
+            if tuple(e[:5]) in existing:
+                continue
+            arr.append(e)
+            existing.add(tuple(e[:5]))
+            added += 1
+        disc_path.write_text(
+            _json_d.dumps({"discarded": arr}, indent=2), encoding="utf-8")
+        return added
+    except Exception as exc:
+        logger.warning("append_discarded failed: %s", exc)
+        return 0
+
+
+def _parse_bench_state() -> dict | None:
+    """Re-import bench_progress and parse the current eval log. Used by
+    the reset endpoints to identify what's in-flight + what's completed.
+    Returns None on parse failure."""
+    import sys as _sys
+    repo = Path(__file__).resolve().parent.parent
+    scripts_dir = repo / "scripts"
+    if str(scripts_dir) not in _sys.path:
+        _sys.path.insert(0, str(scripts_dir))
+    try:
+        import importlib
+        if "bench_progress" in _sys.modules:
+            mod = importlib.reload(_sys.modules["bench_progress"])
+        else:
+            import bench_progress as mod
+        return mod.parse_log(mod.LOG)
+    except Exception as exc:
+        logger.warning("_parse_bench_state failed: %s", exc)
+        return None
+
+
+@router.post("/bench/reset-cell")
+async def bench_reset_cell(_: dict = Depends(require_admin)):
+    """Discard the in-flight cell's partial progress. The bench keeps
+    running (no kill, no sweep) — the dashboard just hides this cell's
+    per-problem accumulation. The bench's NEXT cell continues unaffected.
+    No-op when no cell is in flight."""
+    state = _parse_bench_state()
+    if not state:
+        raise HTTPException(500, "Could not parse bench log")
+    cur = state.get("current")
+    if not cur:
+        return {"ok": True, "discarded": 0, "note": "no in-flight cell"}
+    entry = [
+        cur["tier"], cur["capability"],
+        "on" if cur["think"] else "off",
+        cur["tools"],
+        cur.get("started_ts") or 0.0,
+    ]
+    added = _append_discarded([entry])
+    logger.warning("Bench reset-cell: discarded entry=%s (added=%d)",
+                   entry, added)
+    return {"ok": True, "discarded": added, "entry": entry}
+
+
+@router.post("/bench/reset-condition")
+async def bench_reset_condition(_: dict = Depends(require_admin)):
+    """Discard EVERY cell (in-flight AND completed-in-this-run) whose
+    (think, tools) matches the in-flight cell's condition. Used when the
+    operator notices the entire condition is bad (e.g. think=on causing
+    empty-content failures across tiers) and wants to wipe its cells
+    before they pollute the heatmap. Cells from PRIOR runs in the
+    cumulative JSON are unaffected — those went through cumulative-write
+    on cell completion and are the canonical historical record."""
+    state = _parse_bench_state()
+    if not state:
+        raise HTTPException(500, "Could not parse bench log")
+    cur = state.get("current")
+    if not cur:
+        return {"ok": True, "discarded": 0, "note": "no in-flight cell"}
+    cond_think = "on" if cur["think"] else "off"
+    cond_tools = cur["tools"]
+    entries: list[list] = []
+    # Include the in-flight cell.
+    entries.append([
+        cur["tier"], cur["capability"], cond_think, cond_tools,
+        cur.get("started_ts") or 0.0,
+    ])
+    # Include all completed cells from this run with the same condition.
+    for c in state.get("cells", []):
+        c_think = "on" if c["think"] else "off"
+        if c_think == cond_think and c["tools"] == cond_tools:
+            entries.append([
+                c["tier"], c["capability"], c_think, c["tools"],
+                c.get("started_ts") or 0.0,
+            ])
+    added = _append_discarded(entries)
+    logger.warning(
+        "Bench reset-condition: think=%s tools=%s "
+        "candidates=%d added=%d", cond_think, cond_tools,
+        len(entries), added,
+    )
+    return {"ok": True, "discarded": added, "condition": [cond_think, cond_tools],
+            "candidates": len(entries)}
 
 
 @router.post("/bench/stop")
 async def bench_stop(_: dict = Depends(require_admin)):
-    """Terminate the running bench (SIGTERM, then SIGKILL after 5s)."""
+    """Terminate the running bench (SIGTERM, then SIGKILL after 5s),
+    then sweep+reap orphan llama-servers AND force-evict every loaded
+    tier so the next bench / chat session starts with VRAM free.
+
+    The current in-flight cell's per-problem progress is PRESERVED in
+    the eval log — stopping doesn't discard it. The _discard_current_cell
+    helper is retained for a hypothetical "reset partial cell" button
+    but isn't invoked automatically here."""
     global _bench_proc, _bench_started_at, _bench_config
-    if not _bench_is_running():
-        return {"ok": True, "running": False, "note": "no bench running"}
-    pid = _bench_proc.pid
-    try:
-        _bench_proc.terminate()
+    discarded = None  # stop no longer auto-discards (user reversed earlier ask)
+    pid = None
+    if _bench_is_running():
+        pid = _bench_proc.pid if _bench_proc is not None else None
         try:
-            _bench_proc.wait(timeout=5)
-        except _subprocess.TimeoutExpired:
-            _bench_proc.kill()
-            _bench_proc.wait(timeout=5)
+            if _bench_proc is not None:
+                _bench_proc.terminate()
+                try:
+                    _bench_proc.wait(timeout=5)
+                except _subprocess.TimeoutExpired:
+                    _bench_proc.kill()
+                    _bench_proc.wait(timeout=5)
+            else:
+                # Bench was started outside this process — kill by PID
+                # via the same PowerShell scan we already use to detect
+                # it. Avoids a hard psutil dep in the hot path.
+                _kill_external_bench_processes()
+        except Exception as exc:
+            logger.warning("bench stop raise: %s", exc)
+        _bench_proc = None
+        _bench_started_at = None
+    # Always sweep+reap on stop, even if no bench was running — makes
+    # the button useful as a "free VRAM now" panic switch too.
+    sweep_post = await _bench_sweep_and_reap("stop")
+    logger.warning("Bench stopped via /admin/bench/stop: pid=%s sweep_post=%s "
+                   "discarded=%s", pid, sweep_post, discarded)
+    return {"ok": True, "stopped_pid": pid, "sweep_post": sweep_post,
+            "discarded_cell": discarded}
+
+
+def _kill_external_bench_processes() -> list[int]:
+    """Kill every python process whose command line contains
+    'run_full_bench'. Used when the bench was launched outside the admin
+    endpoint (e.g. shell). Returns the PID list killed. Best-effort —
+    failures are swallowed."""
+    killed: list[int] = []
+    try:
+        if os.name == "nt":
+            cmd = (
+                "powershell.exe -NoProfile -Command "
+                "\"Get-CimInstance Win32_Process -Filter 'Name=\\\"python.exe\\\"' "
+                "| Where-Object { $_.CommandLine -like '*run_full_bench*' } "
+                "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }\""
+            )
+            r = _subprocess.run(cmd, shell=True, capture_output=True,
+                                text=True, timeout=8)
+            for line in (r.stdout or "").splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    killed.append(int(line))
+        else:
+            for pid_dir in Path("/proc").iterdir():
+                if not pid_dir.name.isdigit():
+                    continue
+                try:
+                    cmdline = (pid_dir / "cmdline").read_text(errors="ignore")
+                except (OSError, PermissionError):
+                    continue
+                if "run_full_bench" in cmdline:
+                    pid_int = int(pid_dir.name)
+                    try:
+                        import signal as _sig
+                        os.kill(pid_int, _sig.SIGTERM)
+                        killed.append(pid_int)
+                    except Exception:
+                        pass
     except Exception as exc:
-        logger.warning("bench stop raise: %s", exc)
-    _bench_proc = None
-    _bench_started_at = None
-    logger.warning("Bench stopped via /admin/bench/stop: pid=%s", pid)
-    return {"ok": True, "stopped_pid": pid}
+        logger.warning("external bench kill failed: %s", exc)
+    return killed
+
+
+# Pause / resume are flag-file based, NOT process signals. The bench
+# runner (backend/eval/runner.py) checks `data/bench/pause.flag` at
+# every problem boundary; if present, it sleeps in-loop until removed.
+# This gives:
+#   - PROBLEM-level granularity (in-flight completions finish; the
+#     paused bench doesn't strand a half-streamed response)
+#   - PERSISTENCE across backend AND bench restarts (the flag is on
+#     disk; a relaunched bench picks up the same paused state)
+#   - NO process-signal weirdness (NtSuspendProcess froze HTTP requests
+#     mid-stream and could leave llama-server with hung sockets)
+def _pause_flag_path() -> Path:
+    return Path(os.environ.get("LAI_DATA_DIR", "data")) / "bench" / "pause.flag"
+
+
+def _bench_is_paused() -> bool:
+    return _pause_flag_path().exists()
+
+
+# Module-level mirror of the flag — exposed in /admin/bench/results so
+# the dashboard pill can render "paused" without the frontend having to
+# stat the disk. Updated on every status read; tracking it avoids
+# making the (cheap) flag check sticky across requests.
+_bench_paused: bool = False
+
+
+@router.post("/bench/pause")
+async def bench_pause(_: dict = Depends(require_admin)):
+    """Pause the running bench at the next PROBLEM boundary by creating
+    `data/bench/pause.flag`. The bench runner blocks in a sleep-loop
+    while the flag exists, then resumes from the next problem when it's
+    removed. Persistent: survives backend AND bench restarts since the
+    flag lives on disk. Models stay loaded; for "free VRAM now", use
+    /admin/bench/stop instead."""
+    global _bench_paused
+    p = _pause_flag_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(time.time()), encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(500, f"pause failed: {exc}")
+    _bench_paused = True
+    logger.warning("Bench paused via /admin/bench/pause (flag=%s)", p)
+    # If no bench is running, that's fine — the flag is set so the
+    # NEXT bench launch will also start in paused state. Operator
+    # explicitly resumes when ready.
+    return {"ok": True, "paused": True, "flag_path": str(p),
+            "running": _bench_is_running()}
+
+
+@router.post("/bench/resume")
+async def bench_resume(_: dict = Depends(require_admin)):
+    """Resume a paused bench by removing `data/bench/pause.flag`. The
+    runner's pause-loop polls the flag at 2 Hz and exits on next tick."""
+    global _bench_paused
+    p = _pause_flag_path()
+    try:
+        if p.exists():
+            p.unlink()
+    except Exception as exc:
+        raise HTTPException(500, f"resume failed: {exc}")
+    _bench_paused = False
+    logger.warning("Bench resumed via /admin/bench/resume (flag removed)")
+    return {"ok": True, "paused": False, "flag_path": str(p),
+            "running": _bench_is_running()}
 
 
 # ── Bench results — structured JSON for HTML dashboard ──────────────────
@@ -558,18 +982,32 @@ async def bench_results():
     lit_baselines = _load_json_silent("lit_baselines.json")
     historical_baselines = _load_json_silent("historical_baselines.json")
 
+    # Pull regime-aware planning from the parsed log so totals reflect
+    # what's actually queued, not a hardcoded historical scope. Falls back
+    # to the legacy hardcoded sets when the bench wasn't launched through
+    # `--regime` (e.g. older runs whose log predates the banner).
+    planned_tiers = state.get("planned_tiers") or [
+        "swarm", "fast", "versatile", "coding", "highest_quality", "reasoning_max",
+    ]
+    planned_caps = state.get("planned_capabilities") or [
+        "knowledge", "knowledge_specialized", "math", "math_competition",
+        "reasoning", "coding", "coding_basic", "intent", "clarity", "long_context",
+    ]
+    planned_think = state.get("planned_think_modes") or ["off", "on"]
+    planned_tools = state.get("planned_tools_modes") or ["off", "auto"]
+    _running = _bench_is_running()
     return {
         "ts": time.time(),
-        "running": _bench_is_running(),
+        "running": _running,
+        "paused": _bench_is_paused(),
         "current": current,
         "cells": cells,
-        "tiers": ["swarm", "fast", "versatile", "coding", "highest_quality", "reasoning_max"],
-        "capabilities": [
-            "knowledge", "knowledge_specialized", "math", "math_competition",
-            "reasoning", "coding", "coding_basic", "intent", "clarity", "long_context",
-        ],
-        "think_modes": ["off", "on"],
-        "tools_modes": ["off", "auto"],
+        "regime": state.get("regime"),
+        "tiers": planned_tiers,
+        "capabilities": planned_caps,
+        "think_modes": planned_think,
+        "tools_modes": planned_tools,
+        "multi_agent_tiers": state.get("planned_multi_agent_tiers") or [],
         "condition_totals": {
             f"{k[0]}|{k[1]}": v for k, v in cond_totals.items()
         },
@@ -954,7 +1392,16 @@ async def overview(
 # current platform (e.g. CPU temp on stock Windows requires
 # LibreHardwareMonitor, which we don't ship).
 
-_SYS_METRICS_CACHE_TTL_S = 1.0
+# 100ms cache TTL — matches the lifespan sampler's 10Hz cadence
+# (see backend/main.py:_sys_metrics_sampler, SAMPLE_INTERVAL_S=0.1).
+# Previously 1.0s, which silently throttled the ring buffer to 1Hz
+# regardless of the sampler interval — sub-second polling dropdowns
+# (200ms/500ms) appeared to work but the underlying data updated at
+# 1Hz. Within-tick concurrent reads from /me/sys + /admin/overview
+# still dedupe through the cache; the cost is one extra collector
+# pass every 100ms (psutil cpu instant, nvidia-smi ~30-80ms,
+# PawnIO ~100µs) which the sampler was already doing.
+_SYS_METRICS_CACHE_TTL_S = 0.1
 _sys_metrics_cache: dict = {"checked_at": 0.0, "data": None}
 
 # Ring buffer for the dashboard — extended beyond 2h because the
@@ -1559,7 +2006,7 @@ async def sys_timeseries(
     since: float | None = None,
     _: dict = Depends(require_admin),
 ):
-    """Return the slice of the 1 Hz sys-metrics ring buffer with ts >= since.
+    """Return the slice of the 10 Hz sys-metrics ring buffer with ts >= since.
     `since` is a unix timestamp; omit it to get the full ring (~2h max).
 
     Also returns `backend_started_ts` so the frontend can compute the

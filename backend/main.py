@@ -316,6 +316,19 @@ async def lifespan(app: FastAPI):
     # than killing them. Anything else (a previous backend's chat tier
     # subprocess that was orphaned by a crash or refresh) is fair game.
     def _preserve_ports() -> set[int]:
+        # Bench mode: sweep ALL llama-server ports. The embedding tier
+        # (port 8090, pinned, ~22 GB) and reranker (port 8091) are not
+        # exercised during bench cells, and on a 24 GB GPU that 22 GB
+        # holdover is the difference between chat-tier loads succeeding
+        # and the warm-probe spinning forever on VRAM pressure. After
+        # the bench finishes (active.lock removed), the launcher's
+        # cold-spawn path brings them back on first chat-side need.
+        try:
+            from pathlib import Path as _P
+            if (_P(os.environ.get("LAI_DATA_DIR", "data")) / "bench" / "active.lock").exists():
+                return set()
+        except Exception:
+            pass
         ports: set[int] = set()
         for t in state.config.models.tiers.values():
             if getattr(t, "pinned", False) and getattr(t, "port", None):
@@ -659,6 +672,14 @@ async def list_models():
     out: list[TierInfo] = []
     for name, tier in tiers.items():
         if tier.role == "embedding":
+            continue
+        # Vision is auto-routed by the backend when an image is in the
+        # message — there's no good reason for the user to pick it
+        # explicitly from the chat dropdown, and listing it just adds
+        # confusion (its category is empty so it lands at the top of
+        # the list among the priority chat tiers). Skip it the same
+        # way we skip embedding.
+        if name == "vision" or tier.role == "vision":
             continue
         variants: list[TierVariantInfo] = []
         for vid, vcfg in (tier.variants or {}).items():
